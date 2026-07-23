@@ -60,6 +60,21 @@ prost = "0.13"
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
 
+# Control-plane REST API + database
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    "chrono",
+    "uuid",
+    "json",
+] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -16,7 +16,21 @@ pub struct ControlConfig {
     #[serde(default)]
     pub grpc: GrpcConfig,
     #[serde(default)]
+    pub reconcile: ReconcileConfig,
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileConfig {
+    /// How often the controllers poll agents and reconcile VMs (section 26).
+    pub interval_secs: u64,
+}
+
+impl Default for ReconcileConfig {
+    fn default() -> Self {
+        Self { interval_secs: 5 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

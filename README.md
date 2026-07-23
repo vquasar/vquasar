@@ -5,15 +5,15 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 2 (host agent) — verified.** Milestones 0–1 (workspace,
-> domain model, and a `ch-client` that boots the latest Ubuntu cloud image on
-> Cloud Hypervisor v53) are in place. The `ch-agent` now serves the `HostAgent`
-> gRPC API backed by a real Cloud Hypervisor process manager: a gRPC client can
-> create / start / stop / delete VMs, and **VMs survive an agent restart** — the
-> agent recovers its inventory and re-attaches to already-running VMMs
-> (design section 11). Verified end-to-end on a host with `/dev/kvm`. The
-> control plane, database, networking and UI land in later milestones — see
-> [`DESIGN.md`](DESIGN.md) section 42.
+> **Status: Milestone 3 (control plane) — verified.** Milestones 0–2 (workspace,
+> domain model, a `ch-client` that boots the latest Ubuntu cloud image on Cloud
+> Hypervisor v53, and a restart-surviving `ch-agent` over gRPC) are in place.
+> `ch-control` now persists desired state in PostgreSQL, serves the public REST
+> API under `/api/v1`, schedules VMs onto hosts, and reconciles them by driving
+> the host agents. Verified end-to-end: `POST /api/v1/vms` creates a VM that the
+> reconcile loop schedules and boots on a registered host, and `DELETE` tears it
+> down. Networking and UI land in later milestones — see [`DESIGN.md`](DESIGN.md)
+> section 42.
 
 ## Architecture at a glance
 
@@ -161,6 +161,48 @@ Key design points, verified on real hardware: dropping the agent never kills VMs
 (`ch-agent` recovers them on restart, section 11); tearing a VM down uses Cloud
 Hypervisor's `vmm.shutdown` API so it works even for a re-attached VM the agent
 no longer owns as a child process.
+
+## Control plane (Milestone 3)
+
+`ch-control` persists desired state in PostgreSQL and reconciles it against the
+host agents. It needs a database; the reconcile loop and REST API are otherwise
+self-contained. Compile-time never touches a database — `sqlx` runtime queries
+keep builds and CI DB-free.
+
+```bash
+# 1. A PostgreSQL to talk to (any will do):
+docker run -d --name ch-pg -p 5432:5432 \
+  -e POSTGRES_USER=ch -e POSTGRES_PASSWORD=ch -e POSTGRES_DB=ch_orchestrator postgres:16
+
+# 2. Start the control plane (applies migrations on boot):
+CH_CONTROL_DATABASE__URL=postgres://ch:ch@127.0.0.1:5432/ch_orchestrator \
+CH_CONTROL_SERVER__LISTEN=127.0.0.1:8080 \
+cargo run -p ch-control
+
+# 3. With a ch-agent running (Milestone 2), register it and create a VM:
+curl -X POST localhost:8080/api/v1/hosts -H 'content-type: application/json' \
+  -d '{"name":"dome","endpoint":"http://127.0.0.1:9500"}'
+
+curl -X POST localhost:8080/api/v1/vms -H 'content-type: application/json' -d '{
+  "name":"demo",
+  "spec":{"desired_power_state":"Running","cpu":{"boot_vcpus":2,"max_vcpus":2},
+    "memory":{"size_mib":2048},
+    "boot":{"type":"direct_kernel","kernel":"/var/lib/ch-orchestrator/images/vmlinuz-<ver>",
+      "initramfs":"/var/lib/ch-orchestrator/images/initrd.img-<ver>",
+      "cmdline":"root=/dev/vda1 rw console=ttyS0 systemd.mask=systemd-networkd-wait-online.service"},
+    "disks":[{"path":"/var/lib/ch-orchestrator/volumes/demo.raw"},
+             {"path":"/var/lib/ch-orchestrator/seed/seed.iso","readonly":true}],
+    "network_interfaces":[],"placement":{}}}'
+# -> {"vm_id":"...","task_id":"..."}; poll GET /api/v1/vms/{id} until phase=Running.
+```
+
+Endpoints (all under `/api/v1`): `hosts` (register/list/get), `vms`
+(create/list/get/delete + `/start` + `/stop`), `tasks` (list/get), `events`
+(list). Writes persist desired state and return a `task_id` immediately; the
+reconcile loop ([`reconcile.rs`](services/control/src/reconcile.rs)) does the
+work asynchronously (section 15). The scheduler
+([`scheduler.rs`](services/control/src/scheduler.rs)) filters hosts that can't
+fit the VM and scores the rest by free-memory fraction (section 17).
 
 ## Design & invariants
 

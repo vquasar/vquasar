@@ -11,5 +11,9 @@ url = "postgres://ch:ch@localhost/ch_orchestrator"
 [grpc]
 listen = "0.0.0.0:9443"
 
+[reconcile]
+# How often the controllers poll agents and reconcile VMs, in seconds.
+interval_secs = 5
+
 [logging]
 level = "info"
