@@ -12,10 +12,11 @@ use std::sync::Arc;
 use ch_client::{HypervisorState, TapBinding};
 use ch_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{info, warn};
 
 use crate::backend::{Backend, ManagedVmm};
+use crate::console::SerialHub;
 use crate::network::{NetworkBackend, NicBinding};
 use crate::runtime::{RuntimeLayout, VmRecord};
 
@@ -53,6 +54,7 @@ pub struct ObservedVm {
 struct ManagedVm {
     record: VmRecord,
     vmm: Box<dyn ManagedVmm>,
+    console: SerialHub,
 }
 
 /// The agent's VM manager.
@@ -114,7 +116,16 @@ impl VmManager {
                 });
             }
             let vmm = self.backend.launch(id, &spec, taps, &self.layout).await?;
-            vms.insert(id, ManagedVm { record, vmm });
+            let console =
+                SerialHub::start(self.layout.serial_socket(id), self.layout.serial_log(id));
+            vms.insert(
+                id,
+                ManagedVm {
+                    record,
+                    vmm,
+                    console,
+                },
+            );
         }
         let managed = vms.get(&id).expect("just inserted");
 
@@ -169,6 +180,16 @@ impl VmManager {
         Ok(observe(managed).await)
     }
 
+    /// Get a serial-console output subscription and input sender for a VM.
+    pub async fn console(
+        &self,
+        id: VmId,
+    ) -> Option<(broadcast::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>)> {
+        let vms = self.vms.lock().await;
+        let managed = vms.get(&id)?;
+        Some((managed.console.subscribe(), managed.console.input_sender()))
+    }
+
     /// Observed state of all managed VMs.
     pub async fn list(&self) -> Vec<ObservedVm> {
         let vms = self.vms.lock().await;
@@ -198,7 +219,16 @@ impl VmManager {
             match self.backend.attach(id, &record.spec, &self.layout).await {
                 Ok(vmm) => {
                     info!(vm = %id, name = %record.name, "recovered VM after restart");
-                    vms.insert(id, ManagedVm { record, vmm });
+                    let console =
+                        SerialHub::start(self.layout.serial_socket(id), self.layout.serial_log(id));
+                    vms.insert(
+                        id,
+                        ManagedVm {
+                            record,
+                            vmm,
+                            console,
+                        },
+                    );
                 }
                 Err(e) => warn!(vm = %id, error = %e, "failed to re-attach to VM"),
             }

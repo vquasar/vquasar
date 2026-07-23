@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from "react-router-dom";
+import { Link as RouterLink, useNavigate, useParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -13,6 +13,7 @@ import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import DeleteIcon from "@mui/icons-material/Delete";
+import TerminalIcon from "@mui/icons-material/Terminal";
 import { useVm, useVmAction } from "../api/hooks";
 import { StatusChip } from "../components/StatusChip";
 import { formatDate, formatMib, shortId } from "../format";
@@ -50,6 +51,14 @@ export function VmDetail() {
           <StatusChip value={v.phase} />
         </Stack>
         <Stack direction="row" spacing={1}>
+          <Button
+            component={RouterLink}
+            to={`/vms/${id}/console`}
+            startIcon={<TerminalIcon />}
+            variant="outlined"
+          >
+            Console
+          </Button>
           <Button
             startIcon={<PlayArrowIcon />}
             onClick={() => id && action.mutate({ id, action: "start" })}

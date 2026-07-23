@@ -40,6 +40,11 @@ impl RuntimeLayout {
         self.vm_dir(id).join("serial.log")
     }
 
+    /// The serial-console Unix socket Cloud Hypervisor exposes for a VM.
+    pub fn serial_socket(&self, id: VmId) -> PathBuf {
+        self.vm_dir(id).join("serial.sock")
+    }
+
     /// The VMM stdout/stderr log file for a VM.
     pub fn vmm_log(&self, id: VmId) -> PathBuf {
         self.vm_dir(id).join("ch.log")

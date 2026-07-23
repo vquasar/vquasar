@@ -5,16 +5,16 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 5 (Web UI) — in place.** Milestones 0–4 (workspace,
-> domain model, `ch-client` booting the latest Ubuntu cloud image on Cloud
-> Hypervisor v53, a restart-surviving `ch-agent`, a `ch-control`
-> REST/scheduler/reconcile plane over PostgreSQL, and OVS networking) are done
-> and verified on real hardware. A React + TypeScript + MUI web UI now covers
-> the full lifecycle — dashboard, hosts, VMs (list/create/detail with
-> start/stop/delete), networks, tasks, and events — talking only to the public
-> REST API. `ch-control` optionally serves the built bundle. Serial console
-> (Milestone 6) and live migration are next — see [`DESIGN.md`](DESIGN.md)
-> section 42.
+> **Status: Milestone 6 (serial console) — verified.** Milestones 0–5
+> (workspace, domain model, `ch-client` booting the latest Ubuntu cloud image on
+> Cloud Hypervisor v53, a restart-surviving `ch-agent`, a `ch-control`
+> REST/scheduler/reconcile plane over PostgreSQL, OVS networking, and a
+> React + MUI web UI) are done and verified on real hardware. VMs now have an
+> interactive serial console: browser (xterm.js) → WebSocket → `ch-control` →
+> gRPC → `ch-agent` → the VM's serial socket. Verified end-to-end — logging in
+> and running a command over the WebSocket returns the guest's output. Two-host
+> scheduling and shared-storage live migration are next — see
+> [`DESIGN.md`](DESIGN.md) section 42.
 
 ## Architecture at a glance
 
@@ -239,7 +239,10 @@ UI), with MUI DataGrid for the resource tables and React Query for polling-based
 live state (design section 33). It is strictly API-only (ADR-015): every page
 talks to `/api/v1`. Pages: Dashboard, Hosts (+ register), Virtual Machines
 (list / create form / detail, with start/stop/delete), Networks (+ create),
-Tasks (with progress), and Events.
+Tasks (with progress), and Events. Each VM detail page has a **Console** button
+that opens an xterm.js serial console over a WebSocket
+(`/api/v1/vms/{id}/console`), proxied through to the VM's serial port
+(design section 25).
 
 ```bash
 cd ui

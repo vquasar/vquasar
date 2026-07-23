@@ -25,6 +25,23 @@ service HostAgent {
   rpc StartVm(StartVmRequest) returns (OperationResponse);
   rpc StopVm(StopVmRequest) returns (OperationResponse);
   rpc DeleteVm(DeleteVmRequest) returns (OperationResponse);
+
+  // Bidirectional serial console (design document, section 25). The first
+  // client message selects the VM by id; subsequent messages carry input
+  // (keystrokes). Server messages stream serial output.
+  rpc VmConsole(stream ConsoleClientMessage) returns (stream ConsoleServerMessage);
+}
+
+message ConsoleClientMessage {
+  // Set on the first message only.
+  string vm_id = 1;
+  // Input bytes to write to the guest serial port.
+  bytes input = 2;
+}
+
+message ConsoleServerMessage {
+  // Serial output bytes from the guest.
+  bytes output = 1;
 }
 
 // ---- Host ----------------------------------------------------------------

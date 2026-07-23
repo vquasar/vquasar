@@ -8,17 +8,20 @@
 // trait; boxing every return would fight the API for no benefit.
 #![allow(clippy::result_large_err)]
 
+use std::pin::Pin;
 use std::sync::Arc;
 
 use ch_model::{VirtualMachineSpec, VmId, VmPhase};
 use ch_proto::agent::host_agent_server::HostAgent;
 use ch_proto::agent::vm_observed_state::Phase;
 use ch_proto::agent::{
-    DeleteVmRequest, EnsureVmRequest, EnsureVmResponse, GetHostInfoRequest, GetHostInfoResponse,
-    GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse, OperationResponse,
-    StartVmRequest, StopVmRequest, VmObservedState,
+    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, EnsureVmRequest, EnsureVmResponse,
+    GetHostInfoRequest, GetHostInfoResponse, GetVmRequest, GetVmResponse, ListVmsRequest,
+    ListVmsResponse, OperationResponse, StartVmRequest, StopVmRequest, VmObservedState,
 };
-use tonic::{Request, Response, Status};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
+use tonic::{Request, Response, Status, Streaming};
 
 use crate::inventory;
 use crate::manager::{ManagerError, ObservedVm, VmManager};
@@ -147,6 +150,45 @@ impl HostAgent for AgentService {
             accepted: true,
             message: "deleted".to_string(),
         }))
+    }
+
+    type VmConsoleStream = Pin<Box<dyn Stream<Item = Result<ConsoleServerMessage, Status>> + Send>>;
+
+    async fn vm_console(
+        &self,
+        request: Request<Streaming<ConsoleClientMessage>>,
+    ) -> Result<Response<Self::VmConsoleStream>, Status> {
+        let mut inbound = request.into_inner();
+        // The first message selects the VM.
+        let first = inbound
+            .message()
+            .await?
+            .ok_or_else(|| Status::invalid_argument("empty console stream"))?;
+        let id = Self::parse_id(&first.vm_id)?;
+        let (output, input) = self
+            .manager
+            .console(id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("vm not found: {id}")))?;
+
+        // Pump client input (keystrokes) to the guest.
+        tokio::spawn(async move {
+            if !first.input.is_empty() {
+                let _ = input.send(first.input).await;
+            }
+            while let Ok(Some(msg)) = inbound.message().await {
+                if !msg.input.is_empty() && input.send(msg.input).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Stream guest serial output back, skipping lag gaps.
+        let stream = BroadcastStream::new(output).filter_map(|item| match item {
+            Ok(bytes) => Some(Ok(ConsoleServerMessage { output: bytes })),
+            Err(_lagged) => None,
+        });
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 

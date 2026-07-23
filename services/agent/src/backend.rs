@@ -122,8 +122,10 @@ impl CloudHypervisorBackend {
         layout: &RuntimeLayout,
         taps: Vec<TapBinding>,
     ) -> TranslateOptions {
+        // Serial goes to a Unix socket so it can be driven interactively; the
+        // serial hub connects to it and tees output to serial.log (section 25).
         TranslateOptions {
-            serial: SerialTarget::File(layout.serial_log(id).to_string_lossy().into_owned()),
+            serial: SerialTarget::Socket(layout.serial_socket(id).to_string_lossy().into_owned()),
             taps,
         }
     }

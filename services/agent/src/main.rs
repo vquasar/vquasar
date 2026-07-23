@@ -7,6 +7,7 @@
 
 mod backend;
 mod config;
+mod console;
 mod grpc;
 mod inventory;
 mod manager;

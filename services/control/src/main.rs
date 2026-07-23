@@ -7,6 +7,7 @@
 mod agent;
 mod api;
 mod config;
+mod console;
 mod netalloc;
 mod reconcile;
 mod scheduler;
