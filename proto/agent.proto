@@ -55,9 +55,11 @@ message ListVmsResponse { repeated VmObservedState vms = 1; }
 
 message EnsureVmRequest {
   string vm_id = 1;
+  // User-friendly VM name (host-local resources are still derived from vm_id).
+  string name = 2;
   // Opaque, control-plane-owned desired spec (JSON-encoded orchestration model,
   // translated to Cloud Hypervisor config by the agent — ADR-013).
-  bytes spec_json = 2;
+  bytes spec_json = 3;
 }
 message EnsureVmResponse { VmObservedState state = 1; }
 

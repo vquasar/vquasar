@@ -12,6 +12,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub agent: AgentSection,
     #[serde(default)]
+    pub grpc: GrpcSection,
+    #[serde(default)]
     pub hypervisor: HypervisorSection,
     #[serde(default)]
     pub network: NetworkSection,
@@ -19,6 +21,21 @@ pub struct AgentConfig {
     pub storage: StorageSection,
     #[serde(default)]
     pub logging: LoggingSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrpcSection {
+    /// Address the agent's HostAgent gRPC service listens on (control-plane
+    /// facing; must not be exposed publicly — section 12).
+    pub listen: String,
+}
+
+impl Default for GrpcSection {
+    fn default() -> Self {
+        Self {
+            listen: "0.0.0.0:9500".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

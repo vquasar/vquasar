@@ -16,13 +16,25 @@ path = "src/main.rs"
 ch-common.workspace = true
 ch-model.workspace = true
 ch-client.workspace = true
+ch-proto.workspace = true
 
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "fs"] }
+tonic.workspace = true
+prost.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 figment.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
+tempfile = "3"
+
+# Milestone 2 gRPC client harness for driving a running agent end-to-end.
+[[example]]
+name = "agent_client"
+path = "examples/agent_client.rs"

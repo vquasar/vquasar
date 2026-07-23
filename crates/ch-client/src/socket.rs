@@ -117,6 +117,15 @@ impl ApiClient {
         ensure_success(status, &resp)
     }
 
+    /// Shut down the whole VMM (the `cloud-hypervisor` process exits).
+    ///
+    /// Unlike `vm.shutdown` (an ACPI request to the *guest*), this terminates
+    /// the VMM itself, and works whether or not this process owns the child —
+    /// the mechanism used to tear down a re-attached VM (section 11).
+    pub async fn vmm_shutdown(&self) -> Result<()> {
+        self.put_empty("/vmm.shutdown").await
+    }
+
     /// Poll `vmm.ping` until it succeeds or `timeout` elapses.
     ///
     /// Used after launching a `cloud-hypervisor` process to wait for its API

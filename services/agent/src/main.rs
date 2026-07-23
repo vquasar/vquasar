@@ -1,19 +1,30 @@
-//! `ch-agent` — the host-agent binary.
+//! `ch-agent` — the host-agent binary (design document, section 9).
 //!
-//! Milestone 0 scaffold: it loads configuration, initialises telemetry, and
-//! collects and logs host inventory (section 40: "report CPU / report memory").
-//! The gRPC server, VM process manager and control-plane registration arrive in
-//! Milestone 2 (design document, section 42).
+//! Milestone 2: the agent is the local authority for one host. It collects host
+//! inventory, recovers any VMs already running (so a restart never kills them —
+//! section 11), and serves the `HostAgent` gRPC API backed by a real Cloud
+//! Hypervisor process manager.
 
+mod backend;
 mod config;
+mod grpc;
 mod inventory;
+mod manager;
+mod runtime;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use ch_proto::agent::host_agent_server::HostAgentServer;
 use clap::Parser;
+use tonic::transport::Server;
 use tracing::info;
 
+use crate::backend::CloudHypervisorBackend;
 use crate::config::AgentConfig;
+use crate::grpc::AgentService;
+use crate::manager::VmManager;
+use crate::runtime::RuntimeLayout;
 
 /// ch-orchestrator host agent.
 #[derive(Debug, Parser)]
@@ -31,31 +42,56 @@ async fn main() -> anyhow::Result<()> {
 
     ch_common::telemetry::init(&config.logging.level);
 
+    let host = inventory::collect();
+    let ch_version = inventory::cloud_hypervisor_version(&config.hypervisor.binary);
     info!(
         name = %config.agent.name,
-        control_plane = %config.agent.control_plane,
-        "ch-agent starting (Milestone 0 scaffold)"
-    );
-
-    let host = inventory::collect();
-    info!(
         hostname = ?host.hostname,
         arch = ?host.architecture,
-        kernel = ?host.kernel_version,
         logical_cpus = ?host.logical_cpus,
         total_memory_bytes = ?host.total_memory_bytes,
-        available_memory_bytes = ?host.available_memory_bytes,
-        "collected host inventory"
-    );
-    info!(
-        hypervisor_binary = %config.hypervisor.binary.display(),
-        runtime_dir = %config.hypervisor.runtime_dir.display(),
-        network_backend = %config.network.backend,
-        bridge = %config.network.bridge,
-        storage_backend = %config.storage.backend,
-        storage_path = %config.storage.path.display(),
-        "agent configuration loaded; gRPC server not yet implemented"
+        cloud_hypervisor = ?ch_version,
+        "ch-agent starting"
     );
 
+    // Build the VM manager over a real Cloud Hypervisor backend.
+    let layout = RuntimeLayout::new(&config.hypervisor.runtime_dir);
+    let backend = Arc::new(CloudHypervisorBackend::new(
+        config.hypervisor.binary.clone(),
+    ));
+    let manager = Arc::new(VmManager::new(backend, layout));
+
+    // Recover VMs that survived a previous agent instance (section 11).
+    manager.recover().await;
+    let recovered = manager.list().await;
+    if !recovered.is_empty() {
+        info!(
+            count = recovered.len(),
+            "recovered running VMs after restart"
+        );
+    }
+
+    let service = AgentService::new(manager, config.agent.name.clone(), ch_version);
+
+    let addr = config
+        .grpc
+        .listen
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid grpc.listen '{}': {e}", config.grpc.listen))?;
+    info!(%addr, "serving HostAgent gRPC API");
+
+    Server::builder()
+        .add_service(HostAgentServer::new(service))
+        .serve_with_shutdown(addr, shutdown_signal())
+        .await?;
+
+    info!("ch-agent stopped");
     Ok(())
+}
+
+/// Resolve when the process receives Ctrl-C, so the gRPC server shuts down
+/// cleanly. Note: this does **not** terminate managed VMs — they keep running
+/// (section 11).
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }

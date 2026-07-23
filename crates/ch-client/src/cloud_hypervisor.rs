@@ -93,6 +93,19 @@ impl CloudHypervisor {
         Ok(())
     }
 
+    /// Ask the VMM to shut itself down via its API, then reap the owned child
+    /// if there is one. This works even for a re-attached handle that does not
+    /// own the process (section 11), so it is the reliable teardown path.
+    pub async fn terminate(&mut self) -> Result<()> {
+        // Best-effort API shutdown; the VMM process exits on success.
+        let _ = self.api.vmm_shutdown().await;
+        // Reap an owned child (ignore errors: it may already be exiting).
+        if let Some(proc) = self.process.as_mut() {
+            let _ = proc.kill().await;
+        }
+        Ok(())
+    }
+
     /// Fetch raw CH VM info, or `None` when no VM exists / the VMM is
     /// unreachable. Used for idempotency checks.
     async fn current_state(&self) -> Option<VmState> {

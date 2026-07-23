@@ -5,14 +5,15 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 1 (Cloud Hypervisor adapter) — verified.** The Cargo
-> workspace and stable domain model (Milestone 0) are in place, and the
-> `ch-client` crate now boots a real VM end-to-end: it launches
-> `cloud-hypervisor`, waits for the API socket, and drives `vm.create` / `vm.boot`
-> / `vm.info` over the Unix API to boot the **latest Ubuntu cloud image** via
-> direct-kernel boot, verified on Cloud Hypervisor v53 with `/dev/kvm`. The
-> control plane, agent gRPC, database, networking and UI land in later
-> milestones — see [`DESIGN.md`](DESIGN.md) section 42.
+> **Status: Milestone 2 (host agent) — verified.** Milestones 0–1 (workspace,
+> domain model, and a `ch-client` that boots the latest Ubuntu cloud image on
+> Cloud Hypervisor v53) are in place. The `ch-agent` now serves the `HostAgent`
+> gRPC API backed by a real Cloud Hypervisor process manager: a gRPC client can
+> create / start / stop / delete VMs, and **VMs survive an agent restart** — the
+> agent recovers its inventory and re-attaches to already-running VMMs
+> (design section 11). Verified end-to-end on a host with `/dev/kvm`. The
+> control plane, database, networking and UI land in later milestones — see
+> [`DESIGN.md`](DESIGN.md) section 42.
 
 ## Architecture at a glance
 
@@ -126,6 +127,40 @@ and both are verified booting the latest Ubuntu cloud image on CH v53:
 > compatible, and rust-hypervisor-firmware (a PVH firmware, loaded via
 > `payload.kernel`) can't complete modern Ubuntu's shim/GRUB chain — hence
 > `CLOUDHV.fd`.
+
+## Host agent over gRPC (Milestone 2)
+
+`ch-agent` is the local authority for one host (design section 9). It serves the
+`HostAgent` gRPC API (schema: [`proto/agent.proto`](proto/agent.proto), generated
+by the [`ch-proto`](crates/proto) crate) backed by a real Cloud Hypervisor
+process manager. Run it and drive it with the bundled client:
+
+```bash
+# Start the agent (points at the lab from Milestone 1).
+CH_AGENT_GRPC__LISTEN=127.0.0.1:9500 \
+CH_AGENT_HYPERVISOR__BINARY=/var/lib/ch-orchestrator/bin/cloud-hypervisor \
+CH_AGENT_HYPERVISOR__RUNTIME_DIR=/var/lib/ch-orchestrator \
+cargo run -p ch-agent
+
+# In another shell — inventory, create a VM, inspect, delete:
+cargo run -p ch-agent --example agent_client -- host-info
+cargo run -p ch-agent --example agent_client -- ensure \
+  --vm-id "$(cat /proc/sys/kernel/random/uuid)" --name demo \
+  --kernel /var/lib/ch-orchestrator/images/vmlinuz-<ver> \
+  --initramfs /var/lib/ch-orchestrator/images/initrd.img-<ver> \
+  --disk /var/lib/ch-orchestrator/volumes/demo.raw \
+  --readonly-disk /var/lib/ch-orchestrator/seed/seed.iso
+```
+
+The full **restart-survival** acceptance (start a VM, stop the agent, confirm
+the VM keeps running, restart the agent, confirm it recovers the same process,
+then delete) is scripted in
+[`scripts/agent-restart-demo.sh`](scripts/agent-restart-demo.sh).
+
+Key design points, verified on real hardware: dropping the agent never kills VMs
+(`ch-agent` recovers them on restart, section 11); tearing a VM down uses Cloud
+Hypervisor's `vmm.shutdown` API so it works even for a re-attached VM the agent
+no longer owns as a child process.
 
 ## Design & invariants
 

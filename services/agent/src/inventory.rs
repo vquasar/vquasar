@@ -32,6 +32,25 @@ pub fn collect() -> HostStatus {
     }
 }
 
+/// Probe the Cloud Hypervisor version by running `<binary> --version`.
+///
+/// Returns e.g. `"v53.0"`. Run once at startup rather than per request.
+pub fn cloud_hypervisor_version(binary: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // First line looks like: "cloud-hypervisor v53.0".
+    text.lines()
+        .next()
+        .and_then(|line| line.split_whitespace().last())
+        .map(|s| s.to_string())
+}
+
 fn hostname() -> Option<String> {
     read_trimmed("/proc/sys/kernel/hostname")
 }
