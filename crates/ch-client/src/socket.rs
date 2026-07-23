@@ -18,6 +18,7 @@ use serde::Serialize;
 use tokio::net::UnixStream;
 use tokio::time::{sleep, Instant};
 
+use crate::config::{ReceiveMigrationData, SendMigrationData};
 use crate::error::{ChError, Result};
 
 /// The path prefix every Cloud Hypervisor API endpoint lives under.
@@ -124,6 +125,31 @@ impl ApiClient {
     /// the mechanism used to tear down a re-attached VM (section 11).
     pub async fn vmm_shutdown(&self) -> Result<()> {
         self.put_empty("/vmm.shutdown").await
+    }
+
+    /// Prepare this (empty) VMM to receive a live migration on `receiver_url`
+    /// (e.g. `unix:/path/to/socket`). Completes once the migration is received
+    /// (design document, section 28).
+    pub async fn receive_migration(&self, receiver_url: &str) -> Result<()> {
+        self.put_json(
+            "/vm.receive-migration",
+            &ReceiveMigrationData { receiver_url },
+        )
+        .await
+    }
+
+    /// Send this VM's live state to `destination_url`. `local` selects the
+    /// same-host fd-passing fast path; use `false` for a full memory copy over
+    /// the socket (works across VMMs and hosts).
+    pub async fn send_migration(&self, destination_url: &str, local: bool) -> Result<()> {
+        self.put_json(
+            "/vm.send-migration",
+            &SendMigrationData {
+                destination_url,
+                local,
+            },
+        )
+        .await
     }
 
     /// Poll `vmm.ping` until it succeeds or `timeout` elapses.

@@ -30,7 +30,33 @@ service HostAgent {
   // client message selects the VM by id; subsequent messages carry input
   // (keystrokes). Server messages stream serial output.
   rpc VmConsole(stream ConsoleClientMessage) returns (stream ConsoleServerMessage);
+
+  // Live migration (design document, section 28). The control plane
+  // orchestrates: PrepareReceive on the destination, SendMigration on the
+  // source, then FinalizeReceive (destination) + DiscardVm (source).
+  rpc PrepareReceive(PrepareReceiveRequest) returns (PrepareReceiveResponse);
+  rpc SendMigration(SendMigrationRequest) returns (OperationResponse);
+  rpc FinalizeReceive(FinalizeReceiveRequest) returns (EnsureVmResponse);
+  rpc DiscardVm(DiscardVmRequest) returns (OperationResponse);
 }
+
+message PrepareReceiveRequest {
+  string vm_id = 1;
+  string name = 2;
+  bytes spec_json = 3;
+}
+message PrepareReceiveResponse {
+  // The URL the source should send to (e.g. unix:/path or tcp:host:port).
+  string migration_url = 1;
+}
+
+message SendMigrationRequest {
+  string vm_id = 1;
+  string destination_url = 2;
+}
+
+message FinalizeReceiveRequest { string vm_id = 1; }
+message DiscardVmRequest { string vm_id = 1; }
 
 message ConsoleClientMessage {
   // Set on the first message only.

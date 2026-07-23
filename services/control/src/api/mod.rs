@@ -23,6 +23,7 @@ pub fn router(store: Store) -> Router {
         .route("/vms/:id", get(vms::get).delete(vms::delete))
         .route("/vms/:id/start", post(vms::start))
         .route("/vms/:id/stop", post(vms::stop))
+        .route("/vms/:id/migrate", post(vms::migrate))
         .route("/vms/:id/console", get(crate::console::console_ws))
         .route("/networks", get(networks::list).post(networks::create))
         .route("/networks/:id", get(networks::get).delete(networks::delete))

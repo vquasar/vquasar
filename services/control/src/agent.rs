@@ -6,7 +6,8 @@
 
 use ch_proto::agent::host_agent_client::HostAgentClient;
 use ch_proto::agent::{
-    DeleteVmRequest, EnsureVmRequest, GetHostInfoRequest, GetHostInfoResponse, NetworkBinding,
+    DeleteVmRequest, DiscardVmRequest, EnsureVmRequest, FinalizeReceiveRequest, GetHostInfoRequest,
+    GetHostInfoResponse, NetworkBinding, PrepareReceiveRequest, SendMigrationRequest,
     VmObservedState,
 };
 use tonic::transport::Channel;
@@ -78,6 +79,60 @@ impl Agent {
     pub async fn delete_vm(&self, vm_id: String) -> Result<(), AgentError> {
         let mut client = self.client().await?;
         client.delete_vm(DeleteVmRequest { vm_id }).await?;
+        Ok(())
+    }
+
+    // ---- live migration (section 28) ------------------------------------
+
+    /// Destination: launch a receiver and return the URL the source sends to.
+    pub async fn prepare_receive(
+        &self,
+        vm_id: String,
+        name: String,
+        spec_json: Vec<u8>,
+    ) -> Result<String, AgentError> {
+        let mut client = self.client().await?;
+        let resp = client
+            .prepare_receive(PrepareReceiveRequest {
+                vm_id,
+                name,
+                spec_json,
+            })
+            .await?
+            .into_inner();
+        Ok(resp.migration_url)
+    }
+
+    /// Source: send the VM's live state to `destination_url`.
+    pub async fn send_migration(
+        &self,
+        vm_id: String,
+        destination_url: String,
+    ) -> Result<(), AgentError> {
+        let mut client = self.client().await?;
+        client
+            .send_migration(SendMigrationRequest {
+                vm_id,
+                destination_url,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Destination: finalize a received migration.
+    pub async fn finalize_receive(&self, vm_id: String) -> Result<VmObservedState, AgentError> {
+        let mut client = self.client().await?;
+        let resp = client
+            .finalize_receive(FinalizeReceiveRequest { vm_id })
+            .await?
+            .into_inner();
+        Ok(resp.state.unwrap_or_default())
+    }
+
+    /// Source: discard a VM whose state has migrated away.
+    pub async fn discard_vm(&self, vm_id: String) -> Result<(), AgentError> {
+        let mut client = self.client().await?;
+        client.discard_vm(DiscardVmRequest { vm_id }).await?;
         Ok(())
     }
 }

@@ -15,9 +15,11 @@ use ch_model::{VirtualMachineSpec, VmId, VmPhase};
 use ch_proto::agent::host_agent_server::HostAgent;
 use ch_proto::agent::vm_observed_state::Phase;
 use ch_proto::agent::{
-    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, EnsureVmRequest, EnsureVmResponse,
-    GetHostInfoRequest, GetHostInfoResponse, GetVmRequest, GetVmResponse, ListVmsRequest,
-    ListVmsResponse, OperationResponse, StartVmRequest, StopVmRequest, VmObservedState,
+    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DiscardVmRequest, EnsureVmRequest,
+    EnsureVmResponse, FinalizeReceiveRequest, GetHostInfoRequest, GetHostInfoResponse,
+    GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse, OperationResponse,
+    PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest, StartVmRequest,
+    StopVmRequest, VmObservedState,
 };
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
@@ -152,6 +154,61 @@ impl HostAgent for AgentService {
         }))
     }
 
+    async fn prepare_receive(
+        &self,
+        request: Request<PrepareReceiveRequest>,
+    ) -> Result<Response<PrepareReceiveResponse>, Status> {
+        let req = request.into_inner();
+        let id = Self::parse_id(&req.vm_id)?;
+        let spec: VirtualMachineSpec = serde_json::from_slice(&req.spec_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid spec_json: {e}")))?;
+        let migration_url = self
+            .manager
+            .prepare_receive(id, req.name, spec)
+            .await
+            .map_err(to_status)?;
+        Ok(Response::new(PrepareReceiveResponse { migration_url }))
+    }
+
+    async fn send_migration(
+        &self,
+        request: Request<SendMigrationRequest>,
+    ) -> Result<Response<OperationResponse>, Status> {
+        let req = request.into_inner();
+        let id = Self::parse_id(&req.vm_id)?;
+        self.manager
+            .send_migration(id, &req.destination_url)
+            .await
+            .map_err(to_status)?;
+        Ok(Response::new(OperationResponse {
+            accepted: true,
+            message: "migration sent".to_string(),
+        }))
+    }
+
+    async fn finalize_receive(
+        &self,
+        request: Request<FinalizeReceiveRequest>,
+    ) -> Result<Response<EnsureVmResponse>, Status> {
+        let id = Self::parse_id(&request.into_inner().vm_id)?;
+        let obs = self.manager.finalize_receive(id).await.map_err(to_status)?;
+        Ok(Response::new(EnsureVmResponse {
+            state: Some(to_proto(obs)),
+        }))
+    }
+
+    async fn discard_vm(
+        &self,
+        request: Request<DiscardVmRequest>,
+    ) -> Result<Response<OperationResponse>, Status> {
+        let id = Self::parse_id(&request.into_inner().vm_id)?;
+        self.manager.discard(id).await.map_err(to_status)?;
+        Ok(Response::new(OperationResponse {
+            accepted: true,
+            message: "discarded".to_string(),
+        }))
+    }
+
     type VmConsoleStream = Pin<Box<dyn Stream<Item = Result<ConsoleServerMessage, Status>> + Send>>;
 
     async fn vm_console(
@@ -245,7 +302,12 @@ mod tests {
     fn service(dir: &std::path::Path) -> AgentService {
         let backend = Arc::new(FakeBackend::new());
         let network = Arc::new(crate::network::NoopNetworkBackend);
-        let manager = Arc::new(VmManager::new(backend, network, RuntimeLayout::new(dir)));
+        let manager = Arc::new(VmManager::new(
+            backend,
+            network,
+            RuntimeLayout::new(dir),
+            dir.join("migrations"),
+        ));
         AgentService::new(manager, "host-test".into(), Some("v53.0".into()))
     }
 

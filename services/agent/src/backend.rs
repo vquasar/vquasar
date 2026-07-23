@@ -33,6 +33,8 @@ pub trait ManagedVmm: Send + Sync {
     async fn boot(&self) -> Result<()>;
     async fn shutdown(&self) -> Result<()>;
     async fn info(&self) -> Result<HypervisorVmInfo>;
+    /// Send this running VM's live state to `destination_url` (section 28).
+    async fn send_migration(&self, destination_url: &str) -> Result<()>;
     /// Terminate the underlying VMM process (no-op when detached or fake).
     async fn terminate(&mut self) -> Result<()>;
     fn pid(&self) -> Option<u32>;
@@ -51,6 +53,9 @@ impl ManagedVmm for CloudHypervisor {
     }
     async fn info(&self) -> Result<HypervisorVmInfo> {
         Hypervisor::info(self).await
+    }
+    async fn send_migration(&self, destination_url: &str) -> Result<()> {
+        CloudHypervisor::send_migration(self, destination_url).await
     }
     async fn terminate(&mut self) -> Result<()> {
         CloudHypervisor::terminate(self).await
@@ -73,6 +78,9 @@ impl ManagedVmm for FakeHypervisor {
     }
     async fn info(&self) -> Result<HypervisorVmInfo> {
         Hypervisor::info(self).await
+    }
+    async fn send_migration(&self, _destination_url: &str) -> Result<()> {
+        Ok(())
     }
     async fn terminate(&mut self) -> Result<()> {
         Ok(())
@@ -107,12 +115,14 @@ pub trait Backend: Send + Sync {
 /// Production backend: launches real `cloud-hypervisor` processes.
 pub struct CloudHypervisorBackend {
     binary: PathBuf,
+    serial_file: bool,
 }
 
 impl CloudHypervisorBackend {
-    pub fn new(binary: impl Into<PathBuf>) -> Self {
+    pub fn new(binary: impl Into<PathBuf>, serial_mode: &str) -> Self {
         Self {
             binary: binary.into(),
+            serial_file: serial_mode == "file",
         }
     }
 
@@ -122,12 +132,15 @@ impl CloudHypervisorBackend {
         layout: &RuntimeLayout,
         taps: Vec<TapBinding>,
     ) -> TranslateOptions {
-        // Serial goes to a Unix socket so it can be driven interactively; the
-        // serial hub connects to it and tees output to serial.log (section 25).
-        TranslateOptions {
-            serial: SerialTarget::Socket(layout.serial_socket(id).to_string_lossy().into_owned()),
-            taps,
-        }
+        // Serial to a Unix socket lets the console drive it interactively; the
+        // serial hub connects and tees output to serial.log (section 25). File
+        // mode avoids the socket-path conflict for co-located migration tests.
+        let serial = if self.serial_file {
+            SerialTarget::File(layout.serial_log(id).to_string_lossy().into_owned())
+        } else {
+            SerialTarget::Socket(layout.serial_socket(id).to_string_lossy().into_owned())
+        };
+        TranslateOptions { serial, taps }
     }
 }
 

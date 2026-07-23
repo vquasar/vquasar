@@ -20,7 +20,25 @@ pub struct AgentConfig {
     #[serde(default)]
     pub storage: StorageSection,
     #[serde(default)]
+    pub migration: MigrationSection,
+    #[serde(default)]
     pub logging: LoggingSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationSection {
+    /// Directory for live-migration sockets. On a real multi-host cluster this
+    /// is a per-host path; the source reaches the destination over the network
+    /// (design section 28).
+    pub socket_dir: PathBuf,
+}
+
+impl Default for MigrationSection {
+    fn default() -> Self {
+        Self {
+            socket_dir: PathBuf::from("/var/lib/ch-orchestrator/migrations"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +79,15 @@ pub struct HypervisorSection {
     pub binary: PathBuf,
     /// Root directory for per-VM runtime state (section 9).
     pub runtime_dir: PathBuf,
+    /// Serial console target: `socket` (interactive console, section 25) or
+    /// `file` (log only). On a single-host lab, `file` avoids the socket-path
+    /// conflict when live-migrating between two co-located agents (section 28).
+    #[serde(default = "default_serial_mode")]
+    pub serial_mode: String,
+}
+
+fn default_serial_mode() -> String {
+    "socket".to_string()
 }
 
 impl Default for HypervisorSection {
@@ -68,6 +95,7 @@ impl Default for HypervisorSection {
         Self {
             binary: PathBuf::from("/usr/bin/cloud-hypervisor"),
             runtime_dir: PathBuf::from("/run/ch-orchestrator"),
+            serial_mode: default_serial_mode(),
         }
     }
 }

@@ -27,6 +27,9 @@ pub async fn run(store: Store, interval: Duration) {
         if let Err(e) = reconcile_hosts(&store).await {
             warn!(error = %e, "host reconcile pass failed");
         }
+        if let Err(e) = reconcile_migrations(&store).await {
+            warn!(error = %e, "migration reconcile pass failed");
+        }
         if let Err(e) = reconcile_vms(&store).await {
             warn!(error = %e, "vm reconcile pass failed");
         }
@@ -81,6 +84,10 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
 /// Reconcile every VM whose observed state trails its desired state.
 pub async fn reconcile_vms(store: &Store) -> anyhow::Result<()> {
     for vm in store.list_vms_to_reconcile().await? {
+        // Migrating VMs are driven by the migration controller, not here.
+        if vm.phase == "Migrating" {
+            continue;
+        }
         let result = if vm.phase == "Deleting" {
             reconcile_delete(store, &vm).await
         } else {
@@ -88,6 +95,122 @@ pub async fn reconcile_vms(store: &Store) -> anyhow::Result<()> {
         };
         if let Err(e) = result {
             warn!(vm = %vm.id, error = %e, "vm reconcile failed; will retry");
+        }
+    }
+    Ok(())
+}
+
+/// Advance each in-flight live migration by one step (design section 28). The
+/// migration is a persisted state machine, so it resumes after a control-plane
+/// restart. One step runs per tick; failures move it to `Failed` and leave the
+/// VM on its source host.
+pub async fn reconcile_migrations(store: &Store) -> anyhow::Result<()> {
+    for m in store.list_active_migrations().await? {
+        if let Err(e) = advance_migration(store, &m).await {
+            warn!(migration = %m.id, vm = %m.vm_id, error = %e, "migration failed");
+            store
+                .update_migration(m.id, "Failed", None, Some(&e.to_string()))
+                .await?;
+            // The VM never left its source host; return it to Running.
+            store.set_vm_phase(m.vm_id, "Running").await?;
+            if let Some(task_id) = m.task_id {
+                store
+                    .update_task(task_id, "Failed", 100, Some(&e.to_string()))
+                    .await?;
+            }
+            store
+                .insert_event(
+                    "vm",
+                    Some(m.vm_id),
+                    "migration.failed",
+                    "warning",
+                    &e.to_string(),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn advance_migration(store: &Store, m: &crate::store::Migration) -> anyhow::Result<()> {
+    let vm = store
+        .get_vm(m.vm_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("vm gone"))?;
+    let target = store
+        .get_host(m.target_host_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("target host gone"))?;
+
+    match m.state.as_str() {
+        "Pending" => {
+            // Destination: launch a receiver and learn the migration URL.
+            let agent = Agent::new(target.endpoint.clone());
+            let spec_json = serde_json::to_vec(&*vm.spec)?;
+            let url = agent
+                .prepare_receive(vm.id.to_string(), vm.name.clone(), spec_json)
+                .await?;
+            store
+                .update_migration(m.id, "Sending", Some(&url), None)
+                .await?;
+            store
+                .insert_event("vm", Some(vm.id), "migration.started", "info", &vm.name)
+                .await?;
+        }
+        "Sending" => {
+            // Source: send the live state to the destination.
+            let source_id = m
+                .source_host_id
+                .ok_or_else(|| anyhow::anyhow!("migration has no source host"))?;
+            let source = store
+                .get_host(source_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("source host gone"))?;
+            let url = m
+                .migration_url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("no migration url"))?;
+            Agent::new(source.endpoint)
+                .send_migration(vm.id.to_string(), url)
+                .await?;
+            store
+                .update_migration(m.id, "Finalizing", None, None)
+                .await?;
+        }
+        "Finalizing" => {
+            // Destination: adopt the running VM. Source: discard the husk.
+            Agent::new(target.endpoint.clone())
+                .finalize_receive(vm.id.to_string())
+                .await?;
+            if let Some(source_id) = m.source_host_id {
+                if let Some(source) = store.get_host(source_id).await? {
+                    if let Err(e) = Agent::new(source.endpoint)
+                        .discard_vm(vm.id.to_string())
+                        .await
+                    {
+                        warn!(vm = %vm.id, error = %e, "source discard failed (continuing)");
+                    }
+                }
+            }
+            store.set_vm_host_running(vm.id, m.target_host_id).await?;
+            store
+                .update_migration(m.id, "Completed", None, None)
+                .await?;
+            if let Some(task_id) = m.task_id {
+                store.update_task(task_id, "Succeeded", 100, None).await?;
+            }
+            store
+                .insert_event(
+                    "vm",
+                    Some(vm.id),
+                    "migration.completed",
+                    "info",
+                    &target.name,
+                )
+                .await?;
+        }
+        other => {
+            debug!(migration = %m.id, state = other, "unexpected migration state");
         }
     }
     Ok(())

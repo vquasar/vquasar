@@ -101,6 +101,15 @@ export function useVmAction() {
   });
 }
 
+export function useMigrateVm() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, targetHostId }: { id: string; targetHostId: string }) =>
+      api.post<Accepted>(`/vms/${id}/migrate`, { target_host_id: targetHostId }),
+    onSuccess: invalidate,
+  });
+}
+
 export function useRegisterHost() {
   const qc = useQueryClient();
   return useMutation({

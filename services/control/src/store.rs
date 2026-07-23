@@ -73,6 +73,21 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A live-migration record.
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Migration {
+    pub id: Uuid,
+    pub vm_id: Uuid,
+    pub source_host_id: Option<Uuid>,
+    pub target_host_id: Uuid,
+    pub state: String,
+    pub migration_url: Option<String>,
+    pub task_id: Option<Uuid>,
+    pub message: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// An event row.
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct Event {
@@ -404,6 +419,89 @@ impl Store {
         .bind(vm_id)
         .fetch_optional(&self.pool)
         .await
+    }
+
+    // ---- migrations ------------------------------------------------------
+
+    pub async fn insert_migration(
+        &self,
+        vm_id: Uuid,
+        source_host_id: Option<Uuid>,
+        target_host_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Migration> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Migration>(
+            "INSERT INTO migrations (id, vm_id, source_host_id, target_host_id, task_id, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $6)
+             RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(vm_id)
+        .bind(source_host_id)
+        .bind(target_host_id)
+        .bind(task_id)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Migrations still in flight (not Completed or Failed).
+    pub async fn list_active_migrations(&self) -> Result<Vec<Migration>> {
+        sqlx::query_as::<_, Migration>(
+            "SELECT * FROM migrations WHERE state NOT IN ('Completed', 'Failed') ORDER BY created_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn active_migration_for_vm(&self, vm_id: Uuid) -> Result<Option<Migration>> {
+        sqlx::query_as::<_, Migration>(
+            "SELECT * FROM migrations
+             WHERE vm_id = $1 AND state NOT IN ('Completed', 'Failed')
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(vm_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn update_migration(
+        &self,
+        id: Uuid,
+        state: &str,
+        migration_url: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE migrations
+             SET state=$2,
+                 migration_url=COALESCE($3, migration_url),
+                 message=$4,
+                 updated_at=$5
+             WHERE id=$1",
+        )
+        .bind(id)
+        .bind(state)
+        .bind(migration_url)
+        .bind(message)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// Move a VM to a new host (after a successful migration).
+    pub async fn set_vm_host_running(&self, id: Uuid, host_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE virtual_machines SET host_id=$2, phase='Running', updated_at=$3 WHERE id=$1",
+        )
+        .bind(id)
+        .bind(host_id)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
     }
 
     // ---- events ----------------------------------------------------------

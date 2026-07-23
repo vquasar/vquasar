@@ -1,20 +1,28 @@
+import { useState } from "react";
 import { Link as RouterLink, useNavigate, useParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
 import Grid from "@mui/material/Grid2";
+import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableRow from "@mui/material/TableRow";
+import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import DeleteIcon from "@mui/icons-material/Delete";
 import TerminalIcon from "@mui/icons-material/Terminal";
-import { useVm, useVmAction } from "../api/hooks";
+import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
+import { useHosts, useMigrateVm, useVm, useVmAction } from "../api/hooks";
 import { StatusChip } from "../components/StatusChip";
 import { formatDate, formatMib, shortId } from "../format";
 
@@ -32,6 +40,10 @@ export function VmDetail() {
   const navigate = useNavigate();
   const vm = useVm(id);
   const action = useVmAction();
+  const hosts = useHosts();
+  const migrate = useMigrateVm();
+  const [migrateOpen, setMigrateOpen] = useState(false);
+  const [target, setTarget] = useState("");
 
   if (vm.isLoading) return <Typography>Loading…</Typography>;
   if (vm.isError) return <Alert severity="error">{(vm.error as Error).message}</Alert>;
@@ -74,6 +86,13 @@ export function VmDetail() {
             Stop
           </Button>
           <Button
+            startIcon={<SwapHorizIcon />}
+            onClick={() => setMigrateOpen(true)}
+            disabled={v.phase !== "Running"}
+          >
+            Migrate
+          </Button>
+          <Button
             color="error"
             startIcon={<DeleteIcon />}
             onClick={() => id && action.mutate({ id, action: "delete" }, { onSuccess: () => navigate("/vms") })}
@@ -84,6 +103,45 @@ export function VmDetail() {
       </Stack>
 
       {action.isError && <Alert severity="error">{(action.error as Error).message}</Alert>}
+      {migrate.isError && <Alert severity="error">{(migrate.error as Error).message}</Alert>}
+
+      <Dialog open={migrateOpen} onClose={() => setMigrateOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Migrate “{v.name}”</DialogTitle>
+        <DialogContent>
+          <TextField
+            select
+            label="Target host"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            fullWidth
+            sx={{ mt: 1 }}
+          >
+            {(hosts.data ?? [])
+              .filter((h) => h.state === "Ready" && h.schedulable && h.id !== v.host_id)
+              .map((h) => (
+                <MenuItem key={h.id} value={h.id}>
+                  {h.name}
+                </MenuItem>
+              ))}
+          </TextField>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMigrateOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!target || migrate.isPending}
+            onClick={() =>
+              id &&
+              migrate.mutate(
+                { id, targetHostId: target },
+                { onSuccess: () => setMigrateOpen(false) },
+              )
+            }
+          >
+            Migrate
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, md: 6 }}>

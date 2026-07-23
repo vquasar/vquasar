@@ -135,6 +135,19 @@ impl From<VmInfo> for HypervisorVmInfo {
     }
 }
 
+/// Body of `PUT /api/v1/vm.receive-migration`.
+#[derive(Debug, Serialize)]
+pub struct ReceiveMigrationData<'a> {
+    pub receiver_url: &'a str,
+}
+
+/// Body of `PUT /api/v1/vm.send-migration`.
+#[derive(Debug, Serialize)]
+pub struct SendMigrationData<'a> {
+    pub destination_url: &'a str,
+    pub local: bool,
+}
+
 /// A host TAP device bound to a VM NIC, resolved by the network backend before
 /// VM creation.
 #[derive(Debug, Clone, Default)]

@@ -97,6 +97,63 @@ pub async fn stop(
     set_power(&store, id, DesiredPowerState::Stopped, "vm.stop").await
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MigrateRequest {
+    pub target_host_id: Uuid,
+}
+
+/// Request a live migration of a running VM to another host (section 28). The
+/// migration controller drives it asynchronously.
+pub async fn migrate(
+    State(store): State<Store>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<MigrateRequest>,
+) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    let vm = store
+        .get_vm(id)
+        .await?
+        .ok_or_else(|| ApiError::vm_not_found(id))?;
+
+    if vm.phase != "Running" {
+        return Err(ApiError::invalid("only a running VM can be migrated"));
+    }
+    let source_host_id = vm
+        .host_id
+        .ok_or_else(|| ApiError::invalid("VM is not placed on a host"))?;
+    if source_host_id == body.target_host_id {
+        return Err(ApiError::invalid("target host is the VM's current host"));
+    }
+    let target = store
+        .get_host(body.target_host_id)
+        .await?
+        .ok_or_else(|| ApiError::host_not_found(body.target_host_id))?;
+    if target.state != "Ready" || !target.schedulable {
+        return Err(ApiError::invalid("target host is not Ready/schedulable"));
+    }
+    if store.active_migration_for_vm(id).await?.is_some() {
+        return Err(ApiError::invalid(
+            "a migration is already in progress for this VM",
+        ));
+    }
+
+    let task = store.insert_task("vm.migrate", Some(id)).await?;
+    store
+        .insert_migration(id, Some(source_host_id), body.target_host_id, task.id)
+        .await?;
+    store.set_vm_phase(id, "Migrating").await?;
+    store
+        .insert_event("vm", Some(id), "migration.requested", "info", &vm.name)
+        .await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Accepted {
+            vm_id: id,
+            task_id: task.id,
+        }),
+    ))
+}
+
 /// Update a VM's desired power state and queue a task; reconciliation applies it.
 async fn set_power(
     store: &Store,

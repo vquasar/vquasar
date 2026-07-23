@@ -7,12 +7,14 @@
 //! second VM (section 22).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use ch_client::{HypervisorState, TapBinding};
+use ch_client::{ApiClient, ChError, HypervisorState, TapBinding};
 use ch_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::backend::{Backend, ManagedVmm};
@@ -57,12 +59,22 @@ struct ManagedVm {
     console: SerialHub,
 }
 
+/// A VMM launched to receive a migration, awaiting completion.
+struct PendingReceive {
+    record: VmRecord,
+    vmm: Box<dyn ManagedVmm>,
+    recv: JoinHandle<ch_client::Result<()>>,
+}
+
 /// The agent's VM manager.
 pub struct VmManager {
     backend: Arc<dyn Backend>,
     network: Arc<dyn NetworkBackend>,
     layout: RuntimeLayout,
+    /// Shared directory for live-migration sockets (section 28).
+    migration_dir: PathBuf,
     vms: Mutex<HashMap<VmId, ManagedVm>>,
+    pending: Mutex<HashMap<VmId, PendingReceive>>,
 }
 
 impl VmManager {
@@ -70,12 +82,15 @@ impl VmManager {
         backend: Arc<dyn Backend>,
         network: Arc<dyn NetworkBackend>,
         layout: RuntimeLayout,
+        migration_dir: PathBuf,
     ) -> Self {
         Self {
             backend,
             network,
             layout,
+            migration_dir,
             vms: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -190,6 +205,93 @@ impl VmManager {
         Some((managed.console.subscribe(), managed.console.input_sender()))
     }
 
+    // ---- live migration (section 28) ------------------------------------
+
+    /// Destination: launch an empty VMM and start receiving a migration for
+    /// `id`. Returns the migration URL the source should send to.
+    pub async fn prepare_receive(
+        &self,
+        id: VmId,
+        name: String,
+        spec: VirtualMachineSpec,
+    ) -> Result<String> {
+        let record = VmRecord {
+            id,
+            name,
+            spec: spec.clone(),
+        };
+        self.layout.store_record(&record).await?;
+        let vmm = self.backend.launch(id, &spec, vec![], &self.layout).await?;
+
+        tokio::fs::create_dir_all(&self.migration_dir)
+            .await
+            .map_err(ManagerError::Io)?;
+        let socket = self.migration_dir.join(format!("{id}.sock"));
+        let _ = tokio::fs::remove_file(&socket).await;
+        let url = format!("unix:{}", socket.display());
+
+        // The receive call blocks until the source connects and finishes, so
+        // run it in the background and await it in `finalize_receive`.
+        let api_socket = self.layout.api_socket(id);
+        let recv_url = url.clone();
+        let recv = tokio::spawn(async move {
+            let client = ApiClient::new(api_socket);
+            client.receive_migration(&recv_url).await
+        });
+
+        self.pending
+            .lock()
+            .await
+            .insert(id, PendingReceive { record, vmm, recv });
+        Ok(url)
+    }
+
+    /// Destination: complete a received migration and register the now-running
+    /// VM as a normal managed VM.
+    pub async fn finalize_receive(&self, id: VmId) -> Result<ObservedVm> {
+        let pending = self
+            .pending
+            .lock()
+            .await
+            .remove(&id)
+            .ok_or(ManagerError::NotFound(id))?;
+        // Wait for the background receive to finish (the source has sent).
+        match pending.recv.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(ManagerError::Hypervisor(e)),
+            Err(join) => {
+                return Err(ManagerError::Hypervisor(ChError::Transport(
+                    join.to_string(),
+                )))
+            }
+        }
+        let console = SerialHub::start(self.layout.serial_socket(id), self.layout.serial_log(id));
+        let mut vms = self.vms.lock().await;
+        vms.insert(
+            id,
+            ManagedVm {
+                record: pending.record,
+                vmm: pending.vmm,
+                console,
+            },
+        );
+        Ok(observe(vms.get(&id).expect("just inserted")).await)
+    }
+
+    /// Source: send a running VM's live state to `destination_url`.
+    pub async fn send_migration(&self, id: VmId, destination_url: &str) -> Result<()> {
+        let vms = self.vms.lock().await;
+        let managed = vms.get(&id).ok_or(ManagerError::NotFound(id))?;
+        managed.vmm.send_migration(destination_url).await?;
+        Ok(())
+    }
+
+    /// Source: discard a VM whose state has migrated away (tear down the VMM
+    /// and release host resources, same as delete).
+    pub async fn discard(&self, id: VmId) -> Result<()> {
+        self.delete(id).await
+    }
+
     /// Observed state of all managed VMs.
     pub async fn list(&self) -> Vec<ObservedVm> {
         let vms = self.vms.lock().await;
@@ -290,7 +392,11 @@ mod tests {
         let backend = Arc::new(FakeBackend::new());
         let network = Arc::new(crate::network::NoopNetworkBackend);
         let layout = RuntimeLayout::new(dir);
-        (VmManager::new(backend.clone(), network, layout), backend)
+        let migration_dir = dir.join("migrations");
+        (
+            VmManager::new(backend.clone(), network, layout, migration_dir),
+            backend,
+        )
     }
 
     #[tokio::test]
@@ -382,7 +488,12 @@ mod tests {
             .unwrap();
         seeded.boot().await.unwrap();
         let network = Arc::new(crate::network::NoopNetworkBackend);
-        let mgr = VmManager::new(backend, network, RuntimeLayout::new(dir.path()));
+        let mgr = VmManager::new(
+            backend,
+            network,
+            RuntimeLayout::new(dir.path()),
+            dir.path().join("migrations"),
+        );
         mgr.recover().await;
         let obs = mgr.get(id).await.unwrap();
         assert_eq!(obs.name, "survivor");

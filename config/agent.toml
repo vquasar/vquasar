@@ -9,6 +9,12 @@ control_plane = "http://10.0.0.10:9443"
 [hypervisor]
 binary = "/usr/bin/cloud-hypervisor"
 runtime_dir = "/run/ch-orchestrator"
+# Serial console target: "socket" (interactive console) or "file" (log only).
+serial_mode = "socket"
+
+[migration]
+# Directory for live-migration sockets (design section 28).
+socket_dir = "/var/lib/ch-orchestrator/migrations"
 
 [network]
 backend = "ovs"

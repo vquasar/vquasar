@@ -106,6 +106,24 @@ impl CloudHypervisor {
         Ok(())
     }
 
+    /// Prepare this (freshly launched, empty) VMM to receive a live migration.
+    /// Completes when the migration has been received (section 28).
+    pub async fn receive_migration(&self, receiver_url: &str) -> Result<()> {
+        self.api.receive_migration(receiver_url).await
+    }
+
+    /// Send this running VM's live state to `destination_url` (full memory copy
+    /// over the socket, so it works across VMMs and hosts).
+    pub async fn send_migration(&self, destination_url: &str) -> Result<()> {
+        self.api.send_migration(destination_url, false).await
+    }
+
+    /// The API client for this VMM (used to drive migration on a handle whose
+    /// process is owned elsewhere).
+    pub fn api_client(&self) -> &ApiClient {
+        &self.api
+    }
+
     /// Fetch raw CH VM info, or `None` when no VM exists / the VMM is
     /// unreachable. Used for idempotency checks.
     async fn current_state(&self) -> Option<VmState> {

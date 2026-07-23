@@ -5,15 +5,7 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 7 (multi-host scheduling) — verified.** Milestones 0–6
-> (workspace, domain model, `ch-client`, a restart-surviving `ch-agent`, the
-> `ch-control` plane over PostgreSQL, OVS networking, a React + MUI web UI, and
-> an interactive serial console) are done and verified on real hardware. The
-> scheduler now tracks committed CPU/memory per host and spreads VMs by
-> remaining logical capacity. Verified with two agents (host-01/host-02): six
-> VMs created through the API spread evenly, three to each host. Shared-storage
-> live migration (Milestone 8) is the remaining milestone — see
-> [`DESIGN.md`](DESIGN.md) section 42.
+> **Status: Milestone 8 (shared-storage live migration) — verified. All 8 design milestones complete.** On top of Milestones 0–7, a running VM can now live-migrate between hosts. Migration is a persisted state machine (Pending → Sending → Finalizing → Completed) that orchestrates the source and destination agents, which drive Cloud Hypervisor's send/receive-migration API. Verified on real hardware: `POST /api/v1/vms/{id}/migrate` moved a running guest host-02 → host-01 while an in-memory counter continued uninterrupted (a live migration, not a recreation). See [`DESIGN.md`](DESIGN.md) section 42.
 
 ## Architecture at a glance
 
@@ -257,6 +249,33 @@ CH_CONTROL_SERVER__UI_DIR=$(pwd)/dist cargo run -p ch-control   # UI at http://1
 > enterprise-grade DataGrid out of the box, while staying lighter and closer to
 > the design than Angular Material (which was also considered). This is a
 > deliberate, recorded deviation, not a change to any ADR.
+
+## Live migration (Milestone 8)
+
+A running VM can be migrated to another host with `POST /api/v1/vms/{id}/migrate`
+(`{ "target_host_id": "..." }`), or from a VM's detail page in the UI. Shared
+storage is assumed — the same disk path is reachable on both hosts (design
+section 28).
+
+Migration is a **persisted state machine** in the `migrations` table, advanced
+one step per reconcile tick so it survives a control-plane restart rather than
+living in a single RPC:
+
+* **Pending** → the destination agent launches an empty VMM and starts a
+  receiver (`vm.receive-migration`), returning the migration URL.
+* **Sending** → the source agent streams the live VM state
+  (`vm.send-migration`).
+* **Finalizing** → the destination adopts the now-running VM; the source discards
+  the husk; the VM's `host_id` moves to the target.
+* **Completed** / **Failed** (on failure the VM stays on its source host).
+
+Verified on real hardware: a running guest migrated between two agents while an
+in-memory counter continued uninterrupted — a live migration, not a recreation.
+
+> Note for a single-host lab: two co-located agents share a filesystem, so the
+> destination's serial path (carried in the migrated config) collides with the
+> source's. Run the agents with `serial_mode = "file"` there. Separate hosts use
+> identical path strings on distinct filesystems and need no such workaround.
 
 ## Design & invariants
 
