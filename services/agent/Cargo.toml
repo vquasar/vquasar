@@ -1,0 +1,28 @@
+[package]
+name = "ch-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "ch-orchestrator host agent (local authority for one virtualization host)."
+
+[[bin]]
+name = "ch-agent"
+path = "src/main.rs"
+
+[dependencies]
+ch-common.workspace = true
+ch-model.workspace = true
+ch-client.workspace = true
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+clap.workspace = true
+figment.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }

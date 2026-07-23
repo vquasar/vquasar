@@ -1,0 +1,22 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Runtime state (should never be committed)
+/run
+*.sock
+*.pid
+
+# Local dev config overrides
+config/local.toml
+.env
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# UI (added in Milestone 5)
+/ui/node_modules
+/ui/dist

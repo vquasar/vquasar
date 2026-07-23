@@ -1,0 +1,27 @@
+[package]
+name = "ch-control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "ch-orchestrator control plane (public API, scheduling, desired state)."
+
+[[bin]]
+name = "ch-control"
+path = "src/main.rs"
+
+[dependencies]
+ch-common.workspace = true
+ch-model.workspace = true
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+clap.workspace = true
+figment.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }

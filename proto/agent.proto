@@ -1,0 +1,89 @@
+// ch-orchestrator host-agent gRPC protocol (design document, section 12).
+//
+// NOTE: This schema is a forward-looking artifact for Milestone 2. It is not
+// yet wired into the Cargo build (tonic/prost are not workspace dependencies in
+// Milestone 0). It documents the initial control-plane <-> agent contract so
+// the interface can be reviewed before implementation. This API must never be
+// exposed publicly (section 12); the public surface is the REST API in
+// ch-control.
+
+syntax = "proto3";
+
+package ch.agent.v1;
+
+// The host agent runs once per virtualization host and is the local authority
+// for that host.
+service HostAgent {
+  rpc GetHostInfo(GetHostInfoRequest) returns (GetHostInfoResponse);
+
+  rpc GetVm(GetVmRequest) returns (GetVmResponse);
+  rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
+
+  // Reconcile a VM towards the desired spec (idempotent, section 22).
+  rpc EnsureVm(EnsureVmRequest) returns (EnsureVmResponse);
+
+  rpc StartVm(StartVmRequest) returns (OperationResponse);
+  rpc StopVm(StopVmRequest) returns (OperationResponse);
+  rpc DeleteVm(DeleteVmRequest) returns (OperationResponse);
+}
+
+// ---- Host ----------------------------------------------------------------
+
+message GetHostInfoRequest {}
+
+message GetHostInfoResponse {
+  string host_id = 1;
+  string hostname = 2;
+  string architecture = 3;
+  string kernel_version = 4;
+  string cloud_hypervisor_version = 5;
+  uint32 logical_cpus = 6;
+  string cpu_model = 7;
+  uint64 total_memory_bytes = 8;
+  uint64 available_memory_bytes = 9;
+  uint32 vm_count = 10;
+}
+
+// ---- VM lifecycle --------------------------------------------------------
+
+// VM identity is always the authoritative UUID (section 23).
+message GetVmRequest { string vm_id = 1; }
+message GetVmResponse { VmObservedState state = 1; }
+
+message ListVmsRequest {}
+message ListVmsResponse { repeated VmObservedState vms = 1; }
+
+message EnsureVmRequest {
+  string vm_id = 1;
+  // Opaque, control-plane-owned desired spec (JSON-encoded orchestration model,
+  // translated to Cloud Hypervisor config by the agent — ADR-013).
+  bytes spec_json = 2;
+}
+message EnsureVmResponse { VmObservedState state = 1; }
+
+message StartVmRequest { string vm_id = 1; }
+message StopVmRequest { string vm_id = 1; }
+message DeleteVmRequest { string vm_id = 1; }
+
+message OperationResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message VmObservedState {
+  string vm_id = 1;
+  Phase phase = 2;
+  string message = 3;
+
+  enum Phase {
+    PHASE_UNSPECIFIED = 0;
+    PENDING = 1;
+    CREATING = 2;
+    STOPPED = 3;
+    STARTING = 4;
+    RUNNING = 5;
+    STOPPING = 6;
+    FAILED = 7;
+    DELETING = 8;
+  }
+}

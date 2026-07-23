@@ -1,0 +1,115 @@
+//! Control-plane configuration (design document, section 36).
+
+use std::path::Path;
+
+use figment::providers::{Env, Format, Serialized, Toml};
+use figment::Figment;
+use serde::{Deserialize, Serialize};
+
+/// Top-level control-plane configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ControlConfig {
+    #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub database: DatabaseConfig,
+    #[serde(default)]
+    pub grpc: GrpcConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Public REST API listen address.
+    pub listen: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen: "0.0.0.0:8080".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    /// PostgreSQL connection URL (unused until Milestone 3).
+    pub url: String,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: "postgres://localhost/ch_orchestrator".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrpcConfig {
+    /// Listen address for the agent-facing gRPC endpoint (Milestone 3).
+    pub listen: String,
+}
+
+impl Default for GrpcConfig {
+    fn default() -> Self {
+        Self {
+            listen: "0.0.0.0:9443".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+        }
+    }
+}
+
+impl ControlConfig {
+    /// Load configuration from an optional TOML file, then apply environment
+    /// overrides prefixed with `CH_CONTROL_` (e.g. `CH_CONTROL_SERVER__LISTEN`).
+    pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
+        // Seed with the full default config so partial file/env overrides (a
+        // single leaf key) merge cleanly instead of failing on missing fields.
+        let mut figment = Figment::from(Serialized::defaults(ControlConfig::default()));
+        if let Some(path) = path {
+            figment = figment.merge(Toml::file(path));
+        }
+        let config = figment
+            .merge(Env::prefixed("CH_CONTROL_").split("__"))
+            .extract()?;
+        Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_sane() {
+        let cfg = ControlConfig::default();
+        assert_eq!(cfg.server.listen, "0.0.0.0:8080");
+        assert_eq!(cfg.grpc.listen, "0.0.0.0:9443");
+        assert_eq!(cfg.logging.level, "info");
+    }
+
+    #[test]
+    fn env_overrides_apply() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("CH_CONTROL_SERVER__LISTEN", "127.0.0.1:9000");
+            let cfg = ControlConfig::load(None).unwrap();
+            assert_eq!(cfg.server.listen, "127.0.0.1:9000");
+            Ok(())
+        });
+    }
+}

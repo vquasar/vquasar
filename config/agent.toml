@@ -1,0 +1,22 @@
+# Example ch-agent configuration.
+# Override any value with an environment variable, e.g.
+#   CH_AGENT_AGENT__NAME=host-02
+
+[agent]
+name = "host-01"
+control_plane = "http://10.0.0.10:9443"
+
+[hypervisor]
+binary = "/usr/bin/cloud-hypervisor"
+runtime_dir = "/run/ch-orchestrator"
+
+[network]
+backend = "ovs"
+bridge = "br-int"
+
+[storage]
+backend = "local"
+path = "/var/lib/ch-orchestrator"
+
+[logging]
+level = "info"

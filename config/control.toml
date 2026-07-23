@@ -1,0 +1,15 @@
+# Example ch-control configuration.
+# Override any value with an environment variable, e.g.
+#   CH_CONTROL_SERVER__LISTEN=127.0.0.1:9000
+
+[server]
+listen = "0.0.0.0:8080"
+
+[database]
+url = "postgres://ch:ch@localhost/ch_orchestrator"
+
+[grpc]
+listen = "0.0.0.0:9443"
+
+[logging]
+level = "info"
