@@ -15,6 +15,7 @@ mod store;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use axum::response::IntoResponse;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use tracing::info;
@@ -57,8 +58,33 @@ async fn main() -> anyhow::Result<()> {
         "reconcile loop started"
     );
 
-    // Public REST API.
-    let app = api::router(store);
+    // Public REST API, optionally serving the built web UI. Static assets are
+    // served from `/assets`; every other non-API path falls back to
+    // `index.html` (200) so the single-page router handles deep links.
+    let mut app = api::router(store);
+    if let Some(ui_dir) = &config.server.ui_dir {
+        let dir = std::path::PathBuf::from(ui_dir);
+        let index = dir.join("index.html");
+        app = app
+            .nest_service(
+                "/assets",
+                tower_http::services::ServeDir::new(dir.join("assets")),
+            )
+            .fallback(move || {
+                let index = index.clone();
+                async move {
+                    match tokio::fs::read_to_string(&index).await {
+                        Ok(html) => axum::response::Html(html).into_response(),
+                        Err(e) => (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("web UI not found: {e}"),
+                        )
+                            .into_response(),
+                    }
+                }
+            });
+        info!(ui_dir = %ui_dir, "serving web UI");
+    }
     let listener = tokio::net::TcpListener::bind(&config.server.listen).await?;
     info!(api = %config.server.listen, "serving REST API at /api/v1");
     axum::serve(listener, app)

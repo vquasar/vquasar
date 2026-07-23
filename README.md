@@ -5,16 +5,16 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 4 (Open vSwitch networking) — verified.** Milestones 0–3
-> (workspace, domain model, a `ch-client` that boots the latest Ubuntu cloud
-> image on Cloud Hypervisor v53, a restart-surviving `ch-agent`, and a
-> `ch-control` REST/scheduler/reconcile plane over PostgreSQL) are in place. VMs
-> now get real networking: the control plane models virtual networks and
-> allocates MACs, and the agent creates a TAP per NIC and attaches it to the
-> Open vSwitch integration bridge (`br-int`). Verified end-to-end: two VMs
-> created via `POST /api/v1/vms` on the same provider network **ping each other
-> over OVS**, and deleting them removes the TAPs/ports. The UI lands next — see
-> [`DESIGN.md`](DESIGN.md) section 42.
+> **Status: Milestone 5 (Web UI) — in place.** Milestones 0–4 (workspace,
+> domain model, `ch-client` booting the latest Ubuntu cloud image on Cloud
+> Hypervisor v53, a restart-surviving `ch-agent`, a `ch-control`
+> REST/scheduler/reconcile plane over PostgreSQL, and OVS networking) are done
+> and verified on real hardware. A React + TypeScript + MUI web UI now covers
+> the full lifecycle — dashboard, hosts, VMs (list/create/detail with
+> start/stop/delete), networks, tasks, and events — talking only to the public
+> REST API. `ch-control` optionally serves the built bundle. Serial console
+> (Milestone 6) and live migration are next — see [`DESIGN.md`](DESIGN.md)
+> section 42.
 
 ## Architecture at a glance
 
@@ -231,6 +231,30 @@ The agent's [`OvsNetworkBackend`](services/agent/src/network.rs) creates
 when set); Cloud Hypervisor then drives that TAP. On delete, the TAP and OVS
 port are removed. TAP names are derived from the VM id, so teardown works even
 for a VM re-attached after an agent restart, with no persisted per-NIC state.
+
+## Web UI (Milestone 5)
+
+A single-page app in [`ui/`](ui/) — React 18 + TypeScript + Vite + MUI (Material
+UI), with MUI DataGrid for the resource tables and React Query for polling-based
+live state (design section 33). It is strictly API-only (ADR-015): every page
+talks to `/api/v1`. Pages: Dashboard, Hosts (+ register), Virtual Machines
+(list / create form / detail, with start/stop/delete), Networks (+ create),
+Tasks (with progress), and Events.
+
+```bash
+cd ui
+npm install
+npm run dev        # http://localhost:5173, proxies /api -> http://127.0.0.1:8080
+# or build a static bundle and let the control plane serve it:
+npm run build      # -> ui/dist
+CH_CONTROL_SERVER__UI_DIR=$(pwd)/dist cargo run -p ch-control   # UI at http://127.0.0.1:8080
+```
+
+> **UI framework note.** The design (§34) suggested plain React/Vite. We build
+> on **React + MUI** instead: the same Material design language and an
+> enterprise-grade DataGrid out of the box, while staying lighter and closer to
+> the design than Angular Material (which was also considered). This is a
+> deliberate, recorded deviation, not a change to any ADR.
 
 ## Design & invariants
 

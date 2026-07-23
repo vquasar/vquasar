@@ -37,12 +37,17 @@ impl Default for ReconcileConfig {
 pub struct ServerConfig {
     /// Public REST API listen address.
     pub listen: String,
+    /// Optional path to the built web UI (`ui/dist`). When set, the control
+    /// plane serves it as a single-page app alongside the API.
+    #[serde(default)]
+    pub ui_dir: Option<String>,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: "0.0.0.0:8080".to_string(),
+            ui_dir: None,
         }
     }
 }

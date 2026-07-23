@@ -63,7 +63,7 @@ protoc-bin-vendored = "3"
 # Control-plane REST API + database
 axum = "0.7"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "fs"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
