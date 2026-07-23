@@ -5,6 +5,7 @@
 pub mod error;
 mod events;
 mod hosts;
+mod networks;
 mod tasks;
 mod vms;
 
@@ -22,6 +23,8 @@ pub fn router(store: Store) -> Router {
         .route("/vms/:id", get(vms::get).delete(vms::delete))
         .route("/vms/:id/start", post(vms::start))
         .route("/vms/:id/stop", post(vms::stop))
+        .route("/networks", get(networks::list).post(networks::create))
+        .route("/networks/:id", get(networks::get).delete(networks::delete))
         .route("/tasks", get(tasks::list))
         .route("/tasks/:id", get(tasks::get))
         .route("/events", get(events::list))

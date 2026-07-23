@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use ch_client::config::TranslateOptions;
 use ch_client::{
     CloudHypervisor, FakeHypervisor, Hypervisor, HypervisorVmInfo, LaunchConfig, ProcessConfig,
-    SerialTarget,
+    SerialTarget, TapBinding,
 };
 use ch_model::{VirtualMachineSpec, VmId};
 
@@ -85,11 +85,13 @@ impl ManagedVmm for FakeHypervisor {
 /// Creates and re-attaches [`ManagedVmm`] handles for VMs.
 #[async_trait]
 pub trait Backend: Send + Sync {
-    /// Launch a fresh VMM for `id` (does not create/boot the VM yet).
+    /// Launch a fresh VMM for `id` with its prepared host TAPs (does not
+    /// create/boot the VM yet).
     async fn launch(
         &self,
         id: VmId,
         spec: &VirtualMachineSpec,
+        taps: Vec<TapBinding>,
         layout: &RuntimeLayout,
     ) -> Result<Box<dyn ManagedVmm>>;
 
@@ -114,10 +116,15 @@ impl CloudHypervisorBackend {
         }
     }
 
-    fn translate(&self, id: VmId, layout: &RuntimeLayout) -> TranslateOptions {
+    fn translate(
+        &self,
+        id: VmId,
+        layout: &RuntimeLayout,
+        taps: Vec<TapBinding>,
+    ) -> TranslateOptions {
         TranslateOptions {
             serial: SerialTarget::File(layout.serial_log(id).to_string_lossy().into_owned()),
-            taps: vec![],
+            taps,
         }
     }
 }
@@ -128,6 +135,7 @@ impl Backend for CloudHypervisorBackend {
         &self,
         id: VmId,
         _spec: &VirtualMachineSpec,
+        taps: Vec<TapBinding>,
         layout: &RuntimeLayout,
     ) -> Result<Box<dyn ManagedVmm>> {
         layout
@@ -141,7 +149,7 @@ impl Backend for CloudHypervisorBackend {
                 log_file: Some(layout.vmm_log(id)),
                 extra_args: vec![],
             },
-            self.translate(id, layout),
+            self.translate(id, layout, taps),
         );
         let hv = CloudHypervisor::launch(launch).await?;
         Ok(Box::new(hv))
@@ -153,7 +161,7 @@ impl Backend for CloudHypervisorBackend {
         _spec: &VirtualMachineSpec,
         layout: &RuntimeLayout,
     ) -> Result<Box<dyn ManagedVmm>> {
-        let hv = CloudHypervisor::attach(layout.api_socket(id), self.translate(id, layout));
+        let hv = CloudHypervisor::attach(layout.api_socket(id), self.translate(id, layout, vec![]));
         Ok(Box::new(hv))
     }
 }
@@ -186,6 +194,7 @@ impl Backend for FakeBackend {
         &self,
         id: VmId,
         _spec: &VirtualMachineSpec,
+        _taps: Vec<TapBinding>,
         _layout: &RuntimeLayout,
     ) -> Result<Box<dyn ManagedVmm>> {
         let hv = self.states.lock().unwrap().entry(id).or_default().clone();

@@ -22,6 +22,7 @@ use tonic::{Request, Response, Status};
 
 use crate::inventory;
 use crate::manager::{ManagerError, ObservedVm, VmManager};
+use crate::network::NicBinding;
 
 /// gRPC front end for one host's [`VmManager`].
 pub struct AgentService {
@@ -100,9 +101,17 @@ impl HostAgent for AgentService {
         let id = Self::parse_id(&req.vm_id)?;
         let spec: VirtualMachineSpec = serde_json::from_slice(&req.spec_json)
             .map_err(|e| Status::invalid_argument(format!("invalid spec_json: {e}")))?;
+        let bindings = req
+            .networks
+            .into_iter()
+            .map(|n| NicBinding {
+                mac: n.mac,
+                vlan: n.vlan as u16,
+            })
+            .collect();
         let obs = self
             .manager
-            .ensure(id, req.name, spec)
+            .ensure(id, req.name, spec, bindings)
             .await
             .map_err(to_status)?;
         Ok(Response::new(EnsureVmResponse {
@@ -175,6 +184,7 @@ fn to_status(err: ManagerError) -> Status {
         ManagerError::NotFound(id) => Status::not_found(format!("vm not found: {id}")),
         ManagerError::InvalidSpec(msg) => Status::invalid_argument(msg),
         ManagerError::Hypervisor(e) => Status::internal(e.to_string()),
+        ManagerError::Network(e) => Status::internal(e.to_string()),
         ManagerError::Io(e) => Status::internal(e.to_string()),
     }
 }
@@ -192,7 +202,8 @@ mod tests {
 
     fn service(dir: &std::path::Path) -> AgentService {
         let backend = Arc::new(FakeBackend::new());
-        let manager = Arc::new(VmManager::new(backend, RuntimeLayout::new(dir)));
+        let network = Arc::new(crate::network::NoopNetworkBackend);
+        let manager = Arc::new(VmManager::new(backend, network, RuntimeLayout::new(dir)));
         AgentService::new(manager, "host-test".into(), Some("v53.0".into()))
     }
 
@@ -227,6 +238,7 @@ mod tests {
                 vm_id: id.to_string(),
                 name: "web-1".into(),
                 spec_json: serde_json::to_vec(&spec()).unwrap(),
+                networks: vec![],
             }))
             .await
             .unwrap()
@@ -290,6 +302,7 @@ mod tests {
                 vm_id: VmId::new().to_string(),
                 name: "bad".into(),
                 spec_json: b"not json".to_vec(),
+                networks: vec![],
             }))
             .await
             .unwrap_err();

@@ -60,7 +60,19 @@ message EnsureVmRequest {
   // Opaque, control-plane-owned desired spec (JSON-encoded orchestration model,
   // translated to Cloud Hypervisor config by the agent — ADR-013).
   bytes spec_json = 3;
+  // Resolved per-NIC dataplane bindings, one per network interface in spec
+  // order. The control plane allocates MACs and resolves networks to VLANs; the
+  // agent owns the privileged TAP/OVS operations (section 18, 30).
+  repeated NetworkBinding networks = 4;
 }
+
+message NetworkBinding {
+  // Control-allocated guest MAC address (e.g. 02:00:...).
+  string mac = 1;
+  // 802.1Q VLAN tag on the integration bridge; 0 means untagged/flat.
+  uint32 vlan = 2;
+}
+
 message EnsureVmResponse { VmObservedState state = 1; }
 
 message StartVmRequest { string vm_id = 1; }

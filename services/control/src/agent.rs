@@ -6,7 +6,8 @@
 
 use ch_proto::agent::host_agent_client::HostAgentClient;
 use ch_proto::agent::{
-    DeleteVmRequest, EnsureVmRequest, GetHostInfoRequest, GetHostInfoResponse, VmObservedState,
+    DeleteVmRequest, EnsureVmRequest, GetHostInfoRequest, GetHostInfoResponse, NetworkBinding,
+    VmObservedState,
 };
 use tonic::transport::Channel;
 
@@ -52,12 +53,14 @@ impl Agent {
             .into_inner())
     }
 
-    /// Reconcile a VM towards `spec_json` (the JSON-encoded orchestration spec).
+    /// Reconcile a VM towards `spec_json` (the JSON-encoded orchestration spec)
+    /// with resolved per-NIC dataplane bindings.
     pub async fn ensure_vm(
         &self,
         vm_id: String,
         name: String,
         spec_json: Vec<u8>,
+        networks: Vec<NetworkBinding>,
     ) -> Result<VmObservedState, AgentError> {
         let mut client = self.client().await?;
         let resp = client
@@ -65,6 +68,7 @@ impl Agent {
                 vm_id,
                 name,
                 spec_json,
+                networks,
             })
             .await?
             .into_inner();

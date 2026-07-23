@@ -10,6 +10,7 @@ mod config;
 mod grpc;
 mod inventory;
 mod manager;
+mod network;
 mod runtime;
 
 use std::path::PathBuf;
@@ -54,12 +55,21 @@ async fn main() -> anyhow::Result<()> {
         "ch-agent starting"
     );
 
-    // Build the VM manager over a real Cloud Hypervisor backend.
+    // Build the VM manager over a real Cloud Hypervisor backend and the OVS
+    // dataplane on the configured integration bridge (section 18).
     let layout = RuntimeLayout::new(&config.hypervisor.runtime_dir);
     let backend = Arc::new(CloudHypervisorBackend::new(
         config.hypervisor.binary.clone(),
     ));
-    let manager = Arc::new(VmManager::new(backend, layout));
+    let network = Arc::new(network::OvsNetworkBackend::new(
+        config.network.bridge.clone(),
+    ));
+    info!(
+        backend = %config.network.backend,
+        bridge = %config.network.bridge,
+        "network dataplane configured"
+    );
+    let manager = Arc::new(VmManager::new(backend, network, layout));
 
     // Recover VMs that survived a previous agent instance (section 11).
     manager.recover().await;

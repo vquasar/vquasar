@@ -5,15 +5,16 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 3 (control plane) — verified.** Milestones 0–2 (workspace,
-> domain model, a `ch-client` that boots the latest Ubuntu cloud image on Cloud
-> Hypervisor v53, and a restart-surviving `ch-agent` over gRPC) are in place.
-> `ch-control` now persists desired state in PostgreSQL, serves the public REST
-> API under `/api/v1`, schedules VMs onto hosts, and reconciles them by driving
-> the host agents. Verified end-to-end: `POST /api/v1/vms` creates a VM that the
-> reconcile loop schedules and boots on a registered host, and `DELETE` tears it
-> down. Networking and UI land in later milestones — see [`DESIGN.md`](DESIGN.md)
-> section 42.
+> **Status: Milestone 4 (Open vSwitch networking) — verified.** Milestones 0–3
+> (workspace, domain model, a `ch-client` that boots the latest Ubuntu cloud
+> image on Cloud Hypervisor v53, a restart-surviving `ch-agent`, and a
+> `ch-control` REST/scheduler/reconcile plane over PostgreSQL) are in place. VMs
+> now get real networking: the control plane models virtual networks and
+> allocates MACs, and the agent creates a TAP per NIC and attaches it to the
+> Open vSwitch integration bridge (`br-int`). Verified end-to-end: two VMs
+> created via `POST /api/v1/vms` on the same provider network **ping each other
+> over OVS**, and deleting them removes the TAPs/ports. The UI lands next — see
+> [`DESIGN.md`](DESIGN.md) section 42.
 
 ## Architecture at a glance
 
@@ -203,6 +204,33 @@ reconcile loop ([`reconcile.rs`](services/control/src/reconcile.rs)) does the
 work asynchronously (section 15). The scheduler
 ([`scheduler.rs`](services/control/src/scheduler.rs)) filters hosts that can't
 fit the VM and scores the rest by free-memory fraction (section 17).
+
+## Networking (Milestone 4)
+
+VMs attach to virtual networks over Open vSwitch (design section 18). The split
+follows the design: the control plane owns the model, the agent owns the
+privileged dataplane (ADR-001/ADR-010).
+
+```bash
+# On each host, install OVS and create the integration bridge (once):
+scripts/setup-ovs.sh --bridge br-int
+# The agent must run privileged to manage TAPs/OVS:
+sudo CH_AGENT_NETWORK__BRIDGE=br-int ... ch-agent
+
+# Define a network, then reference it from a VM's NIC:
+curl -X POST localhost:8080/api/v1/networks -d '{"name":"provider"}'         # flat
+curl -X POST localhost:8080/api/v1/networks -d '{"name":"vlan-100","vlan":100}'  # tagged
+# ... "network_interfaces":[{"network_id":"<id>"}] ... in the VM spec.
+```
+
+What happens on `POST /vms` with a NIC: the control plane allocates a MAC
+(deterministic from VM id + NIC index, [`netalloc.rs`](services/control/src/netalloc.rs))
+and resolves the network to a VLAN, then sends per-NIC bindings to the agent.
+The agent's [`OvsNetworkBackend`](services/agent/src/network.rs) creates
+`tap<vmid8><idx>`, brings it up, and attaches it to `br-int` (with `tag=<vlan>`
+when set); Cloud Hypervisor then drives that TAP. On delete, the TAP and OVS
+port are removed. TAP names are derived from the VM id, so teardown works even
+for a VM re-attached after an agent restart, with no persisted per-NIC state.
 
 ## Design & invariants
 

@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
                     vm_id: args.vm_id,
                     name: args.name,
                     spec_json: serde_json::to_vec(&spec)?,
+                    networks: vec![],
                 })
                 .await?
                 .into_inner();

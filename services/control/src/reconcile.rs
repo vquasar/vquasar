@@ -8,10 +8,12 @@
 use std::time::Duration;
 
 use ch_proto::agent::vm_observed_state::Phase;
+use ch_proto::agent::NetworkBinding;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use crate::agent::Agent;
+use crate::netalloc::allocate_mac;
 use crate::scheduler::schedule;
 use crate::store::{HostInventory, Store, Vm};
 
@@ -129,11 +131,30 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 3. Drive the agent to the desired state.
+    // 3. Resolve per-NIC dataplane bindings (MACs + VLANs).
+    let bindings = match resolve_bindings(store, vm).await? {
+        Some(b) => b,
+        None => {
+            // A referenced network does not exist yet; defer.
+            if let Some(task) = store.latest_open_task_for_vm(vm.id).await? {
+                store
+                    .update_task(
+                        task.id,
+                        "Running",
+                        20,
+                        Some("waiting for referenced network"),
+                    )
+                    .await?;
+            }
+            return Ok(());
+        }
+    };
+
+    // 4. Drive the agent to the desired state.
     let agent = Agent::new(host.endpoint.clone());
     let spec_json = serde_json::to_vec(&*vm.spec)?;
     match agent
-        .ensure_vm(vm.id.to_string(), vm.name.clone(), spec_json)
+        .ensure_vm(vm.id.to_string(), vm.name.clone(), spec_json, bindings)
         .await
     {
         Ok(state) => {
@@ -180,6 +201,26 @@ async fn reconcile_delete(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         .insert_event("vm", Some(vm.id), "vm.deleted", "info", &vm.name)
         .await?;
     Ok(())
+}
+
+/// Resolve a VM's NICs into agent dataplane bindings (MAC + VLAN), allocating
+/// MACs deterministically. Returns `None` if a referenced network is missing.
+async fn resolve_bindings(store: &Store, vm: &Vm) -> anyhow::Result<Option<Vec<NetworkBinding>>> {
+    let mut bindings = Vec::with_capacity(vm.spec.network_interfaces.len());
+    for (index, nic) in vm.spec.network_interfaces.iter().enumerate() {
+        let Some(network) = store.get_network(nic.network_id.as_uuid()).await? else {
+            return Ok(None);
+        };
+        let mac = nic
+            .mac
+            .clone()
+            .unwrap_or_else(|| allocate_mac(vm.id, index));
+        bindings.push(NetworkBinding {
+            mac,
+            vlan: network.vlan.unwrap_or(0) as u32,
+        });
+    }
+    Ok(Some(bindings))
 }
 
 fn phase_string(proto_phase: i32) -> &'static str {

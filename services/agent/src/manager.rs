@@ -9,13 +9,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ch_client::HypervisorState;
+use ch_client::{HypervisorState, TapBinding};
 use ch_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::backend::{Backend, ManagedVmm};
+use crate::network::{NetworkBackend, NicBinding};
 use crate::runtime::{RuntimeLayout, VmRecord};
 
 /// A failure from a manager operation.
@@ -29,6 +30,9 @@ pub enum ManagerError {
 
     #[error("hypervisor error: {0}")]
     Hypervisor(#[from] ch_client::ChError),
+
+    #[error("network error: {0}")]
+    Network(#[from] crate::network::NetworkError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -54,26 +58,35 @@ struct ManagedVm {
 /// The agent's VM manager.
 pub struct VmManager {
     backend: Arc<dyn Backend>,
+    network: Arc<dyn NetworkBackend>,
     layout: RuntimeLayout,
     vms: Mutex<HashMap<VmId, ManagedVm>>,
 }
 
 impl VmManager {
-    pub fn new(backend: Arc<dyn Backend>, layout: RuntimeLayout) -> Self {
+    pub fn new(
+        backend: Arc<dyn Backend>,
+        network: Arc<dyn NetworkBackend>,
+        layout: RuntimeLayout,
+    ) -> Self {
         Self {
             backend,
+            network,
             layout,
             vms: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Reconcile a VM towards `spec`: create it if needed, then drive its power
-    /// state to match `spec.desired_power_state`. Idempotent.
+    /// Reconcile a VM towards `spec`: prepare its host networking, create it if
+    /// needed, then drive its power state to match `spec.desired_power_state`.
+    /// Idempotent. `bindings` are the control-resolved NIC bindings, one per
+    /// network interface in spec order.
     pub async fn ensure(
         &self,
         id: VmId,
         name: String,
         spec: VirtualMachineSpec,
+        bindings: Vec<NicBinding>,
     ) -> Result<ObservedVm> {
         spec.validate()
             .map_err(|e| ManagerError::InvalidSpec(e.to_string()))?;
@@ -87,11 +100,20 @@ impl VmManager {
         self.layout.store_record(&record).await?;
 
         let mut vms = self.vms.lock().await;
-        // Not the `entry` API: launching a VMM is async and fallible, which must
-        // happen between the presence check and the insert.
+        // Not the `entry` API: preparing TAPs and launching a VMM are async and
+        // fallible, and must happen between the presence check and the insert.
         #[allow(clippy::map_entry)]
         if !vms.contains_key(&id) {
-            let vmm = self.backend.launch(id, &spec, &self.layout).await?;
+            // Prepare host networking (TAP + OVS) for each NIC (section 18).
+            let mut taps = Vec::with_capacity(bindings.len());
+            for (index, binding) in bindings.iter().enumerate() {
+                let nic = self.network.prepare(id, index, binding).await?;
+                taps.push(TapBinding {
+                    tap: nic.tap,
+                    mac: Some(nic.mac),
+                });
+            }
+            let vmm = self.backend.launch(id, &spec, taps, &self.layout).await?;
             vms.insert(id, ManagedVm { record, vmm });
         }
         let managed = vms.get(&id).expect("just inserted");
@@ -120,14 +142,22 @@ impl VmManager {
         Ok(observe(managed).await)
     }
 
-    /// Shut down, terminate the VMM, and remove all state for a VM.
+    /// Shut down, terminate the VMM, release host networking, and remove all
+    /// state for a VM.
     pub async fn delete(&self, id: VmId) -> Result<()> {
         let mut vms = self.vms.lock().await;
         let mut managed = vms.remove(&id).ok_or(ManagerError::NotFound(id))?;
+        let nic_count = managed.record.spec.network_interfaces.len();
         // Best-effort orderly shutdown, then hard-terminate the process.
         let _ = managed.vmm.shutdown().await;
         managed.vmm.terminate().await?;
         drop(vms);
+        // Release each NIC's TAP/OVS port (idempotent; names are deterministic).
+        for index in 0..nic_count {
+            if let Err(e) = self.network.release(id, index).await {
+                warn!(vm = %id, index, error = %e, "failed to release NIC");
+            }
+        }
         self.layout.remove_vm_dir(id).await?;
         Ok(())
     }
@@ -228,8 +258,9 @@ mod tests {
 
     fn manager(dir: &std::path::Path) -> (VmManager, Arc<FakeBackend>) {
         let backend = Arc::new(FakeBackend::new());
+        let network = Arc::new(crate::network::NoopNetworkBackend);
         let layout = RuntimeLayout::new(dir);
-        (VmManager::new(backend.clone(), layout), backend)
+        (VmManager::new(backend.clone(), network, layout), backend)
     }
 
     #[tokio::test]
@@ -238,7 +269,7 @@ mod tests {
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
         let obs = mgr
-            .ensure(id, "web-1".into(), spec(DesiredPowerState::Running))
+            .ensure(id, "web-1".into(), spec(DesiredPowerState::Running), vec![])
             .await
             .unwrap();
         assert_eq!(obs.phase, VmPhase::Running);
@@ -251,8 +282,10 @@ mod tests {
         let (mgr, backend) = manager(dir.path());
         let id = VmId::new();
         let s = spec(DesiredPowerState::Running);
-        mgr.ensure(id, "web-1".into(), s.clone()).await.unwrap();
-        mgr.ensure(id, "web-1".into(), s).await.unwrap();
+        mgr.ensure(id, "web-1".into(), s.clone(), vec![])
+            .await
+            .unwrap();
+        mgr.ensure(id, "web-1".into(), s, vec![]).await.unwrap();
         // The fake records create calls; a second ensure must not create twice.
         let fake = backend.get(id).unwrap();
         assert_eq!(fake.create_calls(), 2, "create is invoked but idempotent");
@@ -264,7 +297,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
-        mgr.ensure(id, "db".into(), spec(DesiredPowerState::Running))
+        mgr.ensure(id, "db".into(), spec(DesiredPowerState::Running), vec![])
             .await
             .unwrap();
         assert_eq!(mgr.stop(id).await.unwrap().phase, VmPhase::Stopped);
@@ -276,7 +309,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
-        mgr.ensure(id, "tmp".into(), spec(DesiredPowerState::Running))
+        mgr.ensure(id, "tmp".into(), spec(DesiredPowerState::Running), vec![])
             .await
             .unwrap();
         mgr.delete(id).await.unwrap();
@@ -291,9 +324,14 @@ mod tests {
         // First manager instance creates and boots a VM.
         {
             let (mgr, _) = manager(dir.path());
-            mgr.ensure(id, "survivor".into(), spec(DesiredPowerState::Running))
-                .await
-                .unwrap();
+            mgr.ensure(
+                id,
+                "survivor".into(),
+                spec(DesiredPowerState::Running),
+                vec![],
+            )
+            .await
+            .unwrap();
         }
         // A fresh manager (simulating an agent restart) recovers it from disk.
         let backend = Arc::new(FakeBackend::new());
@@ -303,6 +341,7 @@ mod tests {
             .launch(
                 id,
                 &spec(DesiredPowerState::Running),
+                vec![],
                 &RuntimeLayout::new(dir.path()),
             )
             .await
@@ -312,7 +351,8 @@ mod tests {
             .await
             .unwrap();
         seeded.boot().await.unwrap();
-        let mgr = VmManager::new(backend, RuntimeLayout::new(dir.path()));
+        let network = Arc::new(crate::network::NoopNetworkBackend);
+        let mgr = VmManager::new(backend, network, RuntimeLayout::new(dir.path()));
         mgr.recover().await;
         let obs = mgr.get(id).await.unwrap();
         assert_eq!(obs.name, "survivor");

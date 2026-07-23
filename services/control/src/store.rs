@@ -49,6 +49,17 @@ pub struct Vm {
     pub generation: i64,
 }
 
+/// A virtual network row.
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Network {
+    pub id: Uuid,
+    pub name: String,
+    /// 802.1Q VLAN tag; `None` is a flat/untagged provider network.
+    pub vlan: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// An asynchronous task row.
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct Task {
@@ -294,6 +305,44 @@ impl Store {
             .execute(&self.pool)
             .await
             .map(|_| ())
+    }
+
+    // ---- networks --------------------------------------------------------
+
+    pub async fn insert_network(&self, name: &str, vlan: Option<i32>) -> Result<Network> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Network>(
+            "INSERT INTO networks (id, name, vlan, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $4)
+             RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(name)
+        .bind(vlan)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_network(&self, id: Uuid) -> Result<Option<Network>> {
+        sqlx::query_as::<_, Network>("SELECT * FROM networks WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn list_networks(&self) -> Result<Vec<Network>> {
+        sqlx::query_as::<_, Network>("SELECT * FROM networks ORDER BY created_at")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn delete_network(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM networks WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     // ---- tasks -----------------------------------------------------------
