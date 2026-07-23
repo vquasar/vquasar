@@ -5,15 +5,14 @@ A modern, open-source virtualization management platform built directly around
 Kubernetes. It manages fleets of Linux hypervisor hosts and exposes virtual
 machines as first-class, reconciled resources.
 
-> **Status: Milestone 6 (serial console) — verified.** Milestones 0–5
-> (workspace, domain model, `ch-client` booting the latest Ubuntu cloud image on
-> Cloud Hypervisor v53, a restart-surviving `ch-agent`, a `ch-control`
-> REST/scheduler/reconcile plane over PostgreSQL, OVS networking, and a
-> React + MUI web UI) are done and verified on real hardware. VMs now have an
-> interactive serial console: browser (xterm.js) → WebSocket → `ch-control` →
-> gRPC → `ch-agent` → the VM's serial socket. Verified end-to-end — logging in
-> and running a command over the WebSocket returns the guest's output. Two-host
-> scheduling and shared-storage live migration are next — see
+> **Status: Milestone 7 (multi-host scheduling) — verified.** Milestones 0–6
+> (workspace, domain model, `ch-client`, a restart-surviving `ch-agent`, the
+> `ch-control` plane over PostgreSQL, OVS networking, a React + MUI web UI, and
+> an interactive serial console) are done and verified on real hardware. The
+> scheduler now tracks committed CPU/memory per host and spreads VMs by
+> remaining logical capacity. Verified with two agents (host-01/host-02): six
+> VMs created through the API spread evenly, three to each host. Shared-storage
+> live migration (Milestone 8) is the remaining milestone — see
 > [`DESIGN.md`](DESIGN.md) section 42.
 
 ## Architecture at a glance

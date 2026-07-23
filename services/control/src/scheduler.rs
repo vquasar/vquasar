@@ -1,50 +1,73 @@
-//! The initial scheduler (design document, section 17).
+//! The scheduler (design document, section 17).
 //!
-//! Deliberately simple: filter hosts that cannot fit the VM, then score the
-//! survivors and pick the best. The two concerns are kept as separate steps
-//! (`passes_filters` / `score`) so a plugin framework can replace them later
-//! without restructuring callers.
+//! Filter hosts that cannot fit the VM, then score the survivors and pick the
+//! best. Capacity is tracked as a *logical* model: a host's usable resources
+//! are its reported totals minus the resources already committed to VMs placed
+//! on it. This is what makes placement spread across hosts as load grows,
+//! rather than depending on instantaneous free RAM (which is unstable and,
+//! for co-located agents, indistinguishable).
+//!
+//! `filter` and `score` are kept as separate steps so a plugin framework can
+//! replace them later without restructuring callers.
+
+use std::collections::HashMap;
 
 use ch_model::VirtualMachineSpec;
 use uuid::Uuid;
 
-use crate::store::Host;
+/// Resources already committed to VMs on a host.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HostCommit {
+    pub vcpus: i64,
+    pub memory_bytes: i64,
+}
 
 /// Choose a host for `spec` from `hosts` (already restricted to Ready +
-/// schedulable by the caller). Returns `None` when nothing fits.
-pub fn schedule(spec: &VirtualMachineSpec, hosts: &[Host]) -> Option<Uuid> {
+/// schedulable by the caller), given the resources already `committed` per
+/// host id. Returns `None` when nothing fits.
+pub fn schedule(
+    spec: &VirtualMachineSpec,
+    hosts: &[Host],
+    committed: &HashMap<Uuid, HostCommit>,
+) -> Option<Uuid> {
     hosts
         .iter()
-        .filter(|h| passes_filters(spec, h))
+        .filter(|h| passes_filters(spec, h, commit_of(committed, h.id)))
         .max_by(|a, b| {
-            score(a)
-                .partial_cmp(&score(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let sa = score(a, commit_of(committed, a.id));
+            let sb = score(b, commit_of(committed, b.id));
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|h| h.id)
 }
 
-/// Whether a host can satisfy the VM's CPU and memory requirements.
-fn passes_filters(spec: &VirtualMachineSpec, host: &Host) -> bool {
+fn commit_of(committed: &HashMap<Uuid, HostCommit>, id: Uuid) -> HostCommit {
+    committed.get(&id).copied().unwrap_or_default()
+}
+
+/// Whether a host has enough *uncommitted* CPU and memory for the VM.
+fn passes_filters(spec: &VirtualMachineSpec, host: &Host, commit: HostCommit) -> bool {
     let Some(cpus) = host.logical_cpus else {
         return false;
     };
-    let Some(available) = host.available_memory_bytes else {
+    let Some(total_mem) = host.total_memory_bytes else {
         return false;
     };
-    let cpu_ok = cpus as u32 >= spec.cpu.boot_vcpus;
-    let mem_ok = available as u128 >= spec.memory.size_bytes() as u128;
-    cpu_ok && mem_ok
+    let free_cpus = cpus as i64 - commit.vcpus;
+    let free_mem = total_mem - commit.memory_bytes;
+    free_cpus >= spec.cpu.boot_vcpus as i64 && free_mem >= spec.memory.size_bytes() as i64
 }
 
-/// Score a host: prefer the largest available-memory fraction (section 17,
-/// "prefer host with largest available memory percentage").
-fn score(host: &Host) -> f64 {
-    match (host.available_memory_bytes, host.total_memory_bytes) {
-        (Some(avail), Some(total)) if total > 0 => avail as f64 / total as f64,
+/// Score a host: prefer the largest *uncommitted* memory fraction (section 17).
+fn score(host: &Host, commit: HostCommit) -> f64 {
+    match host.total_memory_bytes {
+        Some(total) if total > 0 => (total - commit.memory_bytes) as f64 / total as f64,
         _ => 0.0,
     }
 }
+
+// Re-export the row the scheduler reads, to keep call sites terse.
+pub use crate::store::Host;
 
 #[cfg(test)]
 mod tests {
@@ -53,7 +76,7 @@ mod tests {
 
     use super::*;
 
-    fn host(name: &str, cpus: i32, avail_gib: i64, total_gib: i64) -> Host {
+    fn host(name: &str, cpus: i32, total_gib: i64) -> Host {
         let now = Utc::now();
         Host {
             id: Uuid::new_v4(),
@@ -68,13 +91,17 @@ mod tests {
             logical_cpus: Some(cpus),
             cpu_model: None,
             total_memory_bytes: Some(total_gib * 1024 * 1024 * 1024),
-            available_memory_bytes: Some(avail_gib * 1024 * 1024 * 1024),
+            available_memory_bytes: Some(total_gib * 1024 * 1024 * 1024),
             vm_count: 0,
             last_heartbeat: None,
             created_at: now,
             updated_at: now,
             generation: 1,
         }
+    }
+
+    fn gib(n: i64) -> i64 {
+        n * 1024 * 1024 * 1024
     }
 
     fn spec(vcpus: u32, mem_mib: u64) -> VirtualMachineSpec {
@@ -97,27 +124,78 @@ mod tests {
     }
 
     #[test]
-    fn picks_host_with_most_free_memory_fraction() {
-        let a = host("a", 8, 4, 16); // 25% free
-        let b = host("b", 8, 12, 16); // 75% free
-        let chosen = schedule(&spec(2, 2048), &[a.clone(), b.clone()]).unwrap();
-        assert_eq!(chosen, b.id);
+    fn empty_hosts_get_equal_score_then_commit_spreads() {
+        let a = host("a", 8, 16);
+        let b = host("b", 8, 16);
+        let hosts = [a.clone(), b.clone()];
+
+        // With nothing committed, the first host wins the tie deterministically.
+        let mut committed = HashMap::new();
+        let first = schedule(&spec(2, 2048), &hosts, &committed).unwrap();
+
+        // Commit that VM to the chosen host; the next VM must go to the other.
+        committed.insert(
+            first,
+            HostCommit {
+                vcpus: 2,
+                memory_bytes: gib(2),
+            },
+        );
+        let second = schedule(&spec(2, 2048), &hosts, &committed).unwrap();
+        assert_ne!(
+            first, second,
+            "second VM spreads to the less-committed host"
+        );
     }
 
     #[test]
-    fn filters_hosts_without_enough_cpu() {
-        let small = host("small", 1, 30, 32);
-        assert!(schedule(&spec(4, 1024), &[small]).is_none());
+    fn filters_hosts_without_enough_uncommitted_memory() {
+        let h = host("h", 16, 8);
+        let mut committed = HashMap::new();
+        committed.insert(
+            h.id,
+            HostCommit {
+                vcpus: 0,
+                memory_bytes: gib(7),
+            },
+        );
+        // 7 GiB committed of 8 -> only 1 GiB free; a 4 GiB VM cannot fit.
+        assert!(schedule(&spec(1, 4096), &[h], &committed).is_none());
     }
 
     #[test]
-    fn filters_hosts_without_enough_memory() {
-        let tight = host("tight", 16, 1, 32); // 1 GiB free
-        assert!(schedule(&spec(2, 8192), &[tight]).is_none()); // needs 8 GiB
+    fn filters_on_cpu_commitment() {
+        let h = host("h", 4, 64);
+        let mut committed = HashMap::new();
+        committed.insert(
+            h.id,
+            HostCommit {
+                vcpus: 3,
+                memory_bytes: 0,
+            },
+        );
+        assert!(schedule(&spec(2, 1024), &[h], &committed).is_none()); // only 1 vCPU free
+    }
+
+    #[test]
+    fn prefers_less_committed_host() {
+        let a = host("a", 32, 64);
+        let b = host("b", 32, 64);
+        let hosts = [a.clone(), b.clone()];
+        let mut committed = HashMap::new();
+        committed.insert(
+            a.id,
+            HostCommit {
+                vcpus: 4,
+                memory_bytes: gib(48),
+            },
+        );
+        // b is emptier -> chosen.
+        assert_eq!(schedule(&spec(2, 2048), &hosts, &committed).unwrap(), b.id);
     }
 
     #[test]
     fn no_hosts_yields_none() {
-        assert!(schedule(&spec(1, 512), &[]).is_none());
+        assert!(schedule(&spec(1, 512), &[], &HashMap::new()).is_none());
     }
 }

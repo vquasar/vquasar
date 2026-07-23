@@ -12,9 +12,13 @@ use ch_proto::agent::NetworkBinding;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
+use std::collections::HashMap;
+
+use uuid::Uuid;
+
 use crate::agent::Agent;
 use crate::netalloc::allocate_mac;
-use crate::scheduler::schedule;
+use crate::scheduler::{schedule, HostCommit};
 use crate::store::{HostInventory, Store, Vm};
 
 /// Run the reconcile loop forever.
@@ -95,7 +99,8 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         Some(h) => h,
         None => {
             let hosts = store.list_schedulable_hosts().await?;
-            match schedule(&vm.spec, &hosts) {
+            let committed = committed_by_host(store).await?;
+            match schedule(&vm.spec, &hosts, &committed) {
                 Some(h) => {
                     store.assign_vm_host(vm.id, h).await?;
                     store
@@ -201,6 +206,24 @@ async fn reconcile_delete(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         .insert_event("vm", Some(vm.id), "vm.deleted", "info", &vm.name)
         .await?;
     Ok(())
+}
+
+/// Sum the CPU + memory already committed to VMs on each host, so the scheduler
+/// can spread new VMs by remaining logical capacity (section 17).
+async fn committed_by_host(store: &Store) -> anyhow::Result<HashMap<Uuid, HostCommit>> {
+    let mut committed: HashMap<Uuid, HostCommit> = HashMap::new();
+    for vm in store.list_vms().await? {
+        // A VM being torn down no longer holds its host's capacity.
+        if vm.phase == "Deleting" {
+            continue;
+        }
+        if let Some(host_id) = vm.host_id {
+            let entry = committed.entry(host_id).or_default();
+            entry.vcpus += vm.spec.cpu.boot_vcpus as i64;
+            entry.memory_bytes += vm.spec.memory.size_bytes() as i64;
+        }
+    }
+    Ok(committed)
 }
 
 /// Resolve a VM's NICs into agent dataplane bindings (MAC + VLAN), allocating
