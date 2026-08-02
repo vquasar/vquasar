@@ -302,11 +302,18 @@ mod tests {
     fn service(dir: &std::path::Path) -> AgentService {
         let backend = Arc::new(FakeBackend::new());
         let network = Arc::new(crate::network::NoopNetworkBackend);
+        let migration = crate::manager::MigrationSettings {
+            transport: "unix".to_string(),
+            advertise_host: String::new(),
+            port_min: 9600,
+            port_max: 9700,
+            socket_dir: dir.join("migrations"),
+        };
         let manager = Arc::new(VmManager::new(
             backend,
             network,
             RuntimeLayout::new(dir),
-            dir.join("migrations"),
+            migration,
         ));
         AgentService::new(manager, "host-test".into(), Some("v53.0".into()))
     }

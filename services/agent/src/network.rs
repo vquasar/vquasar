@@ -70,6 +70,12 @@ impl OvsNetworkBackend {
 impl NetworkBackend for OvsNetworkBackend {
     async fn prepare(&self, vm: VmId, index: usize, binding: &NicBinding) -> Result<PreparedNic> {
         let tap = tap_name(vm, index);
+        // Make creation idempotent: a launch that crashed after creating the TAP
+        // (but before CH claimed it) leaves an orphan device, and `ip tuntap add`
+        // would then fail forever with "Device or resource busy". Since the name
+        // is deterministic per VM/NIC, clearing any stale same-named TAP first is
+        // safe and lets reconcile recover on the next tick (sections 11, 23).
+        let _ = run("ip", &["link", "del", &tap]).await;
         run("ip", &["tuntap", "add", "dev", &tap, "mode", "tap"]).await?;
         run("ip", &["link", "set", &tap, "up"]).await?;
 

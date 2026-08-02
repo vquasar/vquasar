@@ -147,9 +147,12 @@ async fn advance_migration(store: &Store, m: &crate::store::Migration) -> anyhow
             // Destination: launch a receiver and learn the migration URL.
             let agent = Agent::new(target.endpoint.clone());
             let spec_json = serde_json::to_vec(&*vm.spec)?;
-            let url = agent
-                .prepare_receive(vm.id.to_string(), vm.name.clone(), spec_json)
-                .await?;
+            let url = with_timeout(
+                60,
+                "prepare_receive",
+                agent.prepare_receive(vm.id.to_string(), vm.name.clone(), spec_json),
+            )
+            .await?;
             store
                 .update_migration(m.id, "Sending", Some(&url), None)
                 .await?;
@@ -170,24 +173,33 @@ async fn advance_migration(store: &Store, m: &crate::store::Migration) -> anyhow
                 .migration_url
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("no migration url"))?;
-            Agent::new(source.endpoint)
-                .send_migration(vm.id.to_string(), url)
-                .await?;
+            with_timeout(
+                300,
+                "send_migration",
+                Agent::new(source.endpoint).send_migration(vm.id.to_string(), url),
+            )
+            .await?;
             store
                 .update_migration(m.id, "Finalizing", None, None)
                 .await?;
         }
         "Finalizing" => {
             // Destination: adopt the running VM. Source: discard the husk.
-            Agent::new(target.endpoint.clone())
-                .finalize_receive(vm.id.to_string())
-                .await?;
+            with_timeout(
+                120,
+                "finalize_receive",
+                Agent::new(target.endpoint.clone()).finalize_receive(vm.id.to_string()),
+            )
+            .await?;
             if let Some(source_id) = m.source_host_id {
                 if let Some(source) = store.get_host(source_id).await? {
-                    if let Err(e) = Agent::new(source.endpoint)
-                        .discard_vm(vm.id.to_string())
-                        .await
-                    {
+                    let discard = with_timeout(
+                        60,
+                        "discard_vm",
+                        Agent::new(source.endpoint).discard_vm(vm.id.to_string()),
+                    )
+                    .await;
+                    if let Err(e) = discard {
                         warn!(vm = %vm.id, error = %e, "source discard failed (continuing)");
                     }
                 }
@@ -329,6 +341,18 @@ async fn reconcile_delete(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         .insert_event("vm", Some(vm.id), "vm.deleted", "info", &vm.name)
         .await?;
     Ok(())
+}
+
+/// Bound an agent RPC so a stalled migration step fails instead of hanging the
+/// reconcile loop forever.
+async fn with_timeout<F, T>(secs: u64, what: &str, fut: F) -> anyhow::Result<T>
+where
+    F: std::future::Future<Output = Result<T, crate::agent::AgentError>>,
+{
+    match tokio::time::timeout(Duration::from_secs(secs), fut).await {
+        Ok(r) => Ok(r?),
+        Err(_) => Err(anyhow::anyhow!("{what} timed out after {secs}s")),
+    }
 }
 
 /// Sum the CPU + memory already committed to VMs on each host, so the scheduler

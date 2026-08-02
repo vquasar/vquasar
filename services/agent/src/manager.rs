@@ -66,13 +66,24 @@ struct PendingReceive {
     recv: JoinHandle<ch_client::Result<()>>,
 }
 
+/// How the agent exposes an incoming live migration (section 28).
+#[derive(Debug, Clone)]
+pub struct MigrationSettings {
+    /// `tcp` (cross-host) or `unix` (single-host lab).
+    pub transport: String,
+    /// Address peers use to reach this host for TCP migration.
+    pub advertise_host: String,
+    pub port_min: u16,
+    pub port_max: u16,
+    pub socket_dir: PathBuf,
+}
+
 /// The agent's VM manager.
 pub struct VmManager {
     backend: Arc<dyn Backend>,
     network: Arc<dyn NetworkBackend>,
     layout: RuntimeLayout,
-    /// Shared directory for live-migration sockets (section 28).
-    migration_dir: PathBuf,
+    migration: MigrationSettings,
     vms: Mutex<HashMap<VmId, ManagedVm>>,
     pending: Mutex<HashMap<VmId, PendingReceive>>,
 }
@@ -82,13 +93,13 @@ impl VmManager {
         backend: Arc<dyn Backend>,
         network: Arc<dyn NetworkBackend>,
         layout: RuntimeLayout,
-        migration_dir: PathBuf,
+        migration: MigrationSettings,
     ) -> Self {
         Self {
             backend,
             network,
             layout,
-            migration_dir,
+            migration,
             vms: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
         }
@@ -223,17 +234,35 @@ impl VmManager {
         self.layout.store_record(&record).await?;
         let vmm = self.backend.launch(id, &spec, vec![], &self.layout).await?;
 
-        tokio::fs::create_dir_all(&self.migration_dir)
-            .await
-            .map_err(ManagerError::Io)?;
-        let socket = self.migration_dir.join(format!("{id}.sock"));
-        let _ = tokio::fs::remove_file(&socket).await;
-        let url = format!("unix:{}", socket.display());
+        // Build the receiver URL (what CH binds) and the URL returned to the
+        // source (what it connects to). For TCP they differ (bind 0.0.0.0,
+        // advertise a reachable host); for unix they are the same path.
+        let (recv_url, return_url) = if self.migration.transport == "unix" {
+            tokio::fs::create_dir_all(&self.migration.socket_dir)
+                .await
+                .map_err(ManagerError::Io)?;
+            let socket = self.migration.socket_dir.join(format!("{id}.sock"));
+            let _ = tokio::fs::remove_file(&socket).await;
+            let u = format!("unix:{}", socket.display());
+            (u.clone(), u)
+        } else {
+            let port = pick_free_port(self.migration.port_min, self.migration.port_max)
+                .ok_or_else(|| {
+                    ManagerError::Hypervisor(ch_client::ChError::Transport(
+                        "no free migration port in configured range".into(),
+                    ))
+                })?;
+            let host = if self.migration.advertise_host.is_empty() {
+                hostname()
+            } else {
+                self.migration.advertise_host.clone()
+            };
+            (format!("tcp:0.0.0.0:{port}"), format!("tcp:{host}:{port}"))
+        };
 
         // The receive call blocks until the source connects and finishes, so
         // run it in the background and await it in `finalize_receive`.
         let api_socket = self.layout.api_socket(id);
-        let recv_url = url.clone();
         let recv = tokio::spawn(async move {
             let client = ApiClient::new(api_socket);
             client.receive_migration(&recv_url).await
@@ -243,7 +272,7 @@ impl VmManager {
             .lock()
             .await
             .insert(id, PendingReceive { record, vmm, recv });
-        Ok(url)
+        Ok(return_url)
     }
 
     /// Destination: complete a received migration and register the now-running
@@ -353,6 +382,19 @@ async fn observe(managed: &ManagedVm) -> ObservedVm {
     }
 }
 
+/// Find a free TCP port in `[min, max]` by binding it briefly, so incoming
+/// migrations use a firewall-opened, reachable port.
+fn pick_free_port(min: u16, max: u16) -> Option<u16> {
+    (min..=max).find(|&p| std::net::TcpListener::bind(("0.0.0.0", p)).is_ok())
+}
+
+/// This host's name (used as the default migration advertise address).
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "localhost".to_string())
+}
+
 /// Map a hypervisor state onto an orchestration phase.
 fn phase_of(state: HypervisorState) -> VmPhase {
     match state {
@@ -388,13 +430,22 @@ mod tests {
         }
     }
 
+    fn test_migration(dir: &std::path::Path) -> MigrationSettings {
+        MigrationSettings {
+            transport: "unix".to_string(),
+            advertise_host: String::new(),
+            port_min: 9600,
+            port_max: 9700,
+            socket_dir: dir.join("migrations"),
+        }
+    }
+
     fn manager(dir: &std::path::Path) -> (VmManager, Arc<FakeBackend>) {
         let backend = Arc::new(FakeBackend::new());
         let network = Arc::new(crate::network::NoopNetworkBackend);
         let layout = RuntimeLayout::new(dir);
-        let migration_dir = dir.join("migrations");
         (
-            VmManager::new(backend.clone(), network, layout, migration_dir),
+            VmManager::new(backend.clone(), network, layout, test_migration(dir)),
             backend,
         )
     }
@@ -492,7 +543,7 @@ mod tests {
             backend,
             network,
             RuntimeLayout::new(dir.path()),
-            dir.path().join("migrations"),
+            test_migration(dir.path()),
         );
         mgr.recover().await;
         let obs = mgr.get(id).await.unwrap();

@@ -116,13 +116,15 @@ pub trait Backend: Send + Sync {
 pub struct CloudHypervisorBackend {
     binary: PathBuf,
     serial_file: bool,
+    seccomp: String,
 }
 
 impl CloudHypervisorBackend {
-    pub fn new(binary: impl Into<PathBuf>, serial_mode: &str) -> Self {
+    pub fn new(binary: impl Into<PathBuf>, serial_mode: &str, seccomp: &str) -> Self {
         Self {
             binary: binary.into(),
             serial_file: serial_mode == "file",
+            seccomp: seccomp.to_string(),
         }
     }
 
@@ -162,7 +164,7 @@ impl Backend for CloudHypervisorBackend {
                 binary: self.binary.clone(),
                 api_socket: layout.api_socket(id),
                 log_file: Some(layout.vmm_log(id)),
-                extra_args: vec![],
+                extra_args: vec!["--seccomp".to_string(), self.seccomp.clone()],
             },
             self.translate(id, layout, taps),
         );

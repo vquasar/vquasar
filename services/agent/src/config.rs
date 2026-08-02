@@ -27,16 +27,44 @@ pub struct AgentConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrationSection {
-    /// Directory for live-migration sockets. On a real multi-host cluster this
-    /// is a per-host path; the source reaches the destination over the network
-    /// (design section 28).
+    /// Live-migration transport: `tcp` (cross-host) or `unix` (single-host lab).
+    #[serde(default = "default_migration_transport")]
+    pub transport: String,
+    /// Address peers use to reach this host for TCP migration (e.g. its
+    /// hostname or IP). Defaults to the machine hostname.
+    #[serde(default)]
+    pub advertise_host: String,
+    /// TCP port range for incoming migrations (must be open in the firewall).
+    #[serde(default = "default_migration_port_min")]
+    pub port_min: u16,
+    #[serde(default = "default_migration_port_max")]
+    pub port_max: u16,
+    /// Directory for `unix`-transport migration sockets.
+    #[serde(default = "default_migration_socket_dir")]
     pub socket_dir: PathBuf,
+}
+
+fn default_migration_transport() -> String {
+    "tcp".to_string()
+}
+fn default_migration_port_min() -> u16 {
+    9600
+}
+fn default_migration_port_max() -> u16 {
+    9700
+}
+fn default_migration_socket_dir() -> PathBuf {
+    PathBuf::from("/var/lib/ch-orchestrator/migrations")
 }
 
 impl Default for MigrationSection {
     fn default() -> Self {
         Self {
-            socket_dir: PathBuf::from("/var/lib/ch-orchestrator/migrations"),
+            transport: default_migration_transport(),
+            advertise_host: String::new(),
+            port_min: default_migration_port_min(),
+            port_max: default_migration_port_max(),
+            socket_dir: default_migration_socket_dir(),
         }
     }
 }
@@ -84,10 +112,19 @@ pub struct HypervisorSection {
     /// conflict when live-migrating between two co-located agents (section 28).
     #[serde(default = "default_serial_mode")]
     pub serial_mode: String,
+    /// Cloud Hypervisor seccomp mode: `true` | `false` | `log` | `errno`. Live
+    /// migration currently trips the default filter on some platforms, so `log`
+    /// may be needed for migration to work (design section 30 prefers `true`).
+    #[serde(default = "default_seccomp")]
+    pub seccomp: String,
 }
 
 fn default_serial_mode() -> String {
     "socket".to_string()
+}
+
+fn default_seccomp() -> String {
+    "true".to_string()
 }
 
 impl Default for HypervisorSection {
@@ -96,6 +133,7 @@ impl Default for HypervisorSection {
             binary: PathBuf::from("/usr/bin/cloud-hypervisor"),
             runtime_dir: PathBuf::from("/run/ch-orchestrator"),
             serial_mode: default_serial_mode(),
+            seccomp: default_seccomp(),
         }
     }
 }

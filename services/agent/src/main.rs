@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = Arc::new(CloudHypervisorBackend::new(
         config.hypervisor.binary.clone(),
         &config.hypervisor.serial_mode,
+        &config.hypervisor.seccomp,
     ));
     let network = Arc::new(network::OvsNetworkBackend::new(
         config.network.bridge.clone(),
@@ -71,12 +72,14 @@ async fn main() -> anyhow::Result<()> {
         bridge = %config.network.bridge,
         "network dataplane configured"
     );
-    let manager = Arc::new(VmManager::new(
-        backend,
-        network,
-        layout,
-        config.migration.socket_dir.clone(),
-    ));
+    let migration = crate::manager::MigrationSettings {
+        transport: config.migration.transport.clone(),
+        advertise_host: config.migration.advertise_host.clone(),
+        port_min: config.migration.port_min,
+        port_max: config.migration.port_max,
+        socket_dir: config.migration.socket_dir.clone(),
+    };
+    let manager = Arc::new(VmManager::new(backend, network, layout, migration));
 
     // Recover VMs that survived a previous agent instance (section 11).
     manager.recover().await;
