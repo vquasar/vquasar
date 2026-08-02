@@ -361,6 +361,20 @@ impl VmManager {
             };
             match self.backend.attach(id, &record.spec, &self.layout).await {
                 Ok(vmm) => {
+                    // Only recover a VM whose VMM is actually alive. A leftover
+                    // runtime dir from a crashed or deleted VM has a dead API
+                    // socket; re-attaching would resurrect a phantom (inflated
+                    // vm_count, no process). Probe it and discard the stale dir
+                    // if there is nothing running — a VM the control plane still
+                    // wants will be re-launched on the next reconcile (§11, §22).
+                    if let Err(e) = vmm.info().await {
+                        warn!(vm = %id, name = %record.name, error = %e,
+                              "discarding stale VM (no live VMM)");
+                        if let Err(e) = self.layout.remove_vm_dir(id).await {
+                            warn!(vm = %id, error = %e, "failed to remove stale VM dir");
+                        }
+                        continue;
+                    }
                     info!(vm = %id, name = %record.name, "recovered VM after restart");
                     let console =
                         SerialHub::start(self.layout.serial_socket(id), self.layout.serial_log(id));
