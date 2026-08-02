@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use ch_model::{CloudInitSpec, DiskImageType, DiskSpec, VirtualMachineSpec, VmId};
 use tokio::process::Command;
-use tracing::info;
+use tracing::{info, warn};
 
 /// A failure provisioning host storage.
 #[derive(Debug, thiserror::Error)]
@@ -74,19 +74,30 @@ impl StorageProvisioner {
             if let Some(target) = disk.size_bytes {
                 let path = path_str(&disk.path)?;
                 if virtual_size(&disk.path).await? < target {
-                    match disk.image_type {
+                    // Best-effort: a running (or guest-stopped) VM's VMM holds an
+                    // exclusive lock on the file, so qemu-img resize fails until
+                    // the VM is fully powered off. Don't fail the whole reconcile
+                    // over it — the larger size stays desired and applies once
+                    // the lock is released.
+                    let res = match disk.image_type {
                         DiskImageType::Raw => {
                             run(
                                 "qemu-img",
                                 &["resize", "-f", "raw", path, &target.to_string()],
                             )
-                            .await?
+                            .await
                         }
                         DiskImageType::Qcow2 => {
-                            run("qemu-img", &["resize", path, &target.to_string()]).await?
+                            run("qemu-img", &["resize", path, &target.to_string()]).await
                         }
+                    };
+                    match res {
+                        Ok(()) => {
+                            info!(disk = %disk.path.display(), bytes = target, "grew volume")
+                        }
+                        Err(e) => warn!(disk = %disk.path.display(), error = %e,
+                            "disk grow deferred (volume in use); power off the VM to apply"),
                     }
-                    info!(disk = %disk.path.display(), bytes = target, "grew volume");
                 }
             }
             return Ok(()); // idempotent: reuse an already-provisioned volume
@@ -204,6 +215,14 @@ fn render_user_data(ci: &CloudInitSpec, hostname: &str) -> String {
             s.push_str(&format!("  - {key}\n"));
         }
     }
+    // Auto-online hot-plugged vCPUs so CPU hot-plug is seamless (design M10).
+    // Memory blocks online automatically; CPUs do not on stock Ubuntu.
+    s.push_str(concat!(
+        "write_files:\n",
+        "  - path: /etc/udev/rules.d/80-hotplug-cpu.rules\n",
+        "    content: |\n",
+        "      SUBSYSTEM==\"cpu\", ACTION==\"add\", TEST==\"online\", ATTR{online}==\"0\", ATTR{online}=\"1\"\n",
+    ));
     s
 }
 
@@ -229,8 +248,10 @@ async fn detect_format(path: &Path) -> Result<String> {
 /// Run `qemu-img info --output=json` and return the parsed object.
 async fn qemu_img_info(path: &Path) -> Result<serde_json::Value> {
     let p = path_str(path)?;
+    // `-U` (force-share) reads metadata without taking a lock, so this is safe
+    // on a disk a running VMM already holds open (design M10).
     let output = Command::new("qemu-img")
-        .args(["info", "--output=json", p])
+        .args(["info", "-U", "--output=json", p])
         .output()
         .await?;
     if !output.status.success() {
