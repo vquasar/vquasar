@@ -6,6 +6,7 @@ import { api } from "./client";
 import type {
   Accepted,
   CreateImageRequest,
+  CreateNetworkRequest,
   CreateTemplateRequest,
   CreateVmFromTemplateRequest,
   CreateVmRequest,
@@ -15,6 +16,7 @@ import type {
   Network,
   Task,
   Template,
+  UpdateVmRequest,
   Vm,
 } from "./types";
 
@@ -104,6 +106,15 @@ export function useCreateVmFromTemplate() {
   });
 }
 
+export function useUpdateVm() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateVmRequest }) =>
+      api.patch<Accepted>(`/vms/${id}`, body),
+    onSuccess: invalidate,
+  });
+}
+
 // ---- images & templates (design M9) --------------------------------------
 
 export function useImages() {
@@ -118,6 +129,15 @@ export function useCreateImage() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: CreateImageRequest) => api.post<Image>("/images", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
+  });
+}
+
+export function useUpdateImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CreateImageRequest }) =>
+      api.patch<Image>(`/images/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
   });
 }
@@ -142,6 +162,15 @@ export function useCreateTemplate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: CreateTemplateRequest) => api.post<Template>("/templates", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+export function useUpdateTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CreateTemplateRequest }) =>
+      api.patch<Template>(`/templates/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
   });
 }
@@ -187,6 +216,15 @@ export function useCreateNetwork() {
   return useMutation({
     mutationFn: (body: { name: string; vlan?: number | null }) =>
       api.post<Network>("/networks", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["networks"] }),
+  });
+}
+
+export function useUpdateNetwork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CreateNetworkRequest }) =>
+      api.patch<Network>(`/networks/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["networks"] }),
   });
 }

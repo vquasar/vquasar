@@ -13,26 +13,34 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
-import { useCreateImage, useDeleteImage, useImages } from "../api/hooks";
+import { useCreateImage, useDeleteImage, useImages, useUpdateImage } from "../api/hooks";
 import { formatBytes, formatDate } from "../format";
 import type { BootSpec, CreateImageRequest, Image } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
 
-function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [name, setName] = useState("");
-  const [os, setOs] = useState("");
-  const [sourcePath, setSourcePath] = useState("");
-  const [format, setFormat] = useState<"raw" | "qcow2">("raw");
-  const [bootType, setBootType] = useState<"direct_kernel" | "firmware">("direct_kernel");
-  const [kernel, setKernel] = useState("");
-  const [initramfs, setInitramfs] = useState("");
-  const [cmdline, setCmdline] = useState("root=/dev/vda1 rw console=ttyS0");
-  const [firmware, setFirmware] = useState("");
-  const [sizeGib, setSizeGib] = useState("");
-  const [cloudInit, setCloudInit] = useState(true);
+function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void }) {
+  const dk = edit?.boot.type === "direct_kernel" ? edit.boot : null;
+  const fw = edit?.boot.type === "firmware" ? edit.boot : null;
+  const [name, setName] = useState(edit?.name ?? "");
+  const [os, setOs] = useState(edit?.os ?? "");
+  const [sourcePath, setSourcePath] = useState(edit?.source_path ?? "");
+  const [format, setFormat] = useState<"raw" | "qcow2">(edit?.format ?? "raw");
+  const [bootType, setBootType] = useState<"direct_kernel" | "firmware">(
+    edit?.boot.type ?? "direct_kernel",
+  );
+  const [kernel, setKernel] = useState(dk?.kernel ?? "");
+  const [initramfs, setInitramfs] = useState(dk?.initramfs ?? "");
+  const [cmdline, setCmdline] = useState(dk?.cmdline ?? "root=/dev/vda1 rw console=ttyS0");
+  const [firmware, setFirmware] = useState(fw?.firmware ?? "");
+  const [sizeGib, setSizeGib] = useState(
+    edit?.default_size_bytes ? String(Math.round(edit.default_size_bytes / GIB)) : "",
+  );
+  const [cloudInit, setCloudInit] = useState(edit?.cloud_init ?? true);
   const create = useCreateImage();
+  const update = useUpdateImage();
 
   const submit = () => {
     const boot: BootSpec =
@@ -53,14 +61,17 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
       cloud_init: cloudInit,
       os: os || null,
     };
-    create.mutate(body, { onSuccess: onClose });
+    if (edit) update.mutate({ id: edit.id, body }, { onSuccess: onClose });
+    else create.mutate(body, { onSuccess: onClose });
   };
 
+  const busy = create.isPending || update.isPending;
+  const err = (create.error || update.error) as Error | null;
   const ready = name && sourcePath && (bootType === "firmware" ? firmware : kernel);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Register image</DialogTitle>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>{edit ? "Edit image" : "Register image"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
@@ -98,13 +109,13 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
             control={<Switch checked={cloudInit} onChange={(e) => setCloudInit(e.target.checked)} />}
             label="Expects cloud-init seed"
           />
-          {create.isError && <Alert severity="error">{(create.error as Error).message}</Alert>}
+          {err && <Alert severity="error">{err.message}</Alert>}
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!ready || create.isPending}>
-          Register
+        <Button variant="contained" onClick={submit} disabled={!ready || busy}>
+          {edit ? "Save" : "Register"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -114,7 +125,7 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
 export function Images() {
   const images = useImages();
   const del = useDeleteImage();
-  const [dialog, setDialog] = useState(false);
+  const [dialog, setDialog] = useState<{ edit: Image | null } | null>(null);
 
   const columns: GridColDef<Image>[] = [
     { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
@@ -138,8 +149,9 @@ export function Images() {
       field: "actions",
       type: "actions",
       headerName: "",
-      width: 60,
+      width: 90,
       getActions: (p) => [
+        <GridActionsCellItem key="edit" icon={<EditIcon />} label="Edit" onClick={() => setDialog({ edit: p.row })} />,
         <GridActionsCellItem key="del" icon={<DeleteIcon />} label="Delete" onClick={() => del.mutate(p.row.id)} />,
       ],
     },
@@ -149,7 +161,7 @@ export function Images() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Images</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
           Register image
         </Button>
       </Stack>
@@ -164,7 +176,7 @@ export function Images() {
           disableRowSelectionOnClick
         />
       </div>
-      <CreateDialog open={dialog} onClose={() => setDialog(false)} />
+      {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
     </Stack>
   );
 }

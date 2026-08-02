@@ -12,6 +12,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
 import RocketLaunchIcon from "@mui/icons-material/RocketLaunch";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import {
@@ -21,25 +22,29 @@ import {
   useImages,
   useNetworks,
   useTemplates,
+  useUpdateTemplate,
 } from "../api/hooks";
 import { formatBytes, formatDate, formatMib } from "../format";
 import type { CreateTemplateRequest, Template } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
 
-function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => void }) {
   const images = useImages();
   const networks = useNetworks();
   const create = useCreateTemplate();
-  const [name, setName] = useState("");
-  const [imageId, setImageId] = useState("");
-  const [vcpus, setVcpus] = useState("2");
-  const [memMib, setMemMib] = useState("2048");
-  const [sizeGib, setSizeGib] = useState("10");
-  const [format, setFormat] = useState<"qcow2" | "raw">("qcow2");
-  const [networkId, setNetworkId] = useState("");
-  const [password, setPassword] = useState("");
-  const [sshKey, setSshKey] = useState("");
+  const update = useUpdateTemplate();
+  const [name, setName] = useState(edit?.name ?? "");
+  const [imageId, setImageId] = useState(edit?.image_id ?? "");
+  const [vcpus, setVcpus] = useState(String(edit?.boot_vcpus ?? 2));
+  const [memMib, setMemMib] = useState(String(edit?.memory_mib ?? 2048));
+  const [sizeGib, setSizeGib] = useState(
+    edit?.disk_size_bytes ? String(Math.round(edit.disk_size_bytes / GIB)) : "10",
+  );
+  const [format, setFormat] = useState<"qcow2" | "raw">(edit?.disk_format ?? "qcow2");
+  const [networkId, setNetworkId] = useState(edit?.network_id ?? "");
+  const [password, setPassword] = useState(edit?.cloud_init?.password ?? "");
+  const [sshKey, setSshKey] = useState(edit?.cloud_init?.ssh_authorized_keys?.[0] ?? "");
 
   const submit = () => {
     const body: CreateTemplateRequest = {
@@ -59,12 +64,16 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
             }
           : null,
     };
-    create.mutate(body, { onSuccess: onClose });
+    if (edit) update.mutate({ id: edit.id, body }, { onSuccess: onClose });
+    else create.mutate(body, { onSuccess: onClose });
   };
 
+  const busy = create.isPending || update.isPending;
+  const err = (create.error || update.error) as Error | null;
+
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Create template</DialogTitle>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>{edit ? "Edit template" : "Create template"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
@@ -96,13 +105,13 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
           </TextField>
           <TextField label="Default password (optional)" value={password} onChange={(e) => setPassword(e.target.value)} />
           <TextField label="Default SSH public key (optional)" value={sshKey} onChange={(e) => setSshKey(e.target.value)} />
-          {create.isError && <Alert severity="error">{(create.error as Error).message}</Alert>}
+          {err && <Alert severity="error">{err.message}</Alert>}
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || !imageId || create.isPending}>
-          Create
+        <Button variant="contained" onClick={submit} disabled={!name || !imageId || busy}>
+          {edit ? "Save" : "Create"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -154,7 +163,7 @@ export function Templates() {
   const templates = useTemplates();
   const images = useImages();
   const del = useDeleteTemplate();
-  const [dialog, setDialog] = useState(false);
+  const [dialog, setDialog] = useState<{ edit: Template | null } | null>(null);
   const [launch, setLaunch] = useState<Template | null>(null);
 
   const imageName = (id: string) => images.data?.find((i) => i.id === id)?.name ?? id.slice(0, 8);
@@ -176,7 +185,7 @@ export function Templates() {
       field: "actions",
       type: "actions",
       headerName: "",
-      width: 90,
+      width: 130,
       getActions: (p) => [
         <GridActionsCellItem
           key="launch"
@@ -184,6 +193,7 @@ export function Templates() {
           label="Launch VM"
           onClick={() => setLaunch(p.row)}
         />,
+        <GridActionsCellItem key="edit" icon={<EditIcon />} label="Edit" onClick={() => setDialog({ edit: p.row })} />,
         <GridActionsCellItem key="del" icon={<DeleteIcon />} label="Delete" onClick={() => del.mutate(p.row.id)} />,
       ],
     },
@@ -193,7 +203,7 @@ export function Templates() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Templates</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
           Create template
         </Button>
       </Stack>
@@ -208,7 +218,7 @@ export function Templates() {
           disableRowSelectionOnClick
         />
       </div>
-      <CreateDialog open={dialog} onClose={() => setDialog(false)} />
+      {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
       <LaunchDialog template={launch} onClose={() => setLaunch(null)} />
     </Stack>
   );

@@ -9,6 +9,7 @@ export interface CpuSpec {
 
 export interface MemorySpec {
   size_mib: number;
+  max_size_mib?: number | null;
 }
 
 export type BootSpec =
@@ -169,6 +170,11 @@ export interface Template {
   updated_at: string;
 }
 
+export interface CreateNetworkRequest {
+  name: string;
+  vlan?: number | null;
+}
+
 export interface CreateImageRequest {
   name: string;
   source_path: string;
@@ -195,6 +201,7 @@ export interface TemplateOverrides {
   boot_vcpus?: number;
   max_vcpus?: number;
   memory_mib?: number;
+  memory_max_mib?: number;
   disk_size_bytes?: number;
   network_id?: string;
   cloud_init?: CloudInitSpec;
@@ -204,4 +211,15 @@ export interface CreateVmFromTemplateRequest {
   name: string;
   template_id: string;
   overrides?: TemplateOverrides;
+}
+
+export interface UpdateVmRequest {
+  name?: string;
+  boot_vcpus?: number;
+  max_vcpus?: number;
+  memory_mib?: number;
+  memory_max_mib?: number;
+  grow_disk?: { index: number; size_bytes: number };
+  add_disk?: { size_bytes: number; image_type?: "raw" | "qcow2" };
+  add_nic?: { network_id: string };
 }

@@ -10,31 +10,29 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
-import { useCreateNetwork, useDeleteNetwork, useNetworks } from "../api/hooks";
+import { useCreateNetwork, useDeleteNetwork, useNetworks, useUpdateNetwork } from "../api/hooks";
 import { formatDate } from "../format";
 import type { Network } from "../api/types";
 
-function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [name, setName] = useState("");
-  const [vlan, setVlan] = useState("");
+function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => void }) {
   const create = useCreateNetwork();
+  const update = useUpdateNetwork();
+  const [name, setName] = useState(edit?.name ?? "");
+  const [vlan, setVlan] = useState(edit?.vlan != null ? String(edit.vlan) : "");
 
-  const submit = () =>
-    create.mutate(
-      { name, vlan: vlan ? Number(vlan) : null },
-      {
-        onSuccess: () => {
-          setName("");
-          setVlan("");
-          onClose();
-        },
-      },
-    );
+  const submit = () => {
+    const body = { name, vlan: vlan ? Number(vlan) : null };
+    if (edit) update.mutate({ id: edit.id, body }, { onSuccess: onClose });
+    else create.mutate(body, { onSuccess: onClose });
+  };
+  const busy = create.isPending || update.isPending;
+  const err = (create.error || update.error) as Error | null;
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Create network</DialogTitle>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>{edit ? "Edit network" : "Create network"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
@@ -44,13 +42,13 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
             onChange={(e) => setVlan(e.target.value)}
             helperText="Leave blank for a flat provider network"
           />
-          {create.isError && <Alert severity="error">{(create.error as Error).message}</Alert>}
+          {err && <Alert severity="error">{err.message}</Alert>}
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || create.isPending}>
-          Create
+        <Button variant="contained" onClick={submit} disabled={!name || busy}>
+          {edit ? "Save" : "Create"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -60,7 +58,7 @@ function CreateDialog({ open, onClose }: { open: boolean; onClose: () => void })
 export function Networks() {
   const networks = useNetworks();
   const del = useDeleteNetwork();
-  const [dialog, setDialog] = useState(false);
+  const [dialog, setDialog] = useState<{ edit: Network | null } | null>(null);
 
   const columns: GridColDef<Network>[] = [
     { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
@@ -75,8 +73,14 @@ export function Networks() {
       field: "actions",
       type: "actions",
       headerName: "",
-      width: 60,
+      width: 90,
       getActions: (p) => [
+        <GridActionsCellItem
+          key="edit"
+          icon={<EditIcon />}
+          label="Edit"
+          onClick={() => setDialog({ edit: p.row })}
+        />,
         <GridActionsCellItem
           key="del"
           icon={<DeleteIcon />}
@@ -91,7 +95,7 @@ export function Networks() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Networks</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
           Create network
         </Button>
       </Stack>
@@ -105,7 +109,7 @@ export function Networks() {
           disableRowSelectionOnClick
         />
       </div>
-      <CreateDialog open={dialog} onClose={() => setDialog(false)} />
+      {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
     </Stack>
   );
 }
