@@ -65,6 +65,9 @@ pub struct TemplateOverrides {
     pub max_vcpus: Option<u32>,
     #[serde(default)]
     pub memory_mib: Option<u64>,
+    /// Optional hot-plug memory cap (MiB) so the VM can grow memory live (M10).
+    #[serde(default)]
+    pub memory_max_mib: Option<u64>,
     #[serde(default)]
     pub disk_size_bytes: Option<u64>,
     #[serde(default)]
@@ -201,6 +204,7 @@ fn build_spec_from_template(
         },
         memory: MemorySpec {
             size_mib: ov.memory_mib.unwrap_or(template.memory_mib as u64),
+            max_size_mib: ov.memory_max_mib,
         },
         boot: image.boot.0.clone(),
         disks,
@@ -208,6 +212,124 @@ fn build_spec_from_template(
         placement: PlacementSpec::default(),
         cloud_init,
     }
+}
+
+/// Edit an existing VM (design M10). Each field is optional; provided ones are
+/// applied to the spec and reconciliation hot-plugs what Cloud Hypervisor
+/// supports, leaving the rest for the next restart.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateVm {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub boot_vcpus: Option<u32>,
+    #[serde(default)]
+    pub max_vcpus: Option<u32>,
+    #[serde(default)]
+    pub memory_mib: Option<u64>,
+    #[serde(default)]
+    pub memory_max_mib: Option<u64>,
+    /// Grow an existing disk (by index) to a new size in bytes.
+    #[serde(default)]
+    pub grow_disk: Option<GrowDisk>,
+    /// Attach a new blank data disk.
+    #[serde(default)]
+    pub add_disk: Option<AddDisk>,
+    /// Attach a new NIC on the given network.
+    #[serde(default)]
+    pub add_nic: Option<AddNic>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GrowDisk {
+    pub index: usize,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddDisk {
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub image_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddNic {
+    pub network_id: Uuid,
+}
+
+pub async fn update(
+    State(store): State<Store>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateVm>,
+) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    let vm = store
+        .get_vm(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+    let mut spec = vm.spec.0.clone();
+
+    if let Some(v) = body.boot_vcpus {
+        spec.cpu.boot_vcpus = v;
+    }
+    if let Some(v) = body.max_vcpus {
+        spec.cpu.max_vcpus = v;
+    }
+    if let Some(m) = body.memory_mib {
+        spec.memory.size_mib = m;
+    }
+    if body.memory_max_mib.is_some() {
+        spec.memory.max_size_mib = body.memory_max_mib;
+    }
+    if let Some(g) = &body.grow_disk {
+        let disk = spec
+            .disks
+            .get_mut(g.index)
+            .ok_or_else(|| ApiError::invalid("disk index out of range"))?;
+        if g.size_bytes < disk.size_bytes.unwrap_or(0) {
+            return Err(ApiError::invalid("disks can only grow"));
+        }
+        disk.size_bytes = Some(g.size_bytes);
+    }
+    if let Some(a) = &body.add_disk {
+        let image_type = if a.image_type.as_deref() == Some("raw") {
+            DiskImageType::Raw
+        } else {
+            DiskImageType::Qcow2
+        };
+        let ext = match image_type {
+            DiskImageType::Raw => "raw",
+            DiskImageType::Qcow2 => "qcow2",
+        };
+        let path = PathBuf::from(store.shared_volumes_dir())
+            .join(format!("{id}-d{}.{ext}", spec.disks.len()));
+        spec.disks
+            .push(DiskSpec::blank(path, image_type, a.size_bytes));
+    }
+    if let Some(n) = &body.add_nic {
+        spec.network_interfaces.push(NetworkInterfaceSpec {
+            network_id: ch_model::NetworkId::from(n.network_id),
+            mac: None,
+        });
+    }
+
+    spec.validate()
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
+    let vm = store
+        .update_vm(id, body.name.as_deref(), &spec)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+    let task = store.insert_task("vm.update", Some(vm.id)).await?;
+    store
+        .insert_event("vm", Some(vm.id), "vm.updated", "info", &vm.name)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Accepted {
+            vm_id: vm.id,
+            task_id: task.id,
+        }),
+    ))
 }
 
 pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Vm>>> {

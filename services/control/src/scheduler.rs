@@ -111,7 +111,10 @@ mod tests {
                 boot_vcpus: vcpus,
                 max_vcpus: vcpus,
             },
-            memory: MemorySpec { size_mib: mem_mib },
+            memory: MemorySpec {
+                size_mib: mem_mib,
+                max_size_mib: None,
+            },
             boot: BootSpec::DirectKernel {
                 kernel: "/boot/vmlinux".into(),
                 initramfs: None,

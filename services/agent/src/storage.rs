@@ -67,16 +67,50 @@ impl StorageProvisioner {
     /// Create a disk's backing file from its base image if it does not exist.
     async fn provision_disk(&self, disk: &DiskSpec) -> Result<()> {
         if tokio::fs::try_exists(&disk.path).await? {
+            // Already provisioned. Grow it if the desired size increased (design
+            // M10 disk expansion). CH cannot resize an attached virtio-blk
+            // online, so the guest sees the extra space after a restart (and an
+            // in-guest partition/filesystem grow).
+            if let Some(target) = disk.size_bytes {
+                let path = path_str(&disk.path)?;
+                if virtual_size(&disk.path).await? < target {
+                    match disk.image_type {
+                        DiskImageType::Raw => {
+                            run(
+                                "qemu-img",
+                                &["resize", "-f", "raw", path, &target.to_string()],
+                            )
+                            .await?
+                        }
+                        DiskImageType::Qcow2 => {
+                            run("qemu-img", &["resize", path, &target.to_string()]).await?
+                        }
+                    }
+                    info!(disk = %disk.path.display(), bytes = target, "grew volume");
+                }
+            }
             return Ok(()); // idempotent: reuse an already-provisioned volume
         }
-        let source = disk
-            .source
-            .as_ref()
-            .expect("needs_provisioning() implies a source");
         if let Some(parent) = disk.path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         let path = path_str(&disk.path)?;
+
+        // No source: create a blank data disk of the requested size (design M10
+        // "add a secondary disk").
+        let Some(source) = disk.source.as_ref() else {
+            let size = disk
+                .size_bytes
+                .ok_or_else(|| StorageError::Parse("blank disk requires size_bytes".into()))?;
+            let fmt = match disk.image_type {
+                DiskImageType::Raw => "raw",
+                DiskImageType::Qcow2 => "qcow2",
+            };
+            run("qemu-img", &["create", "-f", fmt, path, &size.to_string()]).await?;
+            info!(disk = %disk.path.display(), bytes = size, fmt, "created blank data disk");
+            return Ok(());
+        };
+
         let src = path_str(source)?;
         match disk.image_type {
             DiskImageType::Qcow2 => {
@@ -173,8 +207,27 @@ fn render_user_data(ci: &CloudInitSpec, hostname: &str) -> String {
     s
 }
 
+/// The virtual (guest-visible) size of a disk image in bytes.
+async fn virtual_size(path: &Path) -> Result<u64> {
+    let value = qemu_img_info(path).await?;
+    value
+        .get("virtual-size")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| StorageError::Parse("no `virtual-size` field".into()))
+}
+
 /// Detect a disk image's format via `qemu-img info` (e.g. "raw", "qcow2").
 async fn detect_format(path: &Path) -> Result<String> {
+    qemu_img_info(path)
+        .await?
+        .get("format")
+        .and_then(|f| f.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| StorageError::Parse("no `format` field".into()))
+}
+
+/// Run `qemu-img info --output=json` and return the parsed object.
+async fn qemu_img_info(path: &Path) -> Result<serde_json::Value> {
     let p = path_str(path)?;
     let output = Command::new("qemu-img")
         .args(["info", "--output=json", p])
@@ -186,13 +239,7 @@ async fn detect_format(path: &Path) -> Result<String> {
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| StorageError::Parse(e.to_string()))?;
-    value
-        .get("format")
-        .and_then(|f| f.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| StorageError::Parse("no `format` field".into()))
+    serde_json::from_slice(&output.stdout).map_err(|e| StorageError::Parse(e.to_string()))
 }
 
 fn path_str(p: &Path) -> Result<&str> {

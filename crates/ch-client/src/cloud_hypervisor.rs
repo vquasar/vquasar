@@ -124,6 +124,30 @@ impl CloudHypervisor {
         &self.api
     }
 
+    /// Hot-plug: resize vCPUs and/or guest RAM on a running VM (design M10).
+    /// Memory can only grow within the boot-time hot-plug region.
+    pub async fn resize(&self, desired_vcpus: Option<u32>, desired_ram: Option<u64>) -> Result<()> {
+        let body = config::VmResize {
+            desired_vcpus,
+            desired_ram,
+        };
+        self.api.put_json("/vm.resize", &body).await
+    }
+
+    /// Hot-add a disk to a running VM (design M10).
+    pub async fn add_disk(&self, disk: &ch_model::DiskSpec) -> Result<()> {
+        self.api
+            .put_json("/vm.add-disk", &config::disk_config(disk))
+            .await
+    }
+
+    /// Hot-add a NIC (bound to a prepared host TAP) to a running VM (design M10).
+    pub async fn add_net(&self, tap: &crate::config::TapBinding) -> Result<()> {
+        self.api
+            .put_json("/vm.add-net", &config::net_config(tap))
+            .await
+    }
+
     /// Fetch raw CH VM info, or `None` when no VM exists / the VMM is
     /// unreachable. Used for idempotency checks.
     async fn current_state(&self) -> Option<VmState> {

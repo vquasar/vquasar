@@ -59,6 +59,33 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(image)))
 }
 
+pub async fn update(
+    State(store): State<Store>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateImage>,
+) -> ApiResult<Json<Image>> {
+    if body.name.is_empty() || body.source_path.is_empty() {
+        return Err(ApiError::invalid("name and source_path are required"));
+    }
+    if body.format != "raw" && body.format != "qcow2" {
+        return Err(ApiError::invalid("format must be 'raw' or 'qcow2'"));
+    }
+    store
+        .update_image(
+            id,
+            &body.name,
+            &body.source_path,
+            &body.format,
+            &body.boot,
+            body.default_size_bytes,
+            body.cloud_init,
+            body.os.as_deref(),
+        )
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::invalid(format!("image not found: {id}")))
+}
+
 pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Image>>> {
     Ok(Json(store.list_images().await?))
 }

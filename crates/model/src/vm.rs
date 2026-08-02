@@ -129,12 +129,27 @@ pub struct CpuSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemorySpec {
     pub size_mib: u64,
+    /// Maximum memory (MiB) the VM can be grown to via hot-plug. When set and
+    /// greater than `size_mib`, the VM boots with a resizable region so memory
+    /// can be hot-plugged up to this cap; otherwise memory changes need a
+    /// restart (design M10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size_mib: Option<u64>,
 }
 
 impl MemorySpec {
     /// Size in bytes, as Cloud Hypervisor expects.
     pub fn size_bytes(&self) -> u64 {
         self.size_mib * 1024 * 1024
+    }
+
+    /// Bytes to reserve for the hot-plug region (`max - size`), or `None` when
+    /// memory is not resizable.
+    pub fn hotplug_bytes(&self) -> Option<u64> {
+        match self.max_size_mib {
+            Some(max) if max > self.size_mib => Some((max - self.size_mib) * 1024 * 1024),
+            _ => None,
+        }
     }
 }
 
@@ -205,10 +220,22 @@ impl DiskSpec {
         }
     }
 
-    /// Whether this disk must be provisioned (its backing file created) before
-    /// the VM can launch.
+    /// Whether the agent must materialise this disk's backing file before the VM
+    /// can launch: either cloned from a `source` image, or created blank at
+    /// `size_bytes` (a data disk). A disk with neither is assumed to exist.
     pub fn needs_provisioning(&self) -> bool {
-        self.source.is_some()
+        self.source.is_some() || self.size_bytes.is_some()
+    }
+
+    /// A blank writable data disk to be created at `size_bytes` (design M10).
+    pub fn blank(path: impl Into<PathBuf>, image_type: DiskImageType, size_bytes: u64) -> Self {
+        Self {
+            path: path.into(),
+            readonly: false,
+            image_type,
+            source: None,
+            size_bytes: Some(size_bytes),
+        }
     }
 }
 
@@ -271,7 +298,10 @@ mod tests {
                 boot_vcpus: 2,
                 max_vcpus: 2,
             },
-            memory: MemorySpec { size_mib: 2048 },
+            memory: MemorySpec {
+                size_mib: 2048,
+                max_size_mib: None,
+            },
             boot: BootSpec::DirectKernel {
                 kernel: "/var/lib/ch/images/vmlinux".into(),
                 initramfs: None,
@@ -294,7 +324,14 @@ mod tests {
 
     #[test]
     fn memory_bytes_conversion() {
-        assert_eq!(MemorySpec { size_mib: 1 }.size_bytes(), 1_048_576);
+        assert_eq!(
+            MemorySpec {
+                size_mib: 1,
+                max_size_mib: None
+            }
+            .size_bytes(),
+            1_048_576
+        );
     }
 
     #[test]

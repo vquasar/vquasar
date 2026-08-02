@@ -142,8 +142,8 @@ impl VmManager {
         let mut vms = self.vms.lock().await;
         // Not the `entry` API: preparing TAPs and launching a VMM are async and
         // fallible, and must happen between the presence check and the insert.
-        #[allow(clippy::map_entry)]
-        if !vms.contains_key(&id) {
+        let is_new = !vms.contains_key(&id);
+        if is_new {
             // Prepare host networking (TAP + OVS) for each NIC (section 18).
             let mut taps = Vec::with_capacity(bindings.len());
             for (index, binding) in bindings.iter().enumerate() {
@@ -159,7 +159,7 @@ impl VmManager {
             vms.insert(
                 id,
                 ManagedVm {
-                    record,
+                    record: record.clone(),
                     vmm,
                     console,
                 },
@@ -168,11 +168,88 @@ impl VmManager {
         let managed = vms.get(&id).expect("just inserted");
 
         managed.vmm.create(&spec).await?;
+        // Apply live edits to an already-running VM (design M10): CPU/memory
+        // hot-plug and hot-add of disks/NICs. Anything CH cannot apply live is
+        // still persisted in the record below and takes effect on next restart.
+        if !is_new {
+            self.reconfigure(id, managed, &spec, &bindings).await?;
+        }
         match spec.desired_power_state {
             DesiredPowerState::Running => managed.vmm.boot().await?,
             DesiredPowerState::Stopped => managed.vmm.shutdown().await?,
         }
-        Ok(observe(managed).await)
+        let obs = observe(managed).await;
+        // Record the now-applied spec (and name) so the next reconcile diffs
+        // against it rather than re-applying the same edits.
+        if let Some(m) = vms.get_mut(&id) {
+            m.record = record;
+        }
+        Ok(obs)
+    }
+
+    /// Apply the difference between a running VM's last-applied spec and
+    /// `new_spec`, hot-plugging what Cloud Hypervisor supports (design M10).
+    /// Non-live changes are left for the next restart (the caller persists the
+    /// new spec regardless).
+    async fn reconfigure(
+        &self,
+        id: VmId,
+        managed: &ManagedVm,
+        new_spec: &VirtualMachineSpec,
+        bindings: &[NicBinding],
+    ) -> Result<()> {
+        let old = &managed.record.spec;
+
+        // vCPUs: hot-resize within the boot-time maximum.
+        if new_spec.cpu.boot_vcpus != old.cpu.boot_vcpus {
+            if new_spec.cpu.boot_vcpus <= old.cpu.max_vcpus {
+                managed
+                    .vmm
+                    .resize(Some(new_spec.cpu.boot_vcpus), None)
+                    .await?;
+                info!(vm = %id, vcpus = new_spec.cpu.boot_vcpus, "hot-resized vCPUs");
+            } else {
+                warn!(vm = %id, "vCPU target exceeds max_vcpus; takes effect after restart");
+            }
+        }
+
+        // Memory: hot-resize only within the region reserved at boot.
+        if new_spec.memory.size_mib != old.memory.size_mib {
+            let within_cap = old.memory.hotplug_bytes().is_some()
+                && new_spec.memory.size_mib <= old.memory.max_size_mib.unwrap_or(0);
+            if within_cap {
+                managed
+                    .vmm
+                    .resize(None, Some(new_spec.memory.size_bytes()))
+                    .await?;
+                info!(vm = %id, mib = new_spec.memory.size_mib, "hot-resized memory");
+            } else {
+                warn!(vm = %id, "memory change not hot-pluggable; takes effect after restart");
+            }
+        }
+
+        // Disks: hot-add any new disk (matched by path). Its backing file was
+        // already materialised by storage.prepare().
+        for disk in &new_spec.disks {
+            if !old.disks.iter().any(|o| o.path == disk.path) {
+                managed.vmm.add_disk(disk).await?;
+                info!(vm = %id, disk = %disk.path.display(), "hot-added disk");
+            }
+        }
+
+        // NICs: hot-add any interface beyond the current count.
+        for index in old.network_interfaces.len()..new_spec.network_interfaces.len() {
+            if let Some(binding) = bindings.get(index) {
+                let nic = self.network.prepare(id, index, binding).await?;
+                let tap = TapBinding {
+                    tap: nic.tap,
+                    mac: Some(nic.mac),
+                };
+                managed.vmm.add_net(&tap).await?;
+                info!(vm = %id, index, "hot-added NIC");
+            }
+        }
+        Ok(())
     }
 
     /// Boot a known VM.
@@ -444,7 +521,10 @@ mod tests {
                 boot_vcpus: 1,
                 max_vcpus: 1,
             },
-            memory: MemorySpec { size_mib: 512 },
+            memory: MemorySpec {
+                size_mib: 512,
+                max_size_mib: None,
+            },
             boot: BootSpec::DirectKernel {
                 kernel: "/boot/vmlinux".into(),
                 initramfs: None,

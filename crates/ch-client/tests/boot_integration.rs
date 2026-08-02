@@ -62,7 +62,10 @@ async fn boots_real_vm_and_emits_serial_output() {
             boot_vcpus: 1,
             max_vcpus: 1,
         },
-        memory: MemorySpec { size_mib: 1024 },
+        memory: MemorySpec {
+            size_mib: 1024,
+            max_size_mib: None,
+        },
         boot: BootSpec::DirectKernel {
             kernel,
             initramfs,

@@ -39,6 +39,20 @@ pub struct CpusConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryConfig {
     pub size: u64,
+    /// Size in bytes of the resizable region reserved at boot for memory
+    /// hot-plug. Without it `vm.resize` cannot grow guest RAM (design M10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotplug_size: Option<u64>,
+}
+
+/// Body of `PUT /api/v1/vm.resize` — hot-plug vCPUs and/or memory (design M10).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct VmResize {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desired_vcpus: Option<u32>,
+    /// New total guest RAM in bytes (must be within `size + hotplug_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desired_ram: Option<u64>,
 }
 
 /// Cloud Hypervisor `PayloadConfig`.
@@ -181,6 +195,28 @@ pub struct TranslateOptions {
 /// Translate an orchestration [`VirtualMachineSpec`] into a Cloud Hypervisor
 /// [`VmConfig`].
 ///
+/// Translate one domain [`DiskSpec`] into a CH [`DiskConfig`]. Also used to
+/// hot-add a disk to a running VM (design M10).
+pub fn disk_config(d: &ch_model::DiskSpec) -> DiskConfig {
+    DiskConfig {
+        path: d.path.to_string_lossy().into_owned(),
+        readonly: d.readonly,
+        image_type: Some(match d.image_type {
+            DiskImageType::Raw => ImageType::Raw,
+            DiskImageType::Qcow2 => ImageType::Qcow2,
+        }),
+    }
+}
+
+/// Translate a resolved [`TapBinding`] into a CH [`NetConfig`]. Also used to
+/// hot-add a NIC to a running VM (design M10).
+pub fn net_config(t: &TapBinding) -> NetConfig {
+    NetConfig {
+        tap: Some(t.tap.clone()),
+        mac: t.mac.clone(),
+    }
+}
+
 /// This is the sole bridge from the stable domain model to CH's wire format.
 pub fn to_vm_config(spec: &VirtualMachineSpec, opts: &TranslateOptions) -> VmConfig {
     let cpus = CpusConfig {
@@ -190,6 +226,9 @@ pub fn to_vm_config(spec: &VirtualMachineSpec, opts: &TranslateOptions) -> VmCon
 
     let memory = MemoryConfig {
         size: spec.memory.size_bytes(),
+        // Reserve a resizable region when the spec allows growth, so memory can
+        // be hot-plugged later up to `max_size_mib` (design M10).
+        hotplug_size: spec.memory.hotplug_bytes(),
     };
 
     let payload = match &spec.boot {
@@ -209,27 +248,8 @@ pub fn to_vm_config(spec: &VirtualMachineSpec, opts: &TranslateOptions) -> VmCon
         },
     };
 
-    let disks = spec
-        .disks
-        .iter()
-        .map(|d| DiskConfig {
-            path: d.path.to_string_lossy().into_owned(),
-            readonly: d.readonly,
-            image_type: Some(match d.image_type {
-                DiskImageType::Raw => ImageType::Raw,
-                DiskImageType::Qcow2 => ImageType::Qcow2,
-            }),
-        })
-        .collect();
-
-    let net = opts
-        .taps
-        .iter()
-        .map(|t| NetConfig {
-            tap: Some(t.tap.clone()),
-            mac: t.mac.clone(),
-        })
-        .collect();
+    let disks = spec.disks.iter().map(disk_config).collect();
+    let net = opts.taps.iter().map(net_config).collect();
 
     let serial = match &opts.serial {
         SerialTarget::Off => ConsoleConfig {
@@ -279,7 +299,10 @@ mod tests {
                 boot_vcpus: 2,
                 max_vcpus: 4,
             },
-            memory: MemorySpec { size_mib: 2048 },
+            memory: MemorySpec {
+                size_mib: 2048,
+                max_size_mib: None,
+            },
             boot: BootSpec::DirectKernel {
                 kernel: "/var/lib/ch/images/vmlinux".into(),
                 initramfs: Some("/var/lib/ch/images/initramfs".into()),

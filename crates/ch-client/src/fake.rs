@@ -123,7 +123,10 @@ mod tests {
                 boot_vcpus: 1,
                 max_vcpus: 1,
             },
-            memory: MemorySpec { size_mib: 128 },
+            memory: MemorySpec {
+                size_mib: 128,
+                max_size_mib: None,
+            },
             boot: BootSpec::DirectKernel {
                 kernel: "/boot/vmlinux".into(),
                 initramfs: None,

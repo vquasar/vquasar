@@ -162,6 +162,7 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
         },
         memory: MemorySpec {
             size_mib: args.memory_mib,
+            max_size_mib: None,
         },
         boot,
         disks,

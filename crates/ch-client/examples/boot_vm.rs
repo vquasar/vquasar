@@ -124,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         },
         memory: MemorySpec {
             size_mib: cli.memory_mib,
+            max_size_mib: None,
         },
         boot: match (&cli.firmware, &cli.kernel) {
             (Some(firmware), _) => BootSpec::Firmware {

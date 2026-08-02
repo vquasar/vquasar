@@ -33,6 +33,26 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(net)))
 }
 
+pub async fn update(
+    State(store): State<Store>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateNetwork>,
+) -> ApiResult<Json<Network>> {
+    if body.name.is_empty() {
+        return Err(ApiError::invalid("name is required"));
+    }
+    if let Some(vlan) = body.vlan {
+        if !(1..=4094).contains(&vlan) {
+            return Err(ApiError::invalid("vlan must be between 1 and 4094"));
+        }
+    }
+    store
+        .update_network(id, &body.name, body.vlan)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
+}
+
 pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Network>>> {
     Ok(Json(store.list_networks().await?))
 }

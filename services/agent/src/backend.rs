@@ -19,7 +19,7 @@ use ch_client::{
     CloudHypervisor, FakeHypervisor, Hypervisor, HypervisorVmInfo, LaunchConfig, ProcessConfig,
     SerialTarget, TapBinding,
 };
-use ch_model::{VirtualMachineSpec, VmId};
+use ch_model::{DiskSpec, VirtualMachineSpec, VmId};
 
 use crate::runtime::RuntimeLayout;
 
@@ -35,6 +35,12 @@ pub trait ManagedVmm: Send + Sync {
     async fn info(&self) -> Result<HypervisorVmInfo>;
     /// Send this running VM's live state to `destination_url` (section 28).
     async fn send_migration(&self, destination_url: &str) -> Result<()>;
+    /// Hot-plug: resize vCPUs and/or guest RAM on a running VM (section M10).
+    async fn resize(&self, desired_vcpus: Option<u32>, desired_ram: Option<u64>) -> Result<()>;
+    /// Hot-add a disk to a running VM (section M10).
+    async fn add_disk(&self, disk: &DiskSpec) -> Result<()>;
+    /// Hot-add a NIC bound to a prepared host TAP (section M10).
+    async fn add_net(&self, tap: &TapBinding) -> Result<()>;
     /// Terminate the underlying VMM process (no-op when detached or fake).
     async fn terminate(&mut self) -> Result<()>;
     fn pid(&self) -> Option<u32>;
@@ -56,6 +62,15 @@ impl ManagedVmm for CloudHypervisor {
     }
     async fn send_migration(&self, destination_url: &str) -> Result<()> {
         CloudHypervisor::send_migration(self, destination_url).await
+    }
+    async fn resize(&self, desired_vcpus: Option<u32>, desired_ram: Option<u64>) -> Result<()> {
+        CloudHypervisor::resize(self, desired_vcpus, desired_ram).await
+    }
+    async fn add_disk(&self, disk: &DiskSpec) -> Result<()> {
+        CloudHypervisor::add_disk(self, disk).await
+    }
+    async fn add_net(&self, tap: &TapBinding) -> Result<()> {
+        CloudHypervisor::add_net(self, tap).await
     }
     async fn terminate(&mut self) -> Result<()> {
         CloudHypervisor::terminate(self).await
@@ -80,6 +95,15 @@ impl ManagedVmm for FakeHypervisor {
         Hypervisor::info(self).await
     }
     async fn send_migration(&self, _destination_url: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn resize(&self, _desired_vcpus: Option<u32>, _desired_ram: Option<u64>) -> Result<()> {
+        Ok(())
+    }
+    async fn add_disk(&self, _disk: &DiskSpec) -> Result<()> {
+        Ok(())
+    }
+    async fn add_net(&self, _tap: &TapBinding) -> Result<()> {
         Ok(())
     }
     async fn terminate(&mut self) -> Result<()> {

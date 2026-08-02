@@ -76,6 +76,44 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(tpl)))
 }
 
+pub async fn update(
+    State(store): State<Store>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateTemplate>,
+) -> ApiResult<Json<Template>> {
+    if body.name.is_empty() {
+        return Err(ApiError::invalid("name is required"));
+    }
+    if body.boot_vcpus < 1 || body.max_vcpus < body.boot_vcpus {
+        return Err(ApiError::invalid("require 1 <= boot_vcpus <= max_vcpus"));
+    }
+    if body.disk_format != "raw" && body.disk_format != "qcow2" {
+        return Err(ApiError::invalid("disk_format must be 'raw' or 'qcow2'"));
+    }
+    if store.get_image(body.image_id).await?.is_none() {
+        return Err(ApiError::invalid(format!(
+            "image not found: {}",
+            body.image_id
+        )));
+    }
+    store
+        .update_template(
+            id,
+            &body.name,
+            body.image_id,
+            body.boot_vcpus,
+            body.max_vcpus,
+            body.memory_mib,
+            body.disk_size_bytes,
+            &body.disk_format,
+            body.network_id,
+            body.cloud_init.as_ref(),
+        )
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
+}
+
 pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Template>>> {
     Ok(Json(store.list_templates().await?))
 }

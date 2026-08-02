@@ -321,6 +321,28 @@ impl Store {
         .await
     }
 
+    /// Update a VM's name and/or spec, bumping generation so the controller
+    /// reconciles the change (design M10 editing). `name = None` keeps the name.
+    pub async fn update_vm(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        spec: &VirtualMachineSpec,
+    ) -> Result<Option<Vm>> {
+        sqlx::query_as::<_, Vm>(
+            "UPDATE virtual_machines
+             SET name = COALESCE($2, name), spec=$3, generation=generation+1, updated_at=$4
+             WHERE id=$1
+             RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(Json(spec))
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     pub async fn assign_vm_host(&self, id: Uuid, host_id: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE virtual_machines SET host_id=$2, phase='Scheduling', updated_at=$3 WHERE id=$1",
@@ -412,6 +434,23 @@ impl Store {
         Ok(res.rows_affected() > 0)
     }
 
+    pub async fn update_network(
+        &self,
+        id: Uuid,
+        name: &str,
+        vlan: Option<i32>,
+    ) -> Result<Option<Network>> {
+        sqlx::query_as::<_, Network>(
+            "UPDATE networks SET name=$2, vlan=$3, updated_at=$4 WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(vlan)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     // ---- images (design M9) ---------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
@@ -464,6 +503,36 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_image(
+        &self,
+        id: Uuid,
+        name: &str,
+        source_path: &str,
+        format: &str,
+        boot: &BootSpec,
+        default_size_bytes: Option<i64>,
+        cloud_init: bool,
+        os: Option<&str>,
+    ) -> Result<Option<Image>> {
+        sqlx::query_as::<_, Image>(
+            "UPDATE images SET name=$2, source_path=$3, format=$4, boot=$5,
+                default_size_bytes=$6, cloud_init=$7, os=$8, updated_at=$9
+             WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(source_path)
+        .bind(format)
+        .bind(Json(boot))
+        .bind(default_size_bytes)
+        .bind(cloud_init)
+        .bind(os)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
     }
 
     // ---- templates (design M9) ------------------------------------------
@@ -523,6 +592,41 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_template(
+        &self,
+        id: Uuid,
+        name: &str,
+        image_id: Uuid,
+        boot_vcpus: i32,
+        max_vcpus: i32,
+        memory_mib: i64,
+        disk_size_bytes: Option<i64>,
+        disk_format: &str,
+        network_id: Option<Uuid>,
+        cloud_init: Option<&CloudInitSpec>,
+    ) -> Result<Option<Template>> {
+        sqlx::query_as::<_, Template>(
+            "UPDATE templates SET name=$2, image_id=$3, boot_vcpus=$4, max_vcpus=$5,
+                memory_mib=$6, disk_size_bytes=$7, disk_format=$8, network_id=$9,
+                cloud_init=$10, updated_at=$11
+             WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(image_id)
+        .bind(boot_vcpus)
+        .bind(max_vcpus)
+        .bind(memory_mib)
+        .bind(disk_size_bytes)
+        .bind(disk_format)
+        .bind(network_id)
+        .bind(cloud_init.map(Json))
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
     }
 
     // ---- tasks -----------------------------------------------------------
