@@ -19,6 +19,15 @@ export interface DiskSpec {
   path: string;
   readonly?: boolean;
   image_type?: "raw" | "qcow2";
+  source?: string | null;
+  size_bytes?: number | null;
+}
+
+export interface CloudInitSpec {
+  hostname?: string | null;
+  ssh_authorized_keys?: string[];
+  password?: string | null;
+  user_data?: string | null;
 }
 
 export interface NetworkInterfaceSpec {
@@ -38,6 +47,7 @@ export interface VirtualMachineSpec {
   disks: DiskSpec[];
   network_interfaces: NetworkInterfaceSpec[];
   placement: PlacementSpec;
+  cloud_init?: CloudInitSpec | null;
 }
 
 export type VmPhase =
@@ -127,4 +137,71 @@ export interface CreateVmRequest {
 export interface Accepted {
   vm_id: string;
   task_id: string;
+}
+
+// ---- images & templates (design M9) --------------------------------------
+
+export interface Image {
+  id: string;
+  name: string;
+  source_path: string;
+  format: "raw" | "qcow2";
+  boot: BootSpec;
+  default_size_bytes: number | null;
+  cloud_init: boolean;
+  os: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  image_id: string;
+  boot_vcpus: number;
+  max_vcpus: number;
+  memory_mib: number;
+  disk_size_bytes: number | null;
+  disk_format: "raw" | "qcow2";
+  network_id: string | null;
+  cloud_init: CloudInitSpec | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateImageRequest {
+  name: string;
+  source_path: string;
+  format: "raw" | "qcow2";
+  boot: BootSpec;
+  default_size_bytes?: number | null;
+  cloud_init?: boolean;
+  os?: string | null;
+}
+
+export interface CreateTemplateRequest {
+  name: string;
+  image_id: string;
+  boot_vcpus: number;
+  max_vcpus: number;
+  memory_mib: number;
+  disk_size_bytes?: number | null;
+  disk_format?: "raw" | "qcow2";
+  network_id?: string | null;
+  cloud_init?: CloudInitSpec | null;
+}
+
+export interface TemplateOverrides {
+  boot_vcpus?: number;
+  max_vcpus?: number;
+  memory_mib?: number;
+  disk_size_bytes?: number;
+  network_id?: string;
+  cloud_init?: CloudInitSpec;
+}
+
+export interface CreateVmFromTemplateRequest {
+  name: string;
+  template_id: string;
+  overrides?: TemplateOverrides;
 }

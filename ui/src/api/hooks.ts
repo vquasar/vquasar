@@ -5,11 +5,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import type {
   Accepted,
+  CreateImageRequest,
+  CreateTemplateRequest,
+  CreateVmFromTemplateRequest,
   CreateVmRequest,
   Event,
   Host,
+  Image,
   Network,
   Task,
+  Template,
   Vm,
 } from "./types";
 
@@ -87,6 +92,65 @@ export function useCreateVm() {
   return useMutation({
     mutationFn: (body: CreateVmRequest) => api.post<Accepted>("/vms", body),
     onSuccess: invalidate,
+  });
+}
+
+export function useCreateVmFromTemplate() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (body: CreateVmFromTemplateRequest) =>
+      api.post<Accepted>("/vms/from-template", body),
+    onSuccess: invalidate,
+  });
+}
+
+// ---- images & templates (design M9) --------------------------------------
+
+export function useImages() {
+  return useQuery({
+    queryKey: ["images"],
+    queryFn: () => api.get<Image[]>("/images"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useCreateImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateImageRequest) => api.post<Image>("/images", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
+  });
+}
+
+export function useDeleteImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/images/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
+  });
+}
+
+export function useTemplates() {
+  return useQuery({
+    queryKey: ["templates"],
+    queryFn: () => api.get<Template[]>("/templates"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useCreateTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateTemplateRequest) => api.post<Template>("/templates", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+export function useDeleteTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/templates/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
   });
 }
 

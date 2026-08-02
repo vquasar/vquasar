@@ -288,6 +288,7 @@ mod tests {
             disks: vec![DiskSpec::raw("/var/lib/ch-orchestrator/volumes/root.raw")],
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
+            cloud_init: None,
         }
     }
 

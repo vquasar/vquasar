@@ -4,7 +4,7 @@
 //! dependency. State transitions run inside the methods here; the `generation`
 //! columns exist for optimistic concurrency as the controllers mature.
 
-use ch_model::VirtualMachineSpec;
+use ch_model::{BootSpec, CloudInitSpec, VirtualMachineSpec};
 use chrono::{DateTime, Utc};
 use sqlx::types::Json;
 use sqlx::{FromRow, PgPool};
@@ -56,6 +56,38 @@ pub struct Network {
     pub name: String,
     /// 802.1Q VLAN tag; `None` is a flat/untagged provider network.
     pub vlan: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A base image row: a read-only golden disk + boot recipe (design M9).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Image {
+    pub id: Uuid,
+    pub name: String,
+    pub source_path: String,
+    pub format: String,
+    pub boot: Json<BootSpec>,
+    pub default_size_bytes: Option<i64>,
+    pub cloud_init: bool,
+    pub os: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A VM template row: a reusable preset instantiated into a spec (design M9).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Template {
+    pub id: Uuid,
+    pub name: String,
+    pub image_id: Uuid,
+    pub boot_vcpus: i32,
+    pub max_vcpus: i32,
+    pub memory_mib: i64,
+    pub disk_size_bytes: Option<i64>,
+    pub disk_format: String,
+    pub network_id: Option<Uuid>,
+    pub cloud_init: Option<Json<CloudInitSpec>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -119,13 +151,23 @@ pub struct HostInventory {
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
+    /// Shared-storage directory for per-VM provisioned volumes (design M9).
+    shared_volumes_dir: std::sync::Arc<str>,
 }
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
 
 impl Store {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, shared_volumes_dir: impl Into<String>) -> Self {
+        Self {
+            pool,
+            shared_volumes_dir: shared_volumes_dir.into().into(),
+        }
+    }
+
+    /// The configured shared-storage directory for provisioned volumes.
+    pub fn shared_volumes_dir(&self) -> &str {
+        &self.shared_volumes_dir
     }
 
     /// Apply embedded migrations.
@@ -212,8 +254,18 @@ impl Store {
     // ---- virtual machines ------------------------------------------------
 
     pub async fn insert_vm(&self, name: &str, spec: &VirtualMachineSpec) -> Result<Vm> {
+        self.insert_vm_with_id(Uuid::new_v4(), name, spec).await
+    }
+
+    /// Insert a VM with a caller-chosen id. Used when the spec must reference the
+    /// id before persistence (e.g. a provisioned volume path — design M9).
+    pub async fn insert_vm_with_id(
+        &self,
+        id: Uuid,
+        name: &str,
+        spec: &VirtualMachineSpec,
+    ) -> Result<Vm> {
         let now = Utc::now();
-        let id = Uuid::new_v4();
         sqlx::query_as::<_, Vm>(
             "INSERT INTO virtual_machines (id, name, spec, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $4)
@@ -354,6 +406,119 @@ impl Store {
 
     pub async fn delete_network(&self, id: Uuid) -> Result<bool> {
         let res = sqlx::query("DELETE FROM networks WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    // ---- images (design M9) ---------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_image(
+        &self,
+        name: &str,
+        source_path: &str,
+        format: &str,
+        boot: &BootSpec,
+        default_size_bytes: Option<i64>,
+        cloud_init: bool,
+        os: Option<&str>,
+    ) -> Result<Image> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Image>(
+            "INSERT INTO images
+                (id, name, source_path, format, boot, default_size_bytes, cloud_init, os, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+             RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(name)
+        .bind(source_path)
+        .bind(format)
+        .bind(Json(boot))
+        .bind(default_size_bytes)
+        .bind(cloud_init)
+        .bind(os)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_image(&self, id: Uuid) -> Result<Option<Image>> {
+        sqlx::query_as::<_, Image>("SELECT * FROM images WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn list_images(&self) -> Result<Vec<Image>> {
+        sqlx::query_as::<_, Image>("SELECT * FROM images ORDER BY created_at")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn delete_image(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM images WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    // ---- templates (design M9) ------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_template(
+        &self,
+        name: &str,
+        image_id: Uuid,
+        boot_vcpus: i32,
+        max_vcpus: i32,
+        memory_mib: i64,
+        disk_size_bytes: Option<i64>,
+        disk_format: &str,
+        network_id: Option<Uuid>,
+        cloud_init: Option<&CloudInitSpec>,
+    ) -> Result<Template> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Template>(
+            "INSERT INTO templates
+                (id, name, image_id, boot_vcpus, max_vcpus, memory_mib, disk_size_bytes,
+                 disk_format, network_id, cloud_init, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+             RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(name)
+        .bind(image_id)
+        .bind(boot_vcpus)
+        .bind(max_vcpus)
+        .bind(memory_mib)
+        .bind(disk_size_bytes)
+        .bind(disk_format)
+        .bind(network_id)
+        .bind(cloud_init.map(Json))
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_template(&self, id: Uuid) -> Result<Option<Template>> {
+        sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn list_templates(&self) -> Result<Vec<Template>> {
+        sqlx::query_as::<_, Template>("SELECT * FROM templates ORDER BY created_at")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn delete_template(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM templates WHERE id=$1")
             .bind(id)
             .execute(&self.pool)
             .await?;

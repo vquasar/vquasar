@@ -5,8 +5,10 @@
 pub mod error;
 mod events;
 mod hosts;
+mod images;
 mod networks;
 mod tasks;
+mod templates;
 mod vms;
 
 use axum::routing::{get, post};
@@ -20,6 +22,7 @@ pub fn router(store: Store) -> Router {
         .route("/hosts", get(hosts::list).post(hosts::register))
         .route("/hosts/:id", get(hosts::get))
         .route("/vms", get(vms::list).post(vms::create))
+        .route("/vms/from-template", post(vms::create_from_template))
         .route("/vms/:id", get(vms::get).delete(vms::delete))
         .route("/vms/:id/start", post(vms::start))
         .route("/vms/:id/stop", post(vms::stop))
@@ -27,6 +30,13 @@ pub fn router(store: Store) -> Router {
         .route("/vms/:id/console", get(crate::console::console_ws))
         .route("/networks", get(networks::list).post(networks::create))
         .route("/networks/:id", get(networks::get).delete(networks::delete))
+        .route("/images", get(images::list).post(images::create))
+        .route("/images/:id", get(images::get).delete(images::delete))
+        .route("/templates", get(templates::list).post(templates::create))
+        .route(
+            "/templates/:id",
+            get(templates::get).delete(templates::delete),
+        )
         .route("/tasks", get(tasks::list))
         .route("/tasks/:id", get(tasks::get))
         .route("/events", get(events::list))

@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(10)
         .connect(&config.database.url)
         .await?;
-    let store = Store::new(pool);
+    let store = Store::new(pool, config.storage.shared_volumes_dir.clone());
     store.migrate().await?;
     info!("migrations applied");
 

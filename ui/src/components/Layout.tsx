@@ -15,6 +15,8 @@ import ComputerIcon from "@mui/icons-material/Computer";
 import LanIcon from "@mui/icons-material/Lan";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import NotificationsIcon from "@mui/icons-material/Notifications";
+import AlbumIcon from "@mui/icons-material/Album";
+import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
 
 const DRAWER_WIDTH = 220;
 
@@ -22,6 +24,8 @@ const NAV = [
   { to: "/", label: "Dashboard", icon: <DashboardIcon /> },
   { to: "/hosts", label: "Hosts", icon: <DnsIcon /> },
   { to: "/vms", label: "Virtual Machines", icon: <ComputerIcon /> },
+  { to: "/images", label: "Images", icon: <AlbumIcon /> },
+  { to: "/templates", label: "Templates", icon: <ViewQuiltIcon /> },
   { to: "/networks", label: "Networks", icon: <LanIcon /> },
   { to: "/tasks", label: "Tasks", icon: <TaskAltIcon /> },
   { to: "/events", label: "Events", icon: <NotificationsIcon /> },

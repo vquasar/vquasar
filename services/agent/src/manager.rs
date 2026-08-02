@@ -21,6 +21,7 @@ use crate::backend::{Backend, ManagedVmm};
 use crate::console::SerialHub;
 use crate::network::{NetworkBackend, NicBinding};
 use crate::runtime::{RuntimeLayout, VmRecord};
+use crate::storage::StorageProvisioner;
 
 /// A failure from a manager operation.
 #[derive(Debug, Error)]
@@ -36,6 +37,9 @@ pub enum ManagerError {
 
     #[error("network error: {0}")]
     Network(#[from] crate::network::NetworkError),
+
+    #[error("storage error: {0}")]
+    Storage(#[from] crate::storage::StorageError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -82,6 +86,7 @@ pub struct MigrationSettings {
 pub struct VmManager {
     backend: Arc<dyn Backend>,
     network: Arc<dyn NetworkBackend>,
+    storage: StorageProvisioner,
     layout: RuntimeLayout,
     migration: MigrationSettings,
     vms: Mutex<HashMap<VmId, ManagedVm>>,
@@ -92,12 +97,14 @@ impl VmManager {
     pub fn new(
         backend: Arc<dyn Backend>,
         network: Arc<dyn NetworkBackend>,
+        storage: StorageProvisioner,
         layout: RuntimeLayout,
         migration: MigrationSettings,
     ) -> Self {
         Self {
             backend,
             network,
+            storage,
             layout,
             migration,
             vms: Mutex::new(HashMap::new()),
@@ -118,6 +125,11 @@ impl VmManager {
     ) -> Result<ObservedVm> {
         spec.validate()
             .map_err(|e| ManagerError::InvalidSpec(e.to_string()))?;
+
+        // Materialise host storage (clone volumes, generate the cloud-init seed)
+        // and fold the seed disk into the spec before we launch (design M9).
+        // Idempotent, so a repeated reconcile reuses existing files.
+        let spec = self.storage.prepare(id, &name, spec).await?;
 
         let record = VmRecord {
             id,
@@ -427,6 +439,7 @@ mod tests {
             disks: vec![],
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
+            cloud_init: None,
         }
     }
 
@@ -445,7 +458,13 @@ mod tests {
         let network = Arc::new(crate::network::NoopNetworkBackend);
         let layout = RuntimeLayout::new(dir);
         (
-            VmManager::new(backend.clone(), network, layout, test_migration(dir)),
+            VmManager::new(
+                backend.clone(),
+                network,
+                StorageProvisioner::new(dir.join("shared")),
+                layout,
+                test_migration(dir),
+            ),
             backend,
         )
     }
@@ -542,6 +561,7 @@ mod tests {
         let mgr = VmManager::new(
             backend,
             network,
+            StorageProvisioner::new(dir.path().join("shared")),
             RuntimeLayout::new(dir.path()),
             test_migration(dir.path()),
         );

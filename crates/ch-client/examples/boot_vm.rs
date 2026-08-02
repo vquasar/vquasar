@@ -111,6 +111,8 @@ async fn main() -> anyhow::Result<()> {
             path: ro.clone(),
             readonly: true,
             image_type: ch_model::DiskImageType::Raw,
+            source: None,
+            size_bytes: None,
         });
     }
 
@@ -137,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         disks,
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
+        cloud_init: None,
     };
     spec.validate()?;
 

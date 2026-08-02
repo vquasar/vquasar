@@ -161,6 +161,14 @@ pub struct StorageSection {
     pub backend: String,
     /// Root path for local volumes (section 20).
     pub path: PathBuf,
+    /// Shared-storage root. Provisioned per-VM volumes and cloud-init seeds live
+    /// here so live migration can reuse them on the destination (design M9).
+    #[serde(default = "default_shared_dir")]
+    pub shared_dir: PathBuf,
+}
+
+fn default_shared_dir() -> PathBuf {
+    PathBuf::from("/var/lib/ch-orchestrator/shared")
 }
 
 impl Default for StorageSection {
@@ -168,6 +176,7 @@ impl Default for StorageSection {
         Self {
             backend: "local".to_string(),
             path: PathBuf::from("/var/lib/ch-orchestrator"),
+            shared_dir: default_shared_dir(),
         }
     }
 }

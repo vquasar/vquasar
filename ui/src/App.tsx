@@ -7,6 +7,8 @@ import { CreateVm } from "./pages/CreateVm";
 import { VmDetail } from "./pages/VmDetail";
 import { Console } from "./pages/Console";
 import { Networks } from "./pages/Networks";
+import { Images } from "./pages/Images";
+import { Templates } from "./pages/Templates";
 import { Tasks } from "./pages/Tasks";
 import { Events } from "./pages/Events";
 
@@ -21,6 +23,8 @@ export function App() {
         <Route path="/vms/:id" element={<VmDetail />} />
         <Route path="/vms/:id/console" element={<Console />} />
         <Route path="/networks" element={<Networks />} />
+        <Route path="/images" element={<Images />} />
+        <Route path="/templates" element={<Templates />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/events" element={<Events />} />
         <Route path="*" element={<Navigate to="/" replace />} />

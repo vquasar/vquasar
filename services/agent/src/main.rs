@@ -13,6 +13,7 @@ mod inventory;
 mod manager;
 mod network;
 mod runtime;
+mod storage;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
         bridge = %config.network.bridge,
         "network dataplane configured"
     );
+    let storage = crate::storage::StorageProvisioner::new(config.storage.shared_dir.clone());
+    info!(shared_dir = %config.storage.shared_dir.display(), "storage provisioner configured");
     let migration = crate::manager::MigrationSettings {
         transport: config.migration.transport.clone(),
         advertise_host: config.migration.advertise_host.clone(),
@@ -79,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         port_max: config.migration.port_max,
         socket_dir: config.migration.socket_dir.clone(),
     };
-    let manager = Arc::new(VmManager::new(backend, network, layout, migration));
+    let manager = Arc::new(VmManager::new(backend, network, storage, layout, migration));
 
     // Recover VMs that survived a previous agent instance (section 11).
     manager.recover().await;

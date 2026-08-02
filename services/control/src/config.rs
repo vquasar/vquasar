@@ -18,7 +18,25 @@ pub struct ControlConfig {
     #[serde(default)]
     pub reconcile: ReconcileConfig,
     #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// Shared-storage layout the control plane uses to place provisioned volumes
+/// (design M9). Must be a path every agent can reach (e.g. an NFS mount).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Directory for per-VM provisioned volumes.
+    pub shared_volumes_dir: String,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            shared_volumes_dir: "/var/lib/ch-orchestrator/shared/volumes".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

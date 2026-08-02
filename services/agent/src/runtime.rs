@@ -137,6 +137,7 @@ mod tests {
             disks: vec![],
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
+            cloud_init: None,
         }
     }
 

@@ -284,6 +284,7 @@ fn to_status(err: ManagerError) -> Status {
         ManagerError::InvalidSpec(msg) => Status::invalid_argument(msg),
         ManagerError::Hypervisor(e) => Status::internal(e.to_string()),
         ManagerError::Network(e) => Status::internal(e.to_string()),
+        ManagerError::Storage(e) => Status::internal(e.to_string()),
         ManagerError::Io(e) => Status::internal(e.to_string()),
     }
 }
@@ -312,6 +313,7 @@ mod tests {
         let manager = Arc::new(VmManager::new(
             backend,
             network,
+            crate::storage::StorageProvisioner::new(dir.join("shared")),
             RuntimeLayout::new(dir),
             migration,
         ));
@@ -334,6 +336,7 @@ mod tests {
             disks: vec![],
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
+            cloud_init: None,
         }
     }
 

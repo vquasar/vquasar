@@ -74,9 +74,12 @@ async fn boots_real_vm_and_emits_serial_output() {
             path: rootfs,
             readonly: true,
             image_type: DiskImageType::Raw,
+            source: None,
+            size_bytes: None,
         }],
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
+        cloud_init: None,
     };
     spec.validate().expect("spec valid");
 

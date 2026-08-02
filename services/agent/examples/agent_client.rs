@@ -149,6 +149,8 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
             path: ro.clone(),
             readonly: true,
             image_type: ch_model::DiskImageType::Raw,
+            source: None,
+            size_bytes: None,
         });
     }
 
@@ -165,5 +167,6 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
         disks,
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
+        cloud_init: None,
     })
 }
