@@ -122,11 +122,16 @@ function LaunchDialog({ template, onClose }: { template: Template | null; onClos
   const launch = useCreateVmFromTemplate();
   const navigate = useNavigate();
   const [name, setName] = useState("");
+  const [cloudInit, setCloudInit] = useState("");
 
   if (!template) return null;
   const submit = () =>
     launch.mutate(
-      { name, template_id: template.id },
+      {
+        name,
+        template_id: template.id,
+        overrides: cloudInit.trim() ? { cloud_init: { user_data: cloudInit } } : undefined,
+      },
       {
         onSuccess: () => {
           onClose();
@@ -146,6 +151,16 @@ function LaunchDialog({ template, onClose }: { template: Template | null; onClos
             {template.disk_size_bytes ? formatBytes(template.disk_size_bytes) : "image default"} ·{" "}
             {template.disk_format}
           </Typography>
+          <TextField
+            label="Cloud-init user-data (optional)"
+            value={cloudInit}
+            onChange={(e) => setCloudInit(e.target.value)}
+            multiline
+            minRows={4}
+            placeholder={"#cloud-config\nhostname: my-vm\npackages:\n  - nginx"}
+            helperText="Raw NoCloud user-data, used verbatim (overrides the template's cloud-init)"
+            slotProps={{ input: { sx: { fontFamily: "monospace", fontSize: 13 } } }}
+          />
           {launch.isError && <Alert severity="error">{(launch.error as Error).message}</Alert>}
         </Stack>
       </DialogContent>

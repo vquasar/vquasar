@@ -41,6 +41,7 @@ export function CreateVm() {
   const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
   const [disks, setDisks] = useState<DiskRow[]>([{ path: "", readonly: false }]);
   const [networkId, setNetworkId] = useState<string>("");
+  const [cloudInit, setCloudInit] = useState("");
 
   const setDisk = (i: number, patch: Partial<DiskRow>) =>
     setDisks((d) => d.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
@@ -65,6 +66,7 @@ export function CreateVm() {
         disks: diskSpecs,
         network_interfaces: networkId ? [{ network_id: networkId }] : [],
         placement: {},
+        cloud_init: cloudInit.trim() ? { user_data: cloudInit } : null,
       },
     };
 
@@ -175,6 +177,18 @@ export function CreateVm() {
                 New network
               </Button>
             </Stack>
+
+            <Divider textAlign="left">Cloud-init</Divider>
+            <TextField
+              label="User-data (#cloud-config, optional)"
+              value={cloudInit}
+              onChange={(e) => setCloudInit(e.target.value)}
+              multiline
+              minRows={4}
+              placeholder={"#cloud-config\nhostname: my-vm\npackages:\n  - nginx"}
+              helperText="Raw NoCloud user-data, used verbatim (replaces the generated defaults)"
+              slotProps={{ input: { sx: { fontFamily: "monospace", fontSize: 13 } } }}
+            />
 
             {createVm.isError && <Alert severity="error">{(createVm.error as Error).message}</Alert>}
 

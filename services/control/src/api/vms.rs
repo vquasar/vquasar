@@ -177,7 +177,9 @@ fn build_spec_from_template(
 
     // Cloud-init: override wins over template default; only attach when the
     // image expects a seed. Default the hostname to the VM name.
-    let cloud_init = if image.cloud_init {
+    // Attach cloud-init when the image expects a seed, or whenever the caller
+    // explicitly supplied one (raw user-data must be honoured either way, M10).
+    let cloud_init = if image.cloud_init || ov.cloud_init.is_some() {
         let mut ci = ov
             .cloud_init
             .clone()
