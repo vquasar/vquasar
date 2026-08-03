@@ -125,7 +125,7 @@ function EditVmDialog({ vm, onClose }: { vm: Vm; onClose: () => void }) {
               label="New size (GiB)"
               value={growGib}
               onChange={(e) => setGrowGib(e.target.value)}
-              helperText="applies after power-off"
+              helperText="applied on next Stop → Start (grow the guest FS after)"
               fullWidth
             />
           </Stack>

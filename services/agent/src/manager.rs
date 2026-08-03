@@ -140,8 +140,33 @@ impl VmManager {
         self.layout.store_record(&record).await?;
 
         let mut vms = self.vms.lock().await;
-        // Not the `entry` API: preparing TAPs and launching a VMM are async and
-        // fallible, and must happen between the presence check and the insert.
+
+        // Power off (design M10): a stopped VM has its VMM *terminated*, not just
+        // guest-shut-down — otherwise the VMM keeps an exclusive lock on the disk
+        // file and offline changes (notably a disk grow) can never apply. The
+        // record stays on disk so the VM can be started again later.
+        if spec.desired_power_state == DesiredPowerState::Stopped {
+            if let Some(mut managed) = vms.remove(&id) {
+                let _ = managed.vmm.shutdown().await; // best-effort clean guest stop
+                managed.vmm.terminate().await?; // kill the VMM -> release the disk
+            }
+            drop(vms);
+            // Give a re-attached (unowned) VMM a moment to exit and release the
+            // file lock, then apply any pending offline change (e.g. disk grow).
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            self.storage.prepare(id, &name, spec).await?;
+            return Ok(ObservedVm {
+                id,
+                name,
+                phase: VmPhase::Stopped,
+                pid: None,
+                message: None,
+            });
+        }
+
+        // desired == Running. Not the `entry` API: preparing TAPs and launching a
+        // VMM are async and fallible, and must happen between the presence check
+        // and the insert.
         let is_new = !vms.contains_key(&id);
         if is_new {
             // Prepare host networking (TAP + OVS) for each NIC (section 18).
@@ -174,10 +199,7 @@ impl VmManager {
         if !is_new {
             self.reconfigure(id, managed, &spec, &bindings).await?;
         }
-        match spec.desired_power_state {
-            DesiredPowerState::Running => managed.vmm.boot().await?,
-            DesiredPowerState::Stopped => managed.vmm.shutdown().await?,
-        }
+        managed.vmm.boot().await?;
         let obs = observe(managed).await;
         // Record the now-applied spec (and name) so the next reconcile diffs
         // against it rather than re-applying the same edits.
