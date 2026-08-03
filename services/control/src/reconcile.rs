@@ -33,8 +33,34 @@ pub async fn run(store: Store, interval: Duration) {
         if let Err(e) = reconcile_vms(&store).await {
             warn!(error = %e, "vm reconcile pass failed");
         }
+        if let Err(e) = refresh_vm_ips(&store).await {
+            warn!(error = %e, "vm ip refresh pass failed");
+        }
         sleep(interval).await;
     }
+}
+
+/// Refresh each VM's agentlessly-discovered IP from its host, independent of the
+/// reconcile generation so settled (Running) VMs still get an up-to-date address
+/// (design M11).
+pub async fn refresh_vm_ips(store: &Store) -> anyhow::Result<()> {
+    for host in store.list_hosts().await? {
+        if host.state != "Ready" {
+            continue;
+        }
+        let Ok(vms) = Agent::new(host.endpoint.clone()).list_vms().await else {
+            continue; // transient; try again next tick
+        };
+        for st in vms {
+            if st.ip_address.is_empty() {
+                continue;
+            }
+            if let Ok(id) = uuid::Uuid::parse_str(&st.vm_id) {
+                let _ = store.set_vm_ip(id, &st.ip_address).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Poll every host's agent and refresh its availability + inventory.
@@ -300,8 +326,9 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         Ok(state) => {
             let phase = phase_string(state.phase);
             let msg = none_if_empty(state.message);
+            let ip = none_if_empty(state.ip_address);
             store
-                .update_vm_observed(vm.id, phase, vm.generation, msg.as_deref())
+                .update_vm_observed(vm.id, phase, vm.generation, msg.as_deref(), ip.as_deref())
                 .await?;
             if let Some(task) = store.latest_open_task_for_vm(vm.id).await? {
                 store.update_task(task.id, "Succeeded", 100, None).await?;

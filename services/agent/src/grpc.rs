@@ -261,6 +261,7 @@ fn to_proto(obs: ObservedVm) -> VmObservedState {
         vm_id: obs.id.to_string(),
         phase: phase_to_proto(obs.phase) as i32,
         message: obs.message.unwrap_or_default(),
+        ip_address: obs.ip.unwrap_or_default(),
     }
 }
 
@@ -314,6 +315,7 @@ mod tests {
             backend,
             network,
             crate::storage::StorageProvisioner::new(dir.join("shared")),
+            crate::ipdiscovery::IpDiscovery::new("br-int"),
             RuntimeLayout::new(dir),
             migration,
         ));

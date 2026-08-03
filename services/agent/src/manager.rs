@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::backend::{Backend, ManagedVmm};
 use crate::console::SerialHub;
+use crate::ipdiscovery::IpDiscovery;
 use crate::network::{NetworkBackend, NicBinding};
 use crate::runtime::{RuntimeLayout, VmRecord};
 use crate::storage::StorageProvisioner;
@@ -55,6 +56,8 @@ pub struct ObservedVm {
     pub phase: VmPhase,
     pub pid: Option<u32>,
     pub message: Option<String>,
+    /// Guest IP learned agentlessly via neighbor snooping (design M11).
+    pub ip: Option<String>,
 }
 
 struct ManagedVm {
@@ -87,6 +90,7 @@ pub struct VmManager {
     backend: Arc<dyn Backend>,
     network: Arc<dyn NetworkBackend>,
     storage: StorageProvisioner,
+    ipdiscovery: IpDiscovery,
     layout: RuntimeLayout,
     migration: MigrationSettings,
     vms: Mutex<HashMap<VmId, ManagedVm>>,
@@ -98,6 +102,7 @@ impl VmManager {
         backend: Arc<dyn Backend>,
         network: Arc<dyn NetworkBackend>,
         storage: StorageProvisioner,
+        ipdiscovery: IpDiscovery,
         layout: RuntimeLayout,
         migration: MigrationSettings,
     ) -> Self {
@@ -105,6 +110,7 @@ impl VmManager {
             backend,
             network,
             storage,
+            ipdiscovery,
             layout,
             migration,
             vms: Mutex::new(HashMap::new()),
@@ -129,7 +135,14 @@ impl VmManager {
         // Materialise host storage (clone volumes, generate the cloud-init seed)
         // and fold the seed disk into the spec before we launch (design M9).
         // Idempotent, so a repeated reconcile reuses existing files.
-        let spec = self.storage.prepare(id, &name, spec).await?;
+        let mut spec = self.storage.prepare(id, &name, spec).await?;
+        // Persist the control-allocated NIC MACs in the record so agentless IP
+        // discovery can match neighbor-table entries to this VM (design M11).
+        for (nic, binding) in spec.network_interfaces.iter_mut().zip(bindings.iter()) {
+            if nic.mac.is_none() {
+                nic.mac = Some(binding.mac.clone());
+            }
+        }
 
         let record = VmRecord {
             id,
@@ -161,6 +174,7 @@ impl VmManager {
                 phase: VmPhase::Stopped,
                 pid: None,
                 message: None,
+                ip: None,
             });
         }
 
@@ -200,7 +214,7 @@ impl VmManager {
             self.reconfigure(id, managed, &spec, &bindings).await?;
         }
         managed.vmm.boot().await?;
-        let obs = observe(managed).await;
+        let obs = observe(managed, &self.ipdiscovery).await;
         // Record the now-applied spec (and name) so the next reconcile diffs
         // against it rather than re-applying the same edits.
         if let Some(m) = vms.get_mut(&id) {
@@ -279,7 +293,7 @@ impl VmManager {
         let vms = self.vms.lock().await;
         let managed = vms.get(&id).ok_or(ManagerError::NotFound(id))?;
         managed.vmm.boot().await?;
-        Ok(observe(managed).await)
+        Ok(observe(managed, &self.ipdiscovery).await)
     }
 
     /// Request an orderly shutdown of a known VM.
@@ -287,7 +301,7 @@ impl VmManager {
         let vms = self.vms.lock().await;
         let managed = vms.get(&id).ok_or(ManagerError::NotFound(id))?;
         managed.vmm.shutdown().await?;
-        Ok(observe(managed).await)
+        Ok(observe(managed, &self.ipdiscovery).await)
     }
 
     /// Shut down, terminate the VMM, release host networking, and remove all
@@ -314,7 +328,7 @@ impl VmManager {
     pub async fn get(&self, id: VmId) -> Result<ObservedVm> {
         let vms = self.vms.lock().await;
         let managed = vms.get(&id).ok_or(ManagerError::NotFound(id))?;
-        Ok(observe(managed).await)
+        Ok(observe(managed, &self.ipdiscovery).await)
     }
 
     /// Get a serial-console output subscription and input sender for a VM.
@@ -415,7 +429,7 @@ impl VmManager {
                 console,
             },
         );
-        Ok(observe(vms.get(&id).expect("just inserted")).await)
+        Ok(observe(vms.get(&id).expect("just inserted"), &self.ipdiscovery).await)
     }
 
     /// Source: send a running VM's live state to `destination_url`.
@@ -437,7 +451,7 @@ impl VmManager {
         let vms = self.vms.lock().await;
         let mut out = Vec::with_capacity(vms.len());
         for managed in vms.values() {
-            out.push(observe(managed).await);
+            out.push(observe(managed, &self.ipdiscovery).await);
         }
         out
     }
@@ -493,17 +507,32 @@ impl VmManager {
 }
 
 /// Derive observed state from a managed VM's live hypervisor info.
-async fn observe(managed: &ManagedVm) -> ObservedVm {
+async fn observe(managed: &ManagedVm, ipd: &IpDiscovery) -> ObservedVm {
     let (phase, message) = match managed.vmm.info().await {
         Ok(info) => (phase_of(info.state), None),
         Err(e) => (VmPhase::Failed, Some(e.to_string())),
     };
+    // Agentless IP discovery: the first NIC MAC that currently resolves to an
+    // address in the host neighbor table (design M11). Older records may not
+    // have persisted the MAC, so re-derive it deterministically when absent.
+    let mut ip = None;
+    for (index, nic) in managed.record.spec.network_interfaces.iter().enumerate() {
+        let mac = nic
+            .mac
+            .clone()
+            .unwrap_or_else(|| ch_model::allocate_mac(managed.record.id, index));
+        if let Some(addr) = ipd.ip_for_mac(&mac).await {
+            ip = Some(addr);
+            break;
+        }
+    }
     ObservedVm {
         id: managed.record.id,
         name: managed.record.name.clone(),
         phase,
         pid: managed.vmm.pid(),
         message,
+        ip,
     }
 }
 
@@ -578,6 +607,7 @@ mod tests {
                 backend.clone(),
                 network,
                 StorageProvisioner::new(dir.join("shared")),
+                IpDiscovery::new("br-int"),
                 layout,
                 test_migration(dir),
             ),
@@ -678,6 +708,7 @@ mod tests {
             backend,
             network,
             StorageProvisioner::new(dir.path().join("shared")),
+            IpDiscovery::new("br-int"),
             RuntimeLayout::new(dir.path()),
             test_migration(dir.path()),
         );

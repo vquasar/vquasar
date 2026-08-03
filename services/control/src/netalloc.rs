@@ -6,18 +6,10 @@
 
 use uuid::Uuid;
 
-/// Allocate the MAC for a VM's `index`-th NIC.
-///
-/// Mixes the full 128-bit id with the index so distinct VMs (and NICs) get
-/// distinct MACs even when their ids share leading bytes.
+/// Allocate the MAC for a VM's `index`-th NIC. Delegates to the shared model
+/// allocator so the agent can re-derive the same MAC for IP discovery (M11).
 pub fn allocate_mac(vm_id: Uuid, index: usize) -> String {
-    let mixed =
-        vm_id.as_u128() ^ (index as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835);
-    let b = mixed.to_le_bytes();
-    format!(
-        "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        b[0], b[1], b[2], b[3], b[4]
-    )
+    ch_model::allocate_mac(ch_model::VmId::from_uuid(vm_id), index)
 }
 
 #[cfg(test)]

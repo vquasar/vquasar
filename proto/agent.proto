@@ -131,6 +131,8 @@ message VmObservedState {
   string vm_id = 1;
   Phase phase = 2;
   string message = 3;
+  // Guest IP discovered agentlessly via host neighbor snooping (design M11).
+  string ip_address = 4;
 
   enum Phase {
     PHASE_UNSPECIFIED = 0;

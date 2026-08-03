@@ -362,16 +362,36 @@ impl Store {
         phase: &str,
         observed_generation: i64,
         message: Option<&str>,
+        ip_address: Option<&str>,
     ) -> Result<()> {
+        // Keep the last-known IP when this tick didn't discover one (COALESCE),
+        // so a transient miss doesn't blank the address in the UI (design M11).
         sqlx::query(
             "UPDATE virtual_machines
-             SET phase=$2, observed_generation=$3, message=$4, updated_at=$5
+             SET phase=$2, observed_generation=$3, message=$4,
+                 ip_address=COALESCE($5, ip_address), updated_at=$6
              WHERE id=$1",
         )
         .bind(id)
         .bind(phase)
         .bind(observed_generation)
         .bind(message)
+        .bind(ip_address)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// Update a VM's discovered IP (design M11). No-op when unchanged, so it
+    /// doesn't churn `updated_at` every tick.
+    pub async fn set_vm_ip(&self, id: Uuid, ip: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE virtual_machines SET ip_address=$2, updated_at=$3
+             WHERE id=$1 AND ip_address IS DISTINCT FROM $2",
+        )
+        .bind(id)
+        .bind(ip)
         .bind(Utc::now())
         .execute(&self.pool)
         .await

@@ -10,6 +10,7 @@ mod config;
 mod console;
 mod grpc;
 mod inventory;
+mod ipdiscovery;
 mod manager;
 mod network;
 mod runtime;
@@ -75,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
     );
     let storage = crate::storage::StorageProvisioner::new(config.storage.shared_dir.clone());
     info!(shared_dir = %config.storage.shared_dir.display(), "storage provisioner configured");
+    // Agentless guest-IP discovery via neighbor snooping on the bridge (M11).
+    let ipdiscovery = crate::ipdiscovery::IpDiscovery::new(config.network.bridge.clone());
+    ipdiscovery.start();
     let migration = crate::manager::MigrationSettings {
         transport: config.migration.transport.clone(),
         advertise_host: config.migration.advertise_host.clone(),
@@ -82,7 +86,14 @@ async fn main() -> anyhow::Result<()> {
         port_max: config.migration.port_max,
         socket_dir: config.migration.socket_dir.clone(),
     };
-    let manager = Arc::new(VmManager::new(backend, network, storage, layout, migration));
+    let manager = Arc::new(VmManager::new(
+        backend,
+        network,
+        storage,
+        ipdiscovery,
+        layout,
+        migration,
+    ));
 
     // Recover VMs that survived a previous agent instance (section 11).
     manager.recover().await;

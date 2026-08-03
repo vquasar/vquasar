@@ -7,8 +7,8 @@
 use ch_proto::agent::host_agent_client::HostAgentClient;
 use ch_proto::agent::{
     DeleteVmRequest, DiscardVmRequest, EnsureVmRequest, FinalizeReceiveRequest, GetHostInfoRequest,
-    GetHostInfoResponse, NetworkBinding, PrepareReceiveRequest, SendMigrationRequest,
-    VmObservedState,
+    GetHostInfoResponse, ListVmsRequest, NetworkBinding, PrepareReceiveRequest,
+    SendMigrationRequest, VmObservedState,
 };
 use tonic::transport::Channel;
 
@@ -52,6 +52,13 @@ impl Agent {
             .get_host_info(GetHostInfoRequest {})
             .await?
             .into_inner())
+    }
+
+    /// Observed state of every VM the host currently manages (used to refresh
+    /// live fields like the discovered IP each tick — design M11).
+    pub async fn list_vms(&self) -> Result<Vec<VmObservedState>, AgentError> {
+        let mut client = self.client().await?;
+        Ok(client.list_vms(ListVmsRequest {}).await?.into_inner().vms)
     }
 
     /// Reconcile a VM towards `spec_json` (the JSON-encoded orchestration spec)

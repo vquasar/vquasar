@@ -279,6 +279,20 @@ pub struct NetworkInterfaceSpec {
     pub mac: Option<String>,
 }
 
+/// Deterministic, stable, locally-administered MAC for a VM's NIC, derived from
+/// the VM id + NIC index (design section 23). Shared by the control plane (which
+/// allocates it) and the agent (which re-derives it for IP discovery, M11), so
+/// both always agree without persisting per-NIC state.
+pub fn allocate_mac(vm_id: VmId, index: usize) -> String {
+    let mixed = vm_id.as_uuid().as_u128()
+        ^ (index as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835);
+    let b = mixed.to_le_bytes();
+    format!(
+        "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        b[0], b[1], b[2], b[3], b[4]
+    )
+}
+
 /// Placement constraints. Empty means "the scheduler decides" (section 17).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementSpec {

@@ -23,7 +23,7 @@ pub use ids::{HostId, NetworkId, TaskId, VmId};
 pub use meta::{Generation, Metadata};
 pub use validation::ValidationError;
 pub use vm::{
-    BootSpec, CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec, MemorySpec,
-    NetworkInterfaceSpec, PlacementSpec, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
-    VmPhase,
+    allocate_mac, BootSpec, CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec,
+    MemorySpec, NetworkInterfaceSpec, PlacementSpec, VirtualMachine, VirtualMachineSpec,
+    VirtualMachineStatus, VmPhase,
 };
