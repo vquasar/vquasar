@@ -13,6 +13,7 @@ import type {
   Event,
   Host,
   Image,
+  IpAllocation,
   Network,
   Task,
   Template,
@@ -234,5 +235,14 @@ export function useDeleteNetwork() {
   return useMutation({
     mutationFn: (id: string) => api.del<void>(`/networks/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["networks"] }),
+  });
+}
+
+export function useNetworkAllocations(id: string | undefined) {
+  return useQuery({
+    queryKey: ["networks", id, "allocations"],
+    queryFn: () => api.get<IpAllocation[]>(`/networks/${id}/allocations`),
+    enabled: !!id,
+    refetchInterval: POLL_MS,
   });
 }

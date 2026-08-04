@@ -104,8 +104,29 @@ export interface Network {
   id: string;
   name: string;
   vlan: number | null;
+  // IPAM (M13a): a family is control-plane-managed (static) when its cidr is set.
+  cidr_v4: string | null;
+  gateway_v4: string | null;
+  cidr_v6: string | null;
+  gateway_v6: string | null;
+  dns: string[];
+  pool_v4_start: string | null;
+  pool_v4_end: string | null;
+  pool_v6_start: string | null;
+  pool_v6_end: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface IpAllocation {
+  id: string;
+  network_id: string;
+  ip: string;
+  family: number;
+  vm_id: string | null;
+  nic_index: number;
+  mac: string;
+  created_at: string;
 }
 
 export interface Task {
@@ -173,6 +194,16 @@ export interface Template {
 export interface CreateNetworkRequest {
   name: string;
   vlan?: number | null;
+  // IPAM (M13a); omit a family's cidr to leave it on DHCP.
+  cidr_v4?: string | null;
+  gateway_v4?: string | null;
+  cidr_v6?: string | null;
+  gateway_v6?: string | null;
+  dns?: string[];
+  pool_v4_start?: string | null;
+  pool_v4_end?: string | null;
+  pool_v6_start?: string | null;
+  pool_v6_end?: string | null;
 }
 
 export interface CreateImageRequest {

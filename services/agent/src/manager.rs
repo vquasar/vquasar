@@ -128,6 +128,7 @@ impl VmManager {
         name: String,
         spec: VirtualMachineSpec,
         bindings: Vec<NicBinding>,
+        network_config: Option<String>,
     ) -> Result<ObservedVm> {
         spec.validate()
             .map_err(|e| ManagerError::InvalidSpec(e.to_string()))?;
@@ -135,7 +136,10 @@ impl VmManager {
         // Materialise host storage (clone volumes, generate the cloud-init seed)
         // and fold the seed disk into the spec before we launch (design M9).
         // Idempotent, so a repeated reconcile reuses existing files.
-        let mut spec = self.storage.prepare(id, &name, spec).await?;
+        let mut spec = self
+            .storage
+            .prepare(id, &name, spec, network_config.as_deref())
+            .await?;
         // Persist the control-allocated NIC MACs in the record so agentless IP
         // discovery can match neighbor-table entries to this VM (design M11).
         for (nic, binding) in spec.network_interfaces.iter_mut().zip(bindings.iter()) {
@@ -167,7 +171,9 @@ impl VmManager {
             // Give a re-attached (unowned) VMM a moment to exit and release the
             // file lock, then apply any pending offline change (e.g. disk grow).
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            self.storage.prepare(id, &name, spec).await?;
+            self.storage
+                .prepare(id, &name, spec, network_config.as_deref())
+                .await?;
             return Ok(ObservedVm {
                 id,
                 name,
@@ -621,7 +627,7 @@ mod tests {
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
         let obs = mgr
-            .ensure(id, "web-1".into(), spec(DesiredPowerState::Running), vec![])
+            .ensure(id, "web-1".into(), spec(DesiredPowerState::Running), vec![], None)
             .await
             .unwrap();
         assert_eq!(obs.phase, VmPhase::Running);
@@ -634,10 +640,12 @@ mod tests {
         let (mgr, backend) = manager(dir.path());
         let id = VmId::new();
         let s = spec(DesiredPowerState::Running);
-        mgr.ensure(id, "web-1".into(), s.clone(), vec![])
+        mgr.ensure(id, "web-1".into(), s.clone(), vec![], None)
             .await
             .unwrap();
-        mgr.ensure(id, "web-1".into(), s, vec![]).await.unwrap();
+        mgr.ensure(id, "web-1".into(), s, vec![], None)
+            .await
+            .unwrap();
         // The fake records create calls; a second ensure must not create twice.
         let fake = backend.get(id).unwrap();
         assert_eq!(fake.create_calls(), 2, "create is invoked but idempotent");
@@ -649,7 +657,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
-        mgr.ensure(id, "db".into(), spec(DesiredPowerState::Running), vec![])
+        mgr.ensure(id, "db".into(), spec(DesiredPowerState::Running), vec![], None)
             .await
             .unwrap();
         assert_eq!(mgr.stop(id).await.unwrap().phase, VmPhase::Stopped);
@@ -661,7 +669,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
-        mgr.ensure(id, "tmp".into(), spec(DesiredPowerState::Running), vec![])
+        mgr.ensure(id, "tmp".into(), spec(DesiredPowerState::Running), vec![], None)
             .await
             .unwrap();
         mgr.delete(id).await.unwrap();
@@ -681,6 +689,7 @@ mod tests {
                 "survivor".into(),
                 spec(DesiredPowerState::Running),
                 vec![],
+                None,
             )
             .await
             .unwrap();

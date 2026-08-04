@@ -49,6 +49,7 @@ impl StorageProvisioner {
         id: VmId,
         name: &str,
         mut spec: VirtualMachineSpec,
+        network_config: Option<&str>,
     ) -> Result<VirtualMachineSpec> {
         for disk in &spec.disks {
             if disk.needs_provisioning() {
@@ -56,7 +57,7 @@ impl StorageProvisioner {
             }
         }
         if let Some(ci) = spec.cloud_init.clone() {
-            let seed = self.ensure_seed(id, name, &ci).await?;
+            let seed = self.ensure_seed(id, name, &ci, network_config).await?;
             if !spec.disks.iter().any(|d| d.path == seed.path) {
                 spec.disks.push(seed);
             }
@@ -159,7 +160,13 @@ impl StorageProvisioner {
     /// Generate a NoCloud seed ISO for `ci` and return the disk that mounts it.
     /// Idempotent: an existing seed on shared storage is reused (so both ends of
     /// a migration reference an identical file).
-    async fn ensure_seed(&self, id: VmId, name: &str, ci: &CloudInitSpec) -> Result<DiskSpec> {
+    async fn ensure_seed(
+        &self,
+        id: VmId,
+        name: &str,
+        ci: &CloudInitSpec,
+        network_config: Option<&str>,
+    ) -> Result<DiskSpec> {
         let seed_path = self.shared_dir.join("seeds").join(format!("{id}.iso"));
         if !tokio::fs::try_exists(&seed_path).await? {
             if let Some(parent) = seed_path.parent() {
@@ -169,12 +176,18 @@ impl StorageProvisioner {
             let meta_data = format!("instance-id: {id}\nlocal-hostname: {hostname}\n");
             let user_data = render_user_data(ci, &hostname);
 
-            // Stage the two files in a temp dir, then pack them into an ISO
-            // labelled `cidata` (what cloud-init's NoCloud datasource looks for).
+            // Stage the files in a temp dir, then pack them into an ISO labelled
+            // `cidata` (what cloud-init's NoCloud datasource looks for). A
+            // `network-config` (netplan v2) is added only when the control plane
+            // supplied one — i.e. the VM is on a managed/static network (M13a);
+            // otherwise cloud-init falls back to DHCP as before.
             let stage = std::env::temp_dir().join(format!("ch-seed-{id}"));
             tokio::fs::create_dir_all(&stage).await?;
             tokio::fs::write(stage.join("meta-data"), meta_data).await?;
             tokio::fs::write(stage.join("user-data"), user_data).await?;
+            if let Some(nc) = network_config.filter(|s| !s.is_empty()) {
+                tokio::fs::write(stage.join("network-config"), nc).await?;
+            }
             let out = path_str(&seed_path)?;
             let stage_s = path_str(&stage)?;
             let result = run(

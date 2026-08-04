@@ -277,6 +277,11 @@ pub struct NetworkInterfaceSpec {
     /// Optional fixed MAC; the control plane allocates one when absent.
     #[serde(default)]
     pub mac: Option<String>,
+    /// Operator-requested static IPs (IPv4 and/or IPv6) on a managed network
+    /// (design M13a). Empty ⇒ the control plane auto-allocates from the
+    /// network's configured families. Ignored on unmanaged (DHCP) networks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
 }
 
 /// Deterministic, stable, locally-administered MAC for a VM's NIC, derived from

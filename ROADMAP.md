@@ -75,8 +75,15 @@ Split into three shippable slices.
   auto-rotation; TLS to PostgreSQL; DB host-disk encryption (ops).
 
 ### Networking
-- IPAM: control-plane-managed / static IP assignment (stop relying on external
-  DHCP).
+- **M13a — IPAM: control-plane-managed / static IP assignment.** ✅ **Done.**
+  Networks carry optional IPv4 and/or IPv6 subnets (cidr + gateway + dns + pool);
+  a family with no cidr stays on external DHCP (opt-in per network, fully
+  backward compatible). The control plane allocates the lowest-free address per
+  NIC per family at VM create (a NIC may also request a specific IP), persists it
+  in `ip_allocations`, and renders a cloud-init netplan v2 `network-config` (MAC-
+  matched) into the seed so the guest configures statically — no DHCP. Observed
+  guest IP for managed NICs comes from the allocation (authoritative) rather than
+  the ARP sweep. Follow-ups: IPv6 SLAAC/DHCPv6 interop, reserved/excluded ranges.
 - VLAN-isolated and cross-host L2 networks via a VXLAN (or similar) overlay.
 - Security groups / per-tenant network isolation.
 - Change an existing NIC's network on a running VM (needs a detach/reattach or

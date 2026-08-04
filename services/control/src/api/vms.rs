@@ -16,9 +16,90 @@ use ch_model::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use std::collections::HashSet;
+use std::net::IpAddr;
+
 use crate::api::error::{ApiError, ApiResult};
 use crate::authz::{AuthUser, RequireVmCreate, RequireVmUpdate};
+use crate::ipam::Subnet;
+use crate::netalloc::allocate_mac;
 use crate::store::{Image, Store, Template, Vm};
+
+/// Allocate and persist static IPs for a new VM's NICs on managed networks
+/// (design M13a). NICs on unmanaged (DHCP) networks are skipped. A NIC may
+/// request specific addresses; otherwise the lowest free address per configured
+/// family is assigned. Idempotent per (network, ip) via the DB unique index.
+async fn allocate_nic_ips(store: &Store, vm_id: Uuid, spec: &VirtualMachineSpec) -> ApiResult<()> {
+    for (index, nic) in spec.network_interfaces.iter().enumerate() {
+        let network = store
+            .get_network(nic.network_id.as_uuid())
+            .await?
+            .ok_or_else(|| ApiError::invalid(format!("network not found: {}", nic.network_id)))?;
+        if !network.is_managed() {
+            continue;
+        }
+        let mac = nic.mac.clone().unwrap_or_else(|| allocate_mac(vm_id, index));
+
+        // Parse operator-requested addresses (reject garbage early).
+        let mut requested = Vec::new();
+        for a in &nic.addresses {
+            let ip: IpAddr = a
+                .parse()
+                .map_err(|_| ApiError::invalid(format!("invalid requested IP: {a}")))?;
+            requested.push(ip);
+        }
+
+        for (cidr, gw, ps, pe, family) in [
+            (
+                network.cidr_v4.as_deref(),
+                network.gateway_v4.as_deref(),
+                network.pool_v4_start.as_deref(),
+                network.pool_v4_end.as_deref(),
+                4i16,
+            ),
+            (
+                network.cidr_v6.as_deref(),
+                network.gateway_v6.as_deref(),
+                network.pool_v6_start.as_deref(),
+                network.pool_v6_end.as_deref(),
+                6i16,
+            ),
+        ] {
+            let Some(subnet) = Subnet::parse_opt(cidr, gw, ps, pe)
+                .map_err(|e| ApiError::invalid(e.to_string()))?
+            else {
+                continue;
+            };
+            let want_v6 = family == 6;
+            let chosen = if let Some(req) = requested.iter().find(|ip| ip.is_ipv6() == want_v6) {
+                subnet
+                    .validate(*req)
+                    .map_err(|e| ApiError::invalid(e.to_string()))?;
+                *req
+            } else {
+                let taken: HashSet<IpAddr> = store
+                    .allocations_for_network(network.id)
+                    .await?
+                    .iter()
+                    .filter_map(|a| a.ip.parse().ok())
+                    .collect();
+                subnet
+                    .next_free(&taken)
+                    .map_err(|e| ApiError::invalid(e.to_string()))?
+            };
+            store
+                .insert_allocation(network.id, &chosen.to_string(), family, Some(vm_id), index as i32, &mac)
+                .await
+                .map_err(|e| match &e {
+                    sqlx::Error::Database(db) if db.is_unique_violation() => {
+                        ApiError::invalid(format!("address {chosen} is already allocated"))
+                    }
+                    _ => e.into(),
+                })?;
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateVm {
@@ -44,6 +125,12 @@ pub async fn create(
 
     // Persist desired state first (section 7), then let reconciliation act.
     let vm = store.insert_vm(&body.name, &body.spec).await?;
+    // Allocate static IPs for NICs on managed networks (M13a); roll back the VM
+    // row if allocation fails so we never leave a half-provisioned VM.
+    if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {
+        let _ = store.delete_vm_row(vm.id).await;
+        return Err(e);
+    }
     let task = store.insert_task("vm.create", Some(vm.id)).await?;
     store
         .insert_event("vm", Some(vm.id), "vm.created", "info", &vm.name)
@@ -120,6 +207,10 @@ pub async fn create_from_template(
         .map_err(|e| ApiError::invalid(e.to_string()))?;
 
     let vm = store.insert_vm_with_id(vm_id, &body.name, &spec).await?;
+    if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {
+        let _ = store.delete_vm_row(vm.id).await;
+        return Err(e);
+    }
     let task = store.insert_task("vm.create", Some(vm.id)).await?;
     store
         .insert_event("vm", Some(vm.id), "vm.created", "info", &vm.name)
@@ -174,6 +265,7 @@ fn build_spec_from_template(
             vec![NetworkInterfaceSpec {
                 network_id: ch_model::NetworkId::from(network_id),
                 mac: None,
+                addresses: Vec::new(),
             }]
         })
         .unwrap_or_default();
@@ -316,6 +408,7 @@ pub async fn update(
         spec.network_interfaces.push(NetworkInterfaceSpec {
             network_id: ch_model::NetworkId::from(n.network_id),
             mac: None,
+            addresses: Vec::new(),
         });
     }
 

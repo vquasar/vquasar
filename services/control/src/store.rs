@@ -56,8 +56,54 @@ pub struct Network {
     pub name: String,
     /// 802.1Q VLAN tag; `None` is a flat/untagged provider network.
     pub vlan: Option<i32>,
+    // IPAM (design M13a): a family is managed (static, control-plane IPAM) when
+    // its cidr is set; otherwise that family is left to external DHCP.
+    pub cidr_v4: Option<String>,
+    pub gateway_v4: Option<String>,
+    pub cidr_v6: Option<String>,
+    pub gateway_v6: Option<String>,
+    pub dns: Vec<String>,
+    pub pool_v4_start: Option<String>,
+    pub pool_v4_end: Option<String>,
+    pub pool_v6_start: Option<String>,
+    pub pool_v6_end: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Network {
+    /// Whether any family is under control-plane IPAM (vs external DHCP).
+    pub fn is_managed(&self) -> bool {
+        self.cidr_v4.is_some() || self.cidr_v6.is_some()
+    }
+}
+
+/// IPAM fields for creating/updating a network (design M13a).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct NetworkIpam {
+    pub cidr_v4: Option<String>,
+    pub gateway_v4: Option<String>,
+    pub cidr_v6: Option<String>,
+    pub gateway_v6: Option<String>,
+    #[serde(default)]
+    pub dns: Vec<String>,
+    pub pool_v4_start: Option<String>,
+    pub pool_v4_end: Option<String>,
+    pub pool_v6_start: Option<String>,
+    pub pool_v6_end: Option<String>,
+}
+
+/// A persisted IP assignment (design M13a).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct IpAllocation {
+    pub id: Uuid,
+    pub network_id: Uuid,
+    pub ip: String,
+    pub family: i16,
+    pub vm_id: Option<Uuid>,
+    pub nic_index: i32,
+    pub mac: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A base image row: a read-only golden disk + boot recipe (design M9).
@@ -594,6 +640,8 @@ impl Store {
     }
 
     pub async fn delete_vm_row(&self, id: Uuid) -> Result<()> {
+        // Free any IP allocations this VM held (design M13a) before removing it.
+        self.release_vm_allocations(id).await?;
         sqlx::query("DELETE FROM virtual_machines WHERE id=$1")
             .bind(id)
             .execute(&self.pool)
@@ -603,16 +651,33 @@ impl Store {
 
     // ---- networks --------------------------------------------------------
 
-    pub async fn insert_network(&self, name: &str, vlan: Option<i32>) -> Result<Network> {
+    pub async fn insert_network(
+        &self,
+        name: &str,
+        vlan: Option<i32>,
+        ipam: &NetworkIpam,
+    ) -> Result<Network> {
         let now = Utc::now();
         sqlx::query_as::<_, Network>(
-            "INSERT INTO networks (id, name, vlan, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $4)
+            "INSERT INTO networks
+                (id, name, vlan, cidr_v4, gateway_v4, cidr_v6, gateway_v6, dns,
+                 pool_v4_start, pool_v4_end, pool_v6_start, pool_v6_end,
+                 created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
         .bind(name)
         .bind(vlan)
+        .bind(&ipam.cidr_v4)
+        .bind(&ipam.gateway_v4)
+        .bind(&ipam.cidr_v6)
+        .bind(&ipam.gateway_v6)
+        .bind(&ipam.dns)
+        .bind(&ipam.pool_v4_start)
+        .bind(&ipam.pool_v4_end)
+        .bind(&ipam.pool_v6_start)
+        .bind(&ipam.pool_v6_end)
         .bind(now)
         .fetch_one(&self.pool)
         .await
@@ -644,16 +709,89 @@ impl Store {
         id: Uuid,
         name: &str,
         vlan: Option<i32>,
+        ipam: &NetworkIpam,
     ) -> Result<Option<Network>> {
         sqlx::query_as::<_, Network>(
-            "UPDATE networks SET name=$2, vlan=$3, updated_at=$4 WHERE id=$1 RETURNING *",
+            "UPDATE networks SET name=$2, vlan=$3, cidr_v4=$4, gateway_v4=$5,
+                cidr_v6=$6, gateway_v6=$7, dns=$8, pool_v4_start=$9, pool_v4_end=$10,
+                pool_v6_start=$11, pool_v6_end=$12, updated_at=$13
+             WHERE id=$1 RETURNING *",
         )
         .bind(id)
         .bind(name)
         .bind(vlan)
+        .bind(&ipam.cidr_v4)
+        .bind(&ipam.gateway_v4)
+        .bind(&ipam.cidr_v6)
+        .bind(&ipam.gateway_v6)
+        .bind(&ipam.dns)
+        .bind(&ipam.pool_v4_start)
+        .bind(&ipam.pool_v4_end)
+        .bind(&ipam.pool_v6_start)
+        .bind(&ipam.pool_v6_end)
         .bind(Utc::now())
         .fetch_optional(&self.pool)
         .await
+    }
+
+    // ---- IP allocations (design M13a) ------------------------------------
+
+    /// All allocations in a network (used to compute the taken-address set).
+    pub async fn allocations_for_network(&self, network_id: Uuid) -> Result<Vec<IpAllocation>> {
+        sqlx::query_as::<_, IpAllocation>(
+            "SELECT * FROM ip_allocations WHERE network_id=$1 ORDER BY ip",
+        )
+        .bind(network_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// All addresses assigned to a VM (for rendering network-config + release).
+    pub async fn allocations_for_vm(&self, vm_id: Uuid) -> Result<Vec<IpAllocation>> {
+        sqlx::query_as::<_, IpAllocation>(
+            "SELECT * FROM ip_allocations WHERE vm_id=$1 ORDER BY nic_index, family",
+        )
+        .bind(vm_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Persist one address assignment. The unique (network_id, ip) constraint
+    /// makes a concurrent double-allocation fail rather than silently collide.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_allocation(
+        &self,
+        network_id: Uuid,
+        ip: &str,
+        family: i16,
+        vm_id: Option<Uuid>,
+        nic_index: i32,
+        mac: &str,
+    ) -> Result<IpAllocation> {
+        sqlx::query_as::<_, IpAllocation>(
+            "INSERT INTO ip_allocations
+                (id, network_id, ip, family, vm_id, nic_index, mac, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(network_id)
+        .bind(ip)
+        .bind(family)
+        .bind(vm_id)
+        .bind(nic_index)
+        .bind(mac)
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Free every address held by a VM (called on VM deletion).
+    pub async fn release_vm_allocations(&self, vm_id: Uuid) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM ip_allocations WHERE vm_id=$1")
+            .bind(vm_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
     }
 
     // ---- images (design M9) ---------------------------------------------

@@ -60,6 +60,7 @@ pub fn router(store: Store, auth: AuthState) -> Router {
                 .patch(networks::update)
                 .delete(networks::delete),
         )
+        .route("/networks/:id/allocations", get(networks::allocations))
         .route("/images", get(images::list).post(images::create))
         .route(
             "/images/:id",

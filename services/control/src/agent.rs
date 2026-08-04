@@ -115,6 +115,7 @@ impl Agent {
         name: String,
         spec_json: Vec<u8>,
         networks: Vec<NetworkBinding>,
+        network_config: String,
     ) -> Result<VmObservedState, AgentError> {
         let mut client = self.client().await?;
         let resp = client
@@ -123,6 +124,7 @@ impl Agent {
                 name,
                 spec_json,
                 networks,
+                network_config,
             })
             .await?
             .into_inner();

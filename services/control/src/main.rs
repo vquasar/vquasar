@@ -11,6 +11,7 @@ mod authz;
 mod config;
 mod console;
 mod crypto;
+mod ipam;
 mod netalloc;
 mod rbac;
 mod reconcile;

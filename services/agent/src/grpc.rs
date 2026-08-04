@@ -114,9 +114,10 @@ impl HostAgent for AgentService {
                 vlan: n.vlan as u16,
             })
             .collect();
+        let network_config = Some(req.network_config).filter(|s| !s.is_empty());
         let obs = self
             .manager
-            .ensure(id, req.name, spec, bindings)
+            .ensure(id, req.name, spec, bindings, network_config)
             .await
             .map_err(to_status)?;
         Ok(Response::new(EnsureVmResponse {
@@ -358,6 +359,7 @@ mod tests {
                 name: "web-1".into(),
                 spec_json: serde_json::to_vec(&spec()).unwrap(),
                 networks: vec![],
+                network_config: String::new(),
             }))
             .await
             .unwrap()
@@ -422,6 +424,7 @@ mod tests {
                 name: "bad".into(),
                 spec_json: b"not json".to_vec(),
                 networks: vec![],
+                network_config: String::new(),
             }))
             .await
             .unwrap_err();

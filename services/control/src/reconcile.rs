@@ -319,14 +319,32 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
     // 4. Drive the agent to the desired state.
     let agent = Agent::new(host.endpoint.clone());
     let spec_json = serde_json::to_vec(&*vm.spec)?;
+    let network_config = build_network_config(store, vm).await?;
     match agent
-        .ensure_vm(vm.id.to_string(), vm.name.clone(), spec_json, bindings)
+        .ensure_vm(
+            vm.id.to_string(),
+            vm.name.clone(),
+            spec_json,
+            bindings,
+            network_config,
+        )
         .await
     {
         Ok(state) => {
             let phase = phase_string(state.phase);
             let msg = none_if_empty(state.message);
-            let ip = none_if_empty(state.ip_address);
+            // For managed (static IPAM) NICs the control plane already knows the
+            // address, so prefer the authoritative allocation over the agent's
+            // best-effort ARP discovery (design M13a); fall back to it otherwise.
+            let ip = match store
+                .allocations_for_vm(vm.id)
+                .await?
+                .into_iter()
+                .find(|a| a.family == 4)
+            {
+                Some(a) => Some(a.ip),
+                None => none_if_empty(state.ip_address),
+            };
             store
                 .update_vm_observed(vm.id, phase, vm.generation, msg.as_deref(), ip.as_deref())
                 .await?;
@@ -398,6 +416,70 @@ async fn committed_by_host(store: &Store) -> anyhow::Result<HashMap<Uuid, HostCo
         }
     }
     Ok(committed)
+}
+
+/// Build the cloud-init netplan v2 `network-config` for a VM from its persisted
+/// IP allocations (design M13a). Returns an empty string when no NIC is on a
+/// managed (static IPAM) network, so DHCP-only VMs get no network-config at all.
+async fn build_network_config(store: &Store, vm: &Vm) -> anyhow::Result<String> {
+    let allocs = store.allocations_for_vm(vm.id).await?;
+    let mut nics = Vec::with_capacity(vm.spec.network_interfaces.len());
+    let mut any_managed = false;
+
+    for (index, nic) in vm.spec.network_interfaces.iter().enumerate() {
+        let Some(network) = store.get_network(nic.network_id.as_uuid()).await? else {
+            continue;
+        };
+        let mac = nic
+            .mac
+            .clone()
+            .unwrap_or_else(|| allocate_mac(vm.id, index));
+        let v4 = crate::ipam::Subnet::parse_opt(
+            network.cidr_v4.as_deref(),
+            network.gateway_v4.as_deref(),
+            None,
+            None,
+        )
+        .ok()
+        .flatten();
+        let v6 = crate::ipam::Subnet::parse_opt(
+            network.cidr_v6.as_deref(),
+            network.gateway_v6.as_deref(),
+            None,
+            None,
+        )
+        .ok()
+        .flatten();
+
+        // Attach this NIC's allocated addresses with the right prefix length.
+        let mut addresses = Vec::new();
+        for a in allocs.iter().filter(|a| a.nic_index as usize == index) {
+            let prefix = match a.family {
+                6 => v6.as_ref().map(|s| s.prefix_len()),
+                _ => v4.as_ref().map(|s| s.prefix_len()),
+            };
+            if let Some(p) = prefix {
+                addresses.push(format!("{}/{}", a.ip, p));
+            }
+        }
+
+        if network.is_managed() {
+            any_managed = true;
+        }
+        nics.push(crate::ipam::NicRender {
+            set_name: format!("eth{index}"),
+            mac,
+            addresses,
+            gateway4: network.gateway_v4.clone(),
+            gateway6: network.gateway_v6.clone(),
+            dns: network.dns.clone(),
+        });
+    }
+
+    if !any_managed {
+        return Ok(String::new());
+    }
+    Ok(crate::ipam::render_network_config(&nics))
 }
 
 /// Resolve a VM's NICs into agent dataplane bindings (MAC + VLAN), allocating

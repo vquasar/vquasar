@@ -107,6 +107,11 @@ message EnsureVmRequest {
   // order. The control plane allocates MACs and resolves networks to VLANs; the
   // agent owns the privileged TAP/OVS operations (section 18, 30).
   repeated NetworkBinding networks = 4;
+  // Optional cloud-init netplan v2 network-config (design M13a). Set when at
+  // least one NIC is on a control-plane-managed (static IPAM) network; the agent
+  // writes it verbatim into the NoCloud seed so the guest configures its NICs
+  // statically instead of via DHCP. Empty ⇒ no network-config (DHCP as before).
+  string network_config = 5;
 }
 
 message NetworkBinding {
