@@ -75,10 +75,11 @@ EOF
 # Control plane: reachable names + always localhost for local API calls.
 gen_cert control "$(san_from "localhost,127.0.0.1,$CONTROL_HOSTS")"
 
-# One cert per agent, named agent-<fqdn>.
+# One cert per agent, named agent-<fqdn>. Accept "fqdn" or "fqdn:ip".
 for a in "${AGENTS[@]}"; do
   fqdn="${a%%:*}"
-  gen_cert "agent-$fqdn" "$(san_from "$a")"
+  if [[ "$a" == *:* ]]; then names="$fqdn,${a#*:}"; else names="$fqdn"; fi
+  gen_cert "agent-$fqdn" "$(san_from "$names")"
 done
 
 chmod 600 ca.key
