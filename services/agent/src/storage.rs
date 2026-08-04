@@ -192,6 +192,7 @@ impl StorageProvisioner {
             let user_data = render_user_data(
                 ci,
                 &hostname,
+                &id.to_string(),
                 self.phone_home_url.as_deref(),
                 self.trusted_ca.as_deref(),
             );
@@ -237,6 +238,7 @@ impl StorageProvisioner {
 fn render_user_data(
     ci: &CloudInitSpec,
     hostname: &str,
+    instance_id: &str,
     phone_home_url: Option<&str>,
     trusted_ca: Option<&str>,
 ) -> String {
@@ -265,17 +267,22 @@ fn render_user_data(
     ));
 
     if let Some(url) = phone_home_url {
-        // Trust our internal CA first (runs before phone_home) so an HTTPS
-        // control endpoint is reachable (design M13e).
+        // Trust our internal CA first (ca_certs runs early, before runcmd) so an
+        // HTTPS control endpoint is reachable (design M13e).
         if let Some(ca) = trusted_ca.filter(|c| !c.trim().is_empty()) {
             s.push_str("ca_certs:\n  trusted:\n    - |\n");
             for line in ca.trim().lines() {
                 s.push_str(&format!("      {line}\n"));
             }
         }
+        // Use curl rather than cloud-init's phone_home module: the module posts
+        // via Python requests, which trusts certifi's bundle and ignores the
+        // ca_certs-injected system store, so an internal-CA HTTPS endpoint fails.
+        // curl uses /etc/ssl/certs (which ca_certs updated). The POST carries no
+        // body; control records the request's source IP as the guest's address.
         let base = url.trim_end_matches('/');
         s.push_str(&format!(
-            "phone_home:\n  url: {base}/api/v1/phone-home/$INSTANCE_ID\n  post:\n    - instance_id\n    - hostname\n  tries: 10\n"
+            "runcmd:\n  - [\"sh\", \"-c\", \"for i in $(seq 1 12); do curl -fsS --cacert /etc/ssl/certs/ca-certificates.crt -X POST {base}/api/v1/phone-home/{instance_id} && break; sleep 5; done\"]\n"
         ));
     }
     s
@@ -347,12 +354,12 @@ mod tests {
             password: Some("pw".into()),
             user_data: None,
         };
-        let s = render_user_data(&ci, "h", None, None);
+        let s = render_user_data(&ci, "h", "vm-1", None, None);
         assert!(s.starts_with("#cloud-config"));
         assert!(s.contains("password: pw"));
         assert!(s.contains("ssh-ed25519 AAAA"));
         assert!(s.contains("ssh_pwauth: true"));
-        assert!(!s.contains("phone_home"));
+        assert!(!s.contains("phone-home"));
     }
 
     #[test]
@@ -365,13 +372,13 @@ mod tests {
         };
         // Raw user-data is returned verbatim even with phone_home configured.
         assert_eq!(
-            render_user_data(&ci, "h", Some("https://c:8080"), Some("CA")),
+            render_user_data(&ci, "h", "vm-1", Some("https://c:8080"), Some("CA")),
             "#cloud-config\nruncmd: [echo hi]\n"
         );
     }
 
     #[test]
-    fn user_data_injects_phone_home_and_ca(  ) {
+    fn user_data_injects_phone_home_and_ca() {
         let ci = CloudInitSpec {
             hostname: Some("h".into()),
             ssh_authorized_keys: vec![],
@@ -379,10 +386,10 @@ mod tests {
             user_data: None,
         };
         let ca = "-----BEGIN CERTIFICATE-----\nABCD\n-----END CERTIFICATE-----";
-        let s = render_user_data(&ci, "h", Some("https://172.16.56.8:8080/"), Some(ca));
-        assert!(s.contains("phone_home:"));
-        // trailing slash trimmed, $INSTANCE_ID templated for cloud-init.
-        assert!(s.contains("url: https://172.16.56.8:8080/api/v1/phone-home/$INSTANCE_ID"));
+        let s = render_user_data(&ci, "h", "vm-42", Some("https://172.16.56.8:8080/"), Some(ca));
+        // curl-based phone home to the vm-id URL (trailing slash trimmed).
+        assert!(s.contains("curl -fsS --cacert /etc/ssl/certs/ca-certificates.crt"));
+        assert!(s.contains("https://172.16.56.8:8080/api/v1/phone-home/vm-42"));
         assert!(s.contains("ca_certs:"));
         assert!(s.contains("-----BEGIN CERTIFICATE-----"));
     }
