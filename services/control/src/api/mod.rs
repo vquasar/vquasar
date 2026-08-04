@@ -8,6 +8,7 @@ mod hosts;
 mod iam;
 mod images;
 mod networks;
+mod security_groups;
 mod tasks;
 mod templates;
 mod vms;
@@ -61,6 +62,24 @@ pub fn router(store: Store, auth: AuthState) -> Router {
                 .delete(networks::delete),
         )
         .route("/networks/:id/allocations", get(networks::allocations))
+        .route(
+            "/security-groups",
+            get(security_groups::list).post(security_groups::create),
+        )
+        .route(
+            "/security-groups/:id",
+            get(security_groups::get)
+                .patch(security_groups::update)
+                .delete(security_groups::delete),
+        )
+        .route(
+            "/security-groups/:id/rules",
+            post(security_groups::add_rule),
+        )
+        .route(
+            "/security-groups/:id/rules/:rule_id",
+            axum::routing::delete(security_groups::delete_rule),
+        )
         .route("/images", get(images::list).post(images::create))
         .route(
             "/images/:id",

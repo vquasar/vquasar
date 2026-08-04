@@ -93,7 +93,16 @@ Split into three shippable slices.
   learning bridges it, no OpenFlow. Overlay NICs get MTU 1450 in the netplan to
   absorb encap overhead. Idle overlay bridges are GC'd. Follow-ups: BUM/ARP
   suppression, L3 gateways between overlays, EVPN control plane.
-- Security groups / per-tenant network isolation.
+- **M13c — Security groups.** ✅ **Done.** Stateful per-NIC L3/L4 filtering. A
+  NIC references security groups (`NetworkInterfaceSpec.security_groups`); no
+  group ⇒ unfiltered (opt-in). A filtered NIC is default-deny ingress + allow
+  egress + stateful (established/related always allowed), with the union of the
+  groups' ingress rules (protocol/port-range/remote-CIDR, IPv4+IPv6) as the
+  allow-list. The agent programs it as OVS conntrack OpenFlow on the NIC's TAP
+  (per-TAP cookie + conntrack zone; ARP/DHCP/ICMPv6 permitted), so it filters
+  guest-to-guest traffic on the same L2 too. Follow-ups: remote-group refs,
+  egress enforcement, per-tenant default groups.
+- Per-tenant network isolation (tenancy/projects).
 - Change an existing NIC's network on a running VM (needs a detach/reattach or
   recreate path; CH cannot re-tag a live TAP).
 - Cloud-init `phone_home` as a fallback for guest-IP discovery when a guest

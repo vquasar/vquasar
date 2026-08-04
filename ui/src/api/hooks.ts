@@ -246,3 +246,49 @@ export function useNetworkAllocations(id: string | undefined) {
     refetchInterval: POLL_MS,
   });
 }
+
+// --- Security groups (M13c) ---
+import type { CreateRuleRequest, SecurityGroup } from "./types";
+
+export function useSecurityGroups() {
+  return useQuery({
+    queryKey: ["security-groups"],
+    queryFn: () => api.get<SecurityGroup[]>("/security-groups"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useCreateSecurityGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string | null }) =>
+      api.post<SecurityGroup>("/security-groups", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["security-groups"] }),
+  });
+}
+
+export function useDeleteSecurityGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/security-groups/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["security-groups"] }),
+  });
+}
+
+export function useAddSgRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CreateRuleRequest }) =>
+      api.post(`/security-groups/${id}/rules`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["security-groups"] }),
+  });
+}
+
+export function useDeleteSgRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ruleId }: { id: string; ruleId: string }) =>
+      api.del<void>(`/security-groups/${id}/rules/${ruleId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["security-groups"] }),
+  });
+}

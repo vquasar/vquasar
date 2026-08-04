@@ -115,6 +115,30 @@ pub struct IpAllocation {
     pub created_at: DateTime<Utc>,
 }
 
+/// A security group (design M13c).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct SecurityGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One rule in a security group (design M13c).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct SecurityGroupRule {
+    pub id: Uuid,
+    pub security_group_id: Uuid,
+    pub direction: String,
+    pub ethertype: String,
+    pub protocol: String,
+    pub port_min: Option<i32>,
+    pub port_max: Option<i32>,
+    pub remote_cidr: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A base image row: a read-only golden disk + boot recipe (design M9).
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct Image {
@@ -816,6 +840,125 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected())
+    }
+
+    // ---- security groups (design M13c) -----------------------------------
+
+    pub async fn list_security_groups(&self) -> Result<Vec<SecurityGroup>> {
+        sqlx::query_as::<_, SecurityGroup>("SELECT * FROM security_groups ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_security_group(&self, id: Uuid) -> Result<Option<SecurityGroup>> {
+        sqlx::query_as::<_, SecurityGroup>("SELECT * FROM security_groups WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn create_security_group(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<SecurityGroup> {
+        let now = Utc::now();
+        sqlx::query_as::<_, SecurityGroup>(
+            "INSERT INTO security_groups (id, name, description, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$4) RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(name)
+        .bind(description)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn update_security_group(
+        &self,
+        id: Uuid,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<Option<SecurityGroup>> {
+        sqlx::query_as::<_, SecurityGroup>(
+            "UPDATE security_groups SET name=$2, description=$3, updated_at=$4
+             WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(description)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn delete_security_group(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM security_groups WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    pub async fn list_sg_rules(&self, sg_id: Uuid) -> Result<Vec<SecurityGroupRule>> {
+        sqlx::query_as::<_, SecurityGroupRule>(
+            "SELECT * FROM security_group_rules WHERE security_group_id=$1 ORDER BY created_at",
+        )
+        .bind(sg_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Rules for a set of security groups (the union applied to a NIC).
+    pub async fn rules_for_groups(&self, sg_ids: &[Uuid]) -> Result<Vec<SecurityGroupRule>> {
+        sqlx::query_as::<_, SecurityGroupRule>(
+            "SELECT * FROM security_group_rules WHERE security_group_id = ANY($1)",
+        )
+        .bind(sg_ids)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_sg_rule(
+        &self,
+        sg_id: Uuid,
+        direction: &str,
+        ethertype: &str,
+        protocol: &str,
+        port_min: Option<i32>,
+        port_max: Option<i32>,
+        remote_cidr: Option<&str>,
+    ) -> Result<SecurityGroupRule> {
+        sqlx::query_as::<_, SecurityGroupRule>(
+            "INSERT INTO security_group_rules
+                (id, security_group_id, direction, ethertype, protocol, port_min, port_max,
+                 remote_cidr, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(sg_id)
+        .bind(direction)
+        .bind(ethertype)
+        .bind(protocol)
+        .bind(port_min)
+        .bind(port_max)
+        .bind(remote_cidr)
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn delete_sg_rule(&self, sg_id: Uuid, rule_id: Uuid) -> Result<bool> {
+        let res = sqlx::query(
+            "DELETE FROM security_group_rules WHERE id=$1 AND security_group_id=$2",
+        )
+        .bind(rule_id)
+        .bind(sg_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     // ---- images (design M9) ---------------------------------------------

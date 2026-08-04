@@ -15,7 +15,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
-import { useCreateNetwork, useCreateVm, useNetworks } from "../api/hooks";
+import { useCreateNetwork, useCreateVm, useNetworks, useSecurityGroups } from "../api/hooks";
 import type { BootSpec, CreateVmRequest, DiskSpec } from "../api/types";
 
 type BootKind = "direct_kernel" | "firmware";
@@ -30,6 +30,7 @@ export function CreateVm() {
   const createVm = useCreateVm();
   const networks = useNetworks();
   const createNetwork = useCreateNetwork();
+  const securityGroups = useSecurityGroups();
 
   const [name, setName] = useState("");
   const [vcpus, setVcpus] = useState(2);
@@ -41,6 +42,7 @@ export function CreateVm() {
   const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
   const [disks, setDisks] = useState<DiskRow[]>([{ path: "", readonly: false }]);
   const [networkId, setNetworkId] = useState<string>("");
+  const [sgIds, setSgIds] = useState<string[]>([]);
   const [cloudInit, setCloudInit] = useState("");
 
   const setDisk = (i: number, patch: Partial<DiskRow>) =>
@@ -64,7 +66,9 @@ export function CreateVm() {
         memory: { size_mib: memoryMib },
         boot,
         disks: diskSpecs,
-        network_interfaces: networkId ? [{ network_id: networkId }] : [],
+        network_interfaces: networkId
+          ? [{ network_id: networkId, ...(sgIds.length ? { security_groups: sgIds } : {}) }]
+          : [],
         placement: {},
         cloud_init: cloudInit.trim() ? { user_data: cloudInit } : null,
       },
@@ -177,6 +181,25 @@ export function CreateVm() {
                 New network
               </Button>
             </Stack>
+            {networkId && (
+              <TextField
+                select
+                label="Security groups (optional)"
+                value={sgIds}
+                onChange={(e) =>
+                  setSgIds(typeof e.target.value === "string" ? [e.target.value] : (e.target.value as string[]))
+                }
+                SelectProps={{ multiple: true }}
+                helperText="Leave empty for an unfiltered NIC"
+                sx={{ minWidth: 260, maxWidth: 420 }}
+              >
+                {(securityGroups.data ?? []).map((g) => (
+                  <MenuItem key={g.id} value={g.id}>
+                    {g.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
 
             <Divider textAlign="left">Cloud-init</Divider>
             <TextField

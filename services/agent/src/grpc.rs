@@ -114,6 +114,18 @@ impl HostAgent for AgentService {
                 vlan: n.vlan as u16,
                 vni: n.vni,
                 overlay_peers: n.overlay_peers,
+                filtered: n.filtered,
+                ingress_rules: n
+                    .ingress_rules
+                    .into_iter()
+                    .map(|r| crate::firewall::SecRule {
+                        ipv6: r.ipv6,
+                        protocol: r.protocol,
+                        port_min: r.port_min as u16,
+                        port_max: r.port_max as u16,
+                        remote_cidr: r.remote_cidr,
+                    })
+                    .collect(),
             })
             .collect();
         let network_config = Some(req.network_config).filter(|s| !s.is_empty());

@@ -266,6 +266,7 @@ fn build_spec_from_template(
                 network_id: ch_model::NetworkId::from(network_id),
                 mac: None,
                 addresses: Vec::new(),
+                security_groups: Vec::new(),
             }]
         })
         .unwrap_or_default();
@@ -409,6 +410,7 @@ pub async fn update(
             network_id: ch_model::NetworkId::from(n.network_id),
             mac: None,
             addresses: Vec::new(),
+            security_groups: Vec::new(),
         });
     }
 

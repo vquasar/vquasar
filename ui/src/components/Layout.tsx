@@ -16,6 +16,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import DnsIcon from "@mui/icons-material/Dns";
 import ComputerIcon from "@mui/icons-material/Computer";
 import LanIcon from "@mui/icons-material/Lan";
+import ShieldIcon from "@mui/icons-material/Shield";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import AlbumIcon from "@mui/icons-material/Album";
@@ -34,6 +35,7 @@ const NAV = [
   { to: "/images", label: "Images", icon: <AlbumIcon /> },
   { to: "/templates", label: "Templates", icon: <ViewQuiltIcon /> },
   { to: "/networks", label: "Networks", icon: <LanIcon /> },
+  { to: "/security-groups", label: "Security Groups", icon: <ShieldIcon /> },
   { to: "/tasks", label: "Tasks", icon: <TaskAltIcon /> },
   { to: "/events", label: "Events", icon: <NotificationsIcon /> },
 ];

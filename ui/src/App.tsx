@@ -7,6 +7,7 @@ import { CreateVm } from "./pages/CreateVm";
 import { VmDetail } from "./pages/VmDetail";
 import { Console } from "./pages/Console";
 import { Networks } from "./pages/Networks";
+import { SecurityGroups } from "./pages/SecurityGroups";
 import { Images } from "./pages/Images";
 import { Templates } from "./pages/Templates";
 import { Tasks } from "./pages/Tasks";
@@ -45,6 +46,7 @@ function AuthedApp() {
         <Route path="/vms/:id" element={<VmDetail />} />
         <Route path="/vms/:id/console" element={<Console />} />
         <Route path="/networks" element={<Networks />} />
+        <Route path="/security-groups" element={<SecurityGroups />} />
         <Route path="/images" element={<Images />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/tasks" element={<Tasks />} />

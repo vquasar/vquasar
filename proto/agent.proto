@@ -126,6 +126,24 @@ message NetworkBinding {
   // (only meaningful when vni != 0). The control plane derives these from the
   // peer hosts' endpoints.
   repeated string overlay_peers = 4;
+  // Security groups (design M13c): when set, the agent installs a stateful
+  // conntrack firewall on this NIC's TAP — default-deny ingress, allow egress,
+  // allow established/related — with `ingress_rules` as the allow-list.
+  bool filtered = 5;
+  repeated SecurityRule ingress_rules = 6;
+}
+
+// One resolved ingress allow-rule for a NIC (design M13c). Egress is allowed by
+// default in v1, so only ingress rules are sent.
+message SecurityRule {
+  bool ipv6 = 1;
+  // tcp | udp | icmp | any
+  string protocol = 2;
+  // TCP/UDP destination port range (inclusive); 0/0 means all ports.
+  uint32 port_min = 3;
+  uint32 port_max = 4;
+  // Allowed remote source CIDR; empty means any.
+  string remote_cidr = 5;
 }
 
 message EnsureVmResponse { VmObservedState state = 1; }

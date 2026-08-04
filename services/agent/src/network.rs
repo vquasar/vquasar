@@ -32,6 +32,10 @@ pub struct NicBinding {
     pub vni: u32,
     /// Underlay IPs of the other hosts, for the VXLAN tunnel mesh.
     pub overlay_peers: Vec<String>,
+    /// Security groups (design M13c): when true, install a stateful conntrack
+    /// firewall on the TAP with `ingress_rules` as the allow-list.
+    pub filtered: bool,
+    pub ingress_rules: Vec<crate::firewall::SecRule>,
 }
 
 /// The per-VNI overlay bridge name (design M13b). `vxbr` + ≤8 digits ≤ IFNAMSIZ.
@@ -72,6 +76,16 @@ impl OvsNetworkBackend {
     pub fn new(bridge: impl Into<String>) -> Self {
         Self {
             bridge: bridge.into(),
+        }
+    }
+
+    /// Apply (or clear) this NIC's security-group firewall on `bridge` (M13c).
+    async fn apply_firewall(&self, bridge: &str, tap: &str, binding: &NicBinding) -> Result<()> {
+        if binding.filtered {
+            crate::firewall::apply(bridge, tap, &binding.mac, &binding.ingress_rules).await
+        } else {
+            // Not filtered: make sure no stale flows linger from a prior config.
+            crate::firewall::clear(bridge, tap).await
         }
     }
 }
@@ -123,6 +137,7 @@ impl NetworkBackend for OvsNetworkBackend {
             }
             // Guest TAP untagged: the overlay bridge is the network's L2 domain.
             run("ovs-vsctl", &["--may-exist", "add-port", &br, &tap]).await?;
+            self.apply_firewall(&br, &tap, binding).await?;
             return Ok(PreparedNic {
                 tap,
                 mac: binding.mac.clone(),
@@ -137,6 +152,7 @@ impl NetworkBackend for OvsNetworkBackend {
             args.push(&tag);
         }
         run("ovs-vsctl", &args).await?;
+        self.apply_firewall(&self.bridge, &tap, binding).await?;
 
         Ok(PreparedNic {
             tap,
@@ -150,6 +166,8 @@ impl NetworkBackend for OvsNetworkBackend {
         // so release works without knowing the original binding.
         if let Ok(br) = run_stdout("ovs-vsctl", &["port-to-br", &tap]).await {
             let br = br.trim().to_string();
+            // Remove this NIC's security-group flows before the port (design M13c).
+            let _ = crate::firewall::clear(&br, &tap).await;
             let _ = run("ovs-vsctl", &["--if-exists", "del-port", &br, &tap]).await;
             // Garbage-collect an overlay bridge once its last guest TAP is gone
             // (this also removes its tunnel ports).
@@ -239,6 +257,8 @@ mod tests {
                     vlan: 0,
                     vni: 0,
                     overlay_peers: Vec::new(),
+                    filtered: false,
+                    ingress_rules: Vec::new(),
                 },
             )
             .await

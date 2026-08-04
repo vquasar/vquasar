@@ -8,6 +8,7 @@
 mod backend;
 mod config;
 mod console;
+mod firewall;
 mod grpc;
 mod inventory;
 mod ipdiscovery;

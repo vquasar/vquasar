@@ -34,6 +34,8 @@ export interface CloudInitSpec {
 export interface NetworkInterfaceSpec {
   network_id: string;
   mac?: string | null;
+  addresses?: string[];
+  security_groups?: string[];
 }
 
 export interface PlacementSpec {
@@ -129,6 +131,37 @@ export interface IpAllocation {
   nic_index: number;
   mac: string;
   created_at: string;
+}
+
+// Security groups (M13c)
+export interface SecurityGroupRule {
+  id: string;
+  security_group_id: string;
+  direction: string;
+  ethertype: string;
+  protocol: string;
+  port_min: number | null;
+  port_max: number | null;
+  remote_cidr: string | null;
+  created_at: string;
+}
+
+export interface SecurityGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  rules: SecurityGroupRule[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateRuleRequest {
+  direction?: string;
+  ethertype?: string;
+  protocol?: string;
+  port_min?: number | null;
+  port_max?: number | null;
+  remote_cidr?: string | null;
 }
 
 export interface Task {

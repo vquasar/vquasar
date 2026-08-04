@@ -282,6 +282,11 @@ pub struct NetworkInterfaceSpec {
     /// network's configured families. Ignored on unmanaged (DHCP) networks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<String>,
+    /// Security groups applied to this NIC (design M13c). Empty ⇒ unfiltered.
+    /// Otherwise: default-deny ingress + allow egress + stateful, with the
+    /// union of the groups' ingress rules as the allow-list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security_groups: Vec<uuid::Uuid>,
 }
 
 /// Deterministic, stable, locally-administered MAC for a VM's NIC, derived from

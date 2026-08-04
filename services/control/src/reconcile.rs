@@ -555,11 +555,35 @@ async fn resolve_bindings(
             Some(v) => (v as u32, overlay_peers.clone()),
             None => (0, Vec::new()),
         };
+
+        // Security groups (design M13c): a NIC with groups is filtered — collect
+        // the union of their ingress rules as the allow-list.
+        let (filtered, ingress_rules) = if nic.security_groups.is_empty() {
+            (false, Vec::new())
+        } else {
+            let rules = store
+                .rules_for_groups(&nic.security_groups)
+                .await?
+                .into_iter()
+                .filter(|r| r.direction == "ingress")
+                .map(|r| ch_proto::agent::SecurityRule {
+                    ipv6: r.ethertype.eq_ignore_ascii_case("IPv6"),
+                    protocol: r.protocol,
+                    port_min: r.port_min.unwrap_or(0).max(0) as u32,
+                    port_max: r.port_max.unwrap_or(0).max(0) as u32,
+                    remote_cidr: r.remote_cidr.unwrap_or_default(),
+                })
+                .collect();
+            (true, rules)
+        };
+
         bindings.push(NetworkBinding {
             mac,
             vlan: network.vlan.unwrap_or(0) as u32,
             vni,
             overlay_peers: peers,
+            filtered,
+            ingress_rules,
         });
     }
     Ok(Some(bindings))
