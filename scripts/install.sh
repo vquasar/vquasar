@@ -92,11 +92,15 @@ done
 [[ $EUID -eq 0 ]] || { echo "error: must run as root" >&2; exit 1; }
 
 # Authentication is mandatory for the control plane (design M12b). The dev/lab
-# escape hatch is an explicit --allow-no-auth.
+# escape hatch is an explicit --allow-no-auth. Only enforce this when we are
+# actually (re)writing the config — a binary/UI-only upgrade keeps the existing
+# env file (which already carries the auth settings), so it must not be blocked.
 if [[ "$ROLE" == "control" && -z "$OIDC_ISSUER" && $ALLOW_NO_AUTH -eq 0 ]]; then
-  echo "error: authentication is required. Pass --oidc-issuer/--oidc-client-id/--oidc-audience" >&2
-  echo "       and --bootstrap-admin, or --allow-no-auth for a dev/lab install." >&2
-  exit 1
+  if [[ ! -f "$CONF_DIR/$ROLE.env" || $FORCE_CONFIG -eq 1 ]]; then
+    echo "error: authentication is required. Pass --oidc-issuer/--oidc-client-id/--oidc-audience" >&2
+    echo "       and --bootstrap-admin, or --allow-no-auth for a dev/lab install." >&2
+    exit 1
+  fi
 fi
 
 SVC="ch-$ROLE"

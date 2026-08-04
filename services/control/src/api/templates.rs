@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::AuthUser;
+use crate::authz::{AuthUser, RequireTemplateCreate, RequireTemplateUpdate};
 use crate::store::{Store, Template};
 
 #[derive(Debug, Deserialize)]
@@ -39,10 +39,9 @@ fn default_disk_format() -> String {
 
 pub async fn create(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireTemplateCreate,
     Json(body): Json<CreateTemplate>,
 ) -> ApiResult<(StatusCode, Json<Template>)> {
-    user.require("template:create")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -81,11 +80,10 @@ pub async fn create(
 
 pub async fn update(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireTemplateUpdate,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateTemplate>,
 ) -> ApiResult<Json<Template>> {
-    user.require("template:update")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }

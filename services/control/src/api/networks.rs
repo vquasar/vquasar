@@ -7,7 +7,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::AuthUser;
+use crate::authz::{AuthUser, RequireNetworkCreate, RequireNetworkUpdate};
 use crate::store::{Network, Store};
 
 #[derive(Debug, Deserialize)]
@@ -20,10 +20,9 @@ pub struct CreateNetwork {
 
 pub async fn create(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireNetworkCreate,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<(StatusCode, Json<Network>)> {
-    user.require("network:create")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -38,11 +37,10 @@ pub async fn create(
 
 pub async fn update(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireNetworkUpdate,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<Json<Network>> {
-    user.require("network:update")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }

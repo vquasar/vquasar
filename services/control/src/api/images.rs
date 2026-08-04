@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::AuthUser;
+use crate::authz::{AuthUser, RequireImageCreate, RequireImageUpdate};
 use crate::store::{Image, Store};
 
 #[derive(Debug, Deserialize)]
@@ -38,10 +38,9 @@ fn default_true() -> bool {
 
 pub async fn create(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireImageCreate,
     Json(body): Json<CreateImage>,
 ) -> ApiResult<(StatusCode, Json<Image>)> {
-    user.require("image:create")?;
     if body.name.is_empty() || body.source_path.is_empty() {
         return Err(ApiError::invalid("name and source_path are required"));
     }
@@ -64,11 +63,10 @@ pub async fn create(
 
 pub async fn update(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireImageUpdate,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateImage>,
 ) -> ApiResult<Json<Image>> {
-    user.require("image:update")?;
     if body.name.is_empty() || body.source_path.is_empty() {
         return Err(ApiError::invalid("name and source_path are required"));
     }

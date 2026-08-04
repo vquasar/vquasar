@@ -6,7 +6,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::AuthUser;
+use crate::authz::{AuthUser, RequireHostManage};
 use crate::store::{Host, Store};
 
 /// Register a host by name + agent gRPC endpoint. The host controller then
@@ -19,10 +19,9 @@ pub struct RegisterHost {
 
 pub async fn register(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireHostManage,
     Json(body): Json<RegisterHost>,
 ) -> ApiResult<(axum::http::StatusCode, Json<Host>)> {
-    user.require("host:manage")?;
     if body.name.is_empty() || body.endpoint.is_empty() {
         return Err(ApiError::invalid("name and endpoint are required"));
     }

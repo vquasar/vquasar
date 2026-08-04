@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::{AuthState, AuthUser};
+use crate::authz::{AuthState, AuthUser, RequireIamManage};
 use crate::rbac;
 use crate::store::{Role, Store, User};
 
@@ -94,11 +94,10 @@ pub struct SetUserRoles {
 
 pub async fn set_user_roles(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireIamManage,
     Path(id): Path<Uuid>,
     Json(body): Json<SetUserRoles>,
 ) -> ApiResult<Json<UserView>> {
-    user.require("iam:manage")?;
     let target = store
         .get_user(id)
         .await?
@@ -168,10 +167,9 @@ fn validate_perms(perms: &[String]) -> ApiResult<()> {
 
 pub async fn create_role(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireIamManage,
     Json(body): Json<CreateRole>,
 ) -> ApiResult<Json<RoleView>> {
-    user.require("iam:manage")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -194,11 +192,10 @@ pub struct UpdateRole {
 
 pub async fn update_role(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireIamManage,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateRole>,
 ) -> ApiResult<Json<RoleView>> {
-    user.require("iam:manage")?;
     let role = store
         .get_role(id)
         .await?
@@ -256,10 +253,9 @@ pub struct AddGroupRole {
 
 pub async fn add_group_role(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireIamManage,
     Json(body): Json<AddGroupRole>,
 ) -> ApiResult<axum::http::StatusCode> {
-    user.require("iam:manage")?;
     if body.group.is_empty() {
         return Err(ApiError::invalid("group is required"));
     }

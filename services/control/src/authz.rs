@@ -55,6 +55,42 @@ impl AuthUser {
     }
 }
 
+/// Generate a permission-guard extractor.
+///
+/// A guard validates auth **and** enforces its permission during the
+/// request-parts phase — i.e. before axum deserializes the request body — so an
+/// unauthorized caller gets `403` regardless of the body's shape (a bare
+/// `user.require(..)` in the handler body runs only *after* the `Json` extractor,
+/// which would surface a body-parse `400/422` first). Each guard wraps the
+/// [`AuthUser`], so handlers that still need the caller can bind it: `Guard(user)`.
+macro_rules! perm_guard {
+    ($(#[$doc:meta])* $name:ident => $perm:literal) => {
+        $(#[$doc])*
+        pub struct $name(#[allow(dead_code)] pub AuthUser);
+
+        #[axum::async_trait]
+        impl FromRequestParts<Store> for $name {
+            type Rejection = ApiError;
+            async fn from_request_parts(parts: &mut Parts, store: &Store) -> Result<Self, ApiError> {
+                let user = AuthUser::from_request_parts(parts, store).await?;
+                user.require($perm)?;
+                Ok(Self(user))
+            }
+        }
+    };
+}
+
+perm_guard!(RequireVmCreate => "vm:create");
+perm_guard!(RequireVmUpdate => "vm:update");
+perm_guard!(RequireNetworkCreate => "network:create");
+perm_guard!(RequireNetworkUpdate => "network:update");
+perm_guard!(RequireImageCreate => "image:create");
+perm_guard!(RequireImageUpdate => "image:update");
+perm_guard!(RequireTemplateCreate => "template:create");
+perm_guard!(RequireTemplateUpdate => "template:update");
+perm_guard!(RequireHostManage => "host:manage");
+perm_guard!(RequireIamManage => "iam:manage");
+
 fn bearer(parts: &Parts) -> Option<String> {
     let h = parts.headers.get(axum::http::header::AUTHORIZATION)?;
     let s = h.to_str().ok()?;

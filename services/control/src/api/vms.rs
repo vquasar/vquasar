@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::AuthUser;
+use crate::authz::{AuthUser, RequireVmCreate, RequireVmUpdate};
 use crate::store::{Image, Store, Template, Vm};
 
 #[derive(Debug, Deserialize)]
@@ -35,10 +35,9 @@ pub struct Accepted {
 
 pub async fn create(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireVmCreate,
     Json(body): Json<CreateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
-    user.require("vm:create")?;
     body.spec
         .validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -92,10 +91,9 @@ pub struct CreateVmFromTemplate {
 /// and cloud-init seed), then reconciliation provisions and launches it.
 pub async fn create_from_template(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireVmCreate,
     Json(body): Json<CreateVmFromTemplate>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
-    user.require("vm:create")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -267,11 +265,10 @@ pub struct AddNic {
 
 pub async fn update(
     State(store): State<Store>,
-    user: AuthUser,
+    _: RequireVmUpdate,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
-    user.require("vm:update")?;
     let vm = store
         .get_vm(id)
         .await?
