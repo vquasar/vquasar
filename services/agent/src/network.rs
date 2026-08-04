@@ -106,7 +106,9 @@ impl OvsNetworkBackend {
         peers.sort();
         peers.dedup();
         for (i, peer) in peers.iter().enumerate() {
-            let port = format!("vx{i}");
+            // Port names are global across the switch, so scope by VNI to avoid
+            // collisions between overlay bridges on the same host.
+            let port = format!("vx{vni}_{i}");
             run(
                 "ovs-vsctl",
                 &[
