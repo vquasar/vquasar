@@ -39,6 +39,18 @@ async fn main() -> anyhow::Result<()> {
     let config = ControlConfig::load(cli.config.as_deref())?;
     ch_common::telemetry::init(&config.logging.level);
 
+    // rustls 0.23 needs a process-wide crypto provider before any TLS use.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Configure mutual TLS to agents when certs are present (design M12a).
+    if config.tls.enabled() {
+        let ca = std::fs::read(config.tls.ca.as_ref().unwrap())?;
+        let cert = std::fs::read(config.tls.cert.as_ref().unwrap())?;
+        let key = std::fs::read(config.tls.key.as_ref().unwrap())?;
+        crate::agent::init_client_tls(ca, cert, key);
+        info!("agent connections use mutual TLS");
+    }
+
     info!(database = %redact(&config.database.url), "connecting to PostgreSQL");
     let pool = PgPoolOptions::new()
         .max_connections(10)
@@ -86,11 +98,32 @@ async fn main() -> anyhow::Result<()> {
             });
         info!(ui_dir = %ui_dir, "serving web UI");
     }
-    let listener = tokio::net::TcpListener::bind(&config.server.listen).await?;
-    info!(api = %config.server.listen, "serving REST API at /api/v1");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+    if config.tls.enabled() {
+        // Serve the REST API + UI over HTTPS (design M12a).
+        let addr: std::net::SocketAddr = config.server.listen.parse()?;
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            config.tls.cert.as_ref().unwrap(),
+            config.tls.key.as_ref().unwrap(),
+        )
         .await?;
+        let handle = axum_server::Handle::new();
+        let h = handle.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            h.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+        });
+        info!(api = %config.server.listen, "serving REST API at /api/v1 over HTTPS");
+        axum_server::bind_rustls(addr, tls)
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(&config.server.listen).await?;
+        info!(api = %config.server.listen, "serving REST API at /api/v1 (plaintext — configure [tls])");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
 
     info!("ch-control stopped");
     Ok(())

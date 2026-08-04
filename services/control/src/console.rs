@@ -6,7 +6,6 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
-use ch_proto::agent::host_agent_client::HostAgentClient;
 use ch_proto::agent::ConsoleClientMessage;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -32,7 +31,7 @@ async fn handle(store: Store, id: Uuid, socket: WebSocket) {
         None => return,
     };
 
-    let mut client = match HostAgentClient::connect(endpoint).await {
+    let mut client = match crate::agent::connect_host_agent(&endpoint).await {
         Ok(c) => c,
         Err(e) => {
             debug!(vm = %id, error = %e, "console: cannot reach agent");

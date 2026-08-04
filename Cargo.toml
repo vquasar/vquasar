@@ -54,14 +54,16 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 
-# gRPC (agent <-> control plane)
-tonic = "0.12"
+# gRPC (agent <-> control plane); `tls` enables rustls mTLS (design M12a)
+tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
 
 # Control-plane REST API + database
 axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "fs"] }
 sqlx = { version = "0.8", default-features = false, features = [

@@ -14,6 +14,9 @@
 #   --binary PATH        Component binary (default: auto-detect target/{release,debug} or ./ch-<role>)
 #   --no-start           Install and enable, but do not start now
 #   --force-config       Overwrite an existing env file (default: keep existing)
+#   --tls-ca PATH        CA cert for mutual TLS (design M12a)
+#   --tls-cert PATH      This component's certificate (agent: server; control: server + gRPC client)
+#   --tls-key PATH       This component's private key
 #   -h, --help           Show this help
 #
 # agent options:
@@ -42,6 +45,7 @@ BINARY=""; NO_START=0; FORCE_CONFIG=0
 NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
+TLS_CA=""; TLS_CERT=""; TLS_KEY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +60,9 @@ while [[ $# -gt 0 ]]; do
     --db-url) DB_URL="$2"; shift 2 ;;
     --listen) LISTEN="$2"; shift 2 ;;
     --ui-dir) UI_DIR="$2"; shift 2 ;;
+    --tls-ca) TLS_CA="$2"; shift 2 ;;
+    --tls-cert) TLS_CERT="$2"; shift 2 ;;
+    --tls-key) TLS_KEY="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -81,6 +88,15 @@ install -d "$CONF_DIR" "$STATE_DIR"
 install -m 0755 "$BINARY" "$BIN_DIR/$SVC"
 
 ENV_FILE="$CONF_DIR/$ROLE.env"
+
+# Emit the mTLS env vars (design M12a) when cert paths were provided.
+tls_env() {
+  local prefix="$1"
+  [[ -n "$TLS_CA" ]] && echo "CH_${prefix}_TLS__CA=$TLS_CA"
+  [[ -n "$TLS_CERT" ]] && echo "CH_${prefix}_TLS__CERT=$TLS_CERT"
+  [[ -n "$TLS_KEY" ]] && echo "CH_${prefix}_TLS__KEY=$TLS_KEY"
+}
+
 write_env() {
   if [[ -f "$ENV_FILE" && $FORCE_CONFIG -eq 0 ]]; then
     echo "==> keeping existing config $ENV_FILE (use --force-config to overwrite)"
@@ -106,6 +122,7 @@ CH_AGENT_HYPERVISOR__SECCOMP=$SECCOMP
 CH_AGENT_MIGRATION__TRANSPORT=tcp
 # Advertise an IP, not a hostname: the static CH binary has no working resolver.
 CH_AGENT_MIGRATION__ADVERTISE_HOST=$ADVERTISE_HOST
+$(tls_env AGENT)
 EOF
 
   # The agent must NOT kill Cloud Hypervisor on stop/restart: VMs survive an
@@ -149,6 +166,7 @@ CH_CONTROL_SERVER__LISTEN=$LISTEN
 CH_CONTROL_RECONCILE__INTERVAL_SECS=3
 CH_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
 ${UI_DIR:+CH_CONTROL_SERVER__UI_DIR=$UI_DIR}
+$(tls_env CONTROL)
 EOF
 
   cat > "$UNIT_DIR/$SVC.service" <<EOF

@@ -4,13 +4,64 @@
 //! A fresh channel is opened per call: agent traffic is low-frequency and this
 //! keeps the control plane free of per-host connection state for now.
 
+use std::sync::OnceLock;
+
 use ch_proto::agent::host_agent_client::HostAgentClient;
 use ch_proto::agent::{
     DeleteVmRequest, DiscardVmRequest, EnsureVmRequest, FinalizeReceiveRequest, GetHostInfoRequest,
     GetHostInfoResponse, ListVmsRequest, NetworkBinding, PrepareReceiveRequest,
     SendMigrationRequest, VmObservedState,
 };
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+
+/// Process-wide mTLS material for talking to agents (design M12a). Set once at
+/// startup; `None` means plaintext. A global keeps every `Agent::new` call site
+/// (and the console proxy) TLS-aware without threading config through each one.
+static CLIENT_TLS: OnceLock<Option<ClientTls>> = OnceLock::new();
+
+struct ClientTls {
+    ca: Vec<u8>,
+    cert: Vec<u8>,
+    key: Vec<u8>,
+}
+
+/// Configure agent connections to use mutual TLS. Call once before serving.
+pub fn init_client_tls(ca: Vec<u8>, cert: Vec<u8>, key: Vec<u8>) {
+    let _ = CLIENT_TLS.set(Some(ClientTls { ca, cert, key }));
+}
+
+/// Connect to a host agent, applying mutual TLS when configured. The endpoint's
+/// scheme is upgraded to https and its host must match the agent cert SAN.
+pub async fn connect_host_agent(endpoint: &str) -> Result<HostAgentClient<Channel>, AgentError> {
+    match CLIENT_TLS.get().and_then(|o| o.as_ref()) {
+        Some(tls) => {
+            let url = endpoint.replacen("http://", "https://", 1);
+            let cfg = ClientTlsConfig::new()
+                .ca_certificate(Certificate::from_pem(&tls.ca))
+                .identity(Identity::from_pem(&tls.cert, &tls.key));
+            let endpoint = Endpoint::from_shared(url.clone())
+                .and_then(|ep| ep.tls_config(cfg))
+                .map_err(|source| AgentError::Connect {
+                    endpoint: url.clone(),
+                    source,
+                })?;
+            let channel = endpoint
+                .connect()
+                .await
+                .map_err(|source| AgentError::Connect {
+                    endpoint: url,
+                    source,
+                })?;
+            Ok(HostAgentClient::new(channel))
+        }
+        None => HostAgentClient::connect(endpoint.to_string())
+            .await
+            .map_err(|source| AgentError::Connect {
+                endpoint: endpoint.to_string(),
+                source,
+            }),
+    }
+}
 
 /// A failure talking to a host agent.
 #[derive(Debug, thiserror::Error)]
@@ -38,12 +89,7 @@ impl Agent {
     }
 
     async fn client(&self) -> Result<HostAgentClient<Channel>, AgentError> {
-        HostAgentClient::connect(self.endpoint.clone())
-            .await
-            .map_err(|source| AgentError::Connect {
-                endpoint: self.endpoint.clone(),
-                source,
-            })
+        connect_host_agent(&self.endpoint).await
     }
 
     pub async fn get_host_info(&self) -> Result<GetHostInfoResponse, AgentError> {

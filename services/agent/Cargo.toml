@@ -21,6 +21,7 @@ ch-proto.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic.workspace = true
+rustls.workspace = true
 prost.workspace = true
 async-trait.workspace = true
 clap.workspace = true

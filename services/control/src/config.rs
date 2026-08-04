@@ -20,7 +20,28 @@ pub struct ControlConfig {
     #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
+    pub tls: TlsConfig,
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// TLS material (design M12a). When all set, the control plane serves its API
+/// over HTTPS and talks to agents over mutual TLS using this identity. The same
+/// `control` certificate serves both roles (serverAuth + clientAuth).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TlsConfig {
+    #[serde(default)]
+    pub ca: Option<String>,
+    #[serde(default)]
+    pub cert: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+impl TlsConfig {
+    pub fn enabled(&self) -> bool {
+        self.ca.is_some() && self.cert.is_some() && self.key.is_some()
+    }
 }
 
 /// Shared-storage layout the control plane uses to place provisioned volumes

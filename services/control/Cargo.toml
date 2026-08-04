@@ -20,6 +20,8 @@ ch-proto.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
 tokio-stream = "0.1"
 axum = { workspace = true, features = ["ws"] }
+axum-server.workspace = true
+rustls.workspace = true
 tower-http.workspace = true
 tonic.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

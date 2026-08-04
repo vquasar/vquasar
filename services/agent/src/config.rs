@@ -22,7 +22,28 @@ pub struct AgentConfig {
     #[serde(default)]
     pub migration: MigrationSection,
     #[serde(default)]
+    pub tls: TlsSection,
+    #[serde(default)]
     pub logging: LoggingSection,
+}
+
+/// Mutual-TLS material for the agent's gRPC server (design M12a). When all three
+/// paths are set, the agent requires a client certificate signed by `ca`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TlsSection {
+    #[serde(default)]
+    pub ca: Option<PathBuf>,
+    #[serde(default)]
+    pub cert: Option<PathBuf>,
+    #[serde(default)]
+    pub key: Option<PathBuf>,
+}
+
+impl TlsSection {
+    /// Whether mutual TLS is fully configured.
+    pub fn enabled(&self) -> bool {
+        self.ca.is_some() && self.cert.is_some() && self.key.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

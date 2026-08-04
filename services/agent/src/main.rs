@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use ch_proto::agent::host_agent_server::HostAgentServer;
 use clap::Parser;
-use tonic::transport::Server;
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::info;
 
 use crate::backend::CloudHypervisorBackend;
@@ -45,6 +45,9 @@ async fn main() -> anyhow::Result<()> {
     let config = AgentConfig::load(cli.config.as_deref())?;
 
     ch_common::telemetry::init(&config.logging.level);
+
+    // rustls 0.23 needs a process-wide crypto provider before any TLS use.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let host = inventory::collect();
     let ch_version = inventory::cloud_hypervisor_version(&config.hypervisor.binary);
@@ -112,9 +115,23 @@ async fn main() -> anyhow::Result<()> {
         .listen
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid grpc.listen '{}': {e}", config.grpc.listen))?;
-    info!(%addr, "serving HostAgent gRPC API");
+    // Mutual TLS on the control-facing gRPC API when configured (design M12a):
+    // present the agent certificate and require a client cert signed by our CA.
+    let mut server = Server::builder();
+    if config.tls.enabled() {
+        let cert = std::fs::read(config.tls.cert.as_ref().unwrap())?;
+        let key = std::fs::read(config.tls.key.as_ref().unwrap())?;
+        let ca = std::fs::read(config.tls.ca.as_ref().unwrap())?;
+        let tls = ServerTlsConfig::new()
+            .identity(Identity::from_pem(cert, key))
+            .client_ca_root(Certificate::from_pem(ca));
+        server = server.tls_config(tls)?;
+        info!(%addr, "serving HostAgent gRPC API with mutual TLS");
+    } else {
+        info!(%addr, "serving HostAgent gRPC API (plaintext — configure [tls] for mTLS)");
+    }
 
-    Server::builder()
+    server
         .add_service(HostAgentServer::new(service))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
