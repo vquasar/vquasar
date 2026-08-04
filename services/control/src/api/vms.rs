@@ -297,6 +297,12 @@ pub async fn create_from_template(
         .get_image(template.image_id)
         .await?
         .ok_or_else(|| ApiError::invalid(format!("image not found: {}", template.image_id)))?;
+    if image.status != "ready" {
+        return Err(ApiError::invalid(format!(
+            "image is not ready (status: {})",
+            image.status
+        )));
+    }
 
     // Pick the id up front so the provisioned volume path can reference it.
     let vm_id = Uuid::new_v4();

@@ -56,11 +56,21 @@ pub async fn create(
     }
     // The referenced image must exist (FK also enforces this, but a clear 400
     // beats a 500 on a bad request).
-    if store.get_image(body.image_id).await?.is_none() {
-        return Err(ApiError::invalid(format!(
-            "image not found: {}",
-            body.image_id
-        )));
+    match store.get_image(body.image_id).await? {
+        None => {
+            return Err(ApiError::invalid(format!(
+                "image not found: {}",
+                body.image_id
+            )))
+        }
+        // Don't build on an image that's still importing or failed (M14b).
+        Some(img) if img.status != "ready" => {
+            return Err(ApiError::invalid(format!(
+                "image is not ready (status: {})",
+                img.status
+            )))
+        }
+        Some(_) => {}
     }
     let tpl = store
         .insert_template(
@@ -93,11 +103,21 @@ pub async fn update(
     if body.disk_format != "raw" && body.disk_format != "qcow2" {
         return Err(ApiError::invalid("disk_format must be 'raw' or 'qcow2'"));
     }
-    if store.get_image(body.image_id).await?.is_none() {
-        return Err(ApiError::invalid(format!(
-            "image not found: {}",
-            body.image_id
-        )));
+    match store.get_image(body.image_id).await? {
+        None => {
+            return Err(ApiError::invalid(format!(
+                "image not found: {}",
+                body.image_id
+            )))
+        }
+        // Don't build on an image that's still importing or failed (M14b).
+        Some(img) if img.status != "ready" => {
+            return Err(ApiError::invalid(format!(
+                "image is not ready (status: {})",
+                img.status
+            )))
+        }
+        Some(_) => {}
     }
     store
         .update_template(

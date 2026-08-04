@@ -113,9 +113,135 @@ pub async fn delete(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("image:delete")?;
+    let image = store.get_image(id).await?;
     if store.delete_image(id).await? {
+        // Remove the backing file only for images the platform created (M14b);
+        // a registered-by-path image's file belongs to the operator.
+        if let Some(img) = image {
+            if img.managed {
+                let _ = tokio::fs::remove_file(&img.source_path).await;
+            }
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::invalid(format!("image not found: {id}")))
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportImage {
+    pub name: String,
+    /// URL to download the base disk from (http/https).
+    pub url: String,
+    pub format: String,
+    pub boot: BootSpec,
+    #[serde(default)]
+    pub default_size_bytes: Option<i64>,
+    #[serde(default = "default_true")]
+    pub cloud_init: bool,
+    #[serde(default)]
+    pub os: Option<String>,
+}
+
+/// The shared-storage images directory (sibling of the volumes dir).
+fn images_dir(store: &Store) -> std::path::PathBuf {
+    let vols = std::path::PathBuf::from(store.shared_volumes_dir());
+    vols.parent().unwrap_or(&vols).join("images")
+}
+
+/// Import an image by downloading it from a URL (design M14b). Returns the
+/// record immediately in `importing` state; the download runs in the background
+/// and flips the image to `ready` (or `failed`).
+pub async fn import(
+    State(store): State<Store>,
+    _: RequireImageCreate,
+    Json(body): Json<ImportImage>,
+) -> ApiResult<(StatusCode, Json<Image>)> {
+    if body.name.trim().is_empty() || body.url.trim().is_empty() {
+        return Err(ApiError::invalid("name and url are required"));
+    }
+    if !matches!(body.format.as_str(), "raw" | "qcow2") {
+        return Err(ApiError::invalid("format must be 'raw' or 'qcow2'"));
+    }
+    if !(body.url.starts_with("http://") || body.url.starts_with("https://")) {
+        return Err(ApiError::invalid("url must be http(s)"));
+    }
+
+    let id = Uuid::new_v4();
+    let ext = if body.format == "raw" { "raw" } else { "qcow2" };
+    let path = images_dir(&store).join(format!("img-{id}.{ext}"));
+    tokio::fs::create_dir_all(images_dir(&store))
+        .await
+        .map_err(|e| ApiError::internal(format!("images dir: {e}")))?;
+    let image = store
+        .insert_image_importing(
+            id,
+            body.name.trim(),
+            &path.to_string_lossy(),
+            &body.format,
+            &body.boot,
+            body.default_size_bytes,
+            body.cloud_init,
+            body.os.as_deref(),
+        )
+        .await?;
+
+    // Background download; flips status when done.
+    let store2 = store.clone();
+    let url = body.url.clone();
+    tokio::spawn(async move { download_image(store2, id, url, path).await });
+
+    Ok((StatusCode::ACCEPTED, Json(image)))
+}
+
+/// Download `url` to `path`, then mark the image ready/failed (design M14b).
+async fn download_image(store: Store, id: Uuid, url: String, path: std::path::PathBuf) {
+    let p = path.to_string_lossy().into_owned();
+    let dl = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("curl")
+            .args(["-fSL", "--connect-timeout", "20", "-o", &p, &url])
+            .output()
+    })
+    .await;
+
+    let result: Result<(), String> = match dl {
+        Ok(Ok(out)) if out.status.success() => Ok(()),
+        Ok(Ok(out)) => Err(format!(
+            "download failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Ok(Err(e)) => Err(format!("curl: {e}")),
+        Err(e) => Err(format!("download task: {e}")),
+    };
+
+    match result {
+        Ok(()) => {
+            let size = virtual_size(&path).await;
+            let _ = store.set_image_status(id, "ready", size, None).await;
+            tracing::info!(%id, path = %path.display(), "image import complete");
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            let _ = store.set_image_status(id, "failed", None, Some(&e)).await;
+            tracing::warn!(%id, error = %e, "image import failed");
+        }
+    }
+}
+
+/// Guest-visible size of a downloaded image via `qemu-img info` (best-effort).
+async fn virtual_size(path: &std::path::Path) -> Option<i64> {
+    let p = path.to_string_lossy().into_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("qemu-img")
+            .args(["info", "--output=json", &p])
+            .output()
+    })
+    .await
+    .ok()?
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    v.get("virtual-size").and_then(|s| s.as_i64())
 }

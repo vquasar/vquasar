@@ -163,6 +163,12 @@ pub struct Image {
     pub default_size_bytes: Option<i64>,
     pub cloud_init: bool,
     pub os: Option<String>,
+    /// Lifecycle status (design M14b): `ready` | `importing` | `failed`.
+    pub status: String,
+    /// Whether the platform owns the backing file (imported vs registered).
+    pub managed: bool,
+    pub size_bytes: Option<i64>,
+    pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1115,6 +1121,62 @@ impl Store {
         .bind(now)
         .fetch_one(&self.pool)
         .await
+    }
+
+    /// Create an image record in `importing` state for an async URL import
+    /// (design M14b); the platform owns the backing file at `source_path`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_image_importing(
+        &self,
+        id: Uuid,
+        name: &str,
+        source_path: &str,
+        format: &str,
+        boot: &BootSpec,
+        default_size_bytes: Option<i64>,
+        cloud_init: bool,
+        os: Option<&str>,
+    ) -> Result<Image> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Image>(
+            "INSERT INTO images
+                (id, name, source_path, format, boot, default_size_bytes, cloud_init, os,
+                 status, managed, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'importing',TRUE,$9,$9)
+             RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(source_path)
+        .bind(format)
+        .bind(Json(boot))
+        .bind(default_size_bytes)
+        .bind(cloud_init)
+        .bind(os)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Update an image's lifecycle status after an import finishes (M14b).
+    pub async fn set_image_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        size_bytes: Option<i64>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE images SET status=$2, size_bytes=$3, error=$4, updated_at=$5 WHERE id=$1",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(size_bytes)
+        .bind(error)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
     }
 
     pub async fn get_image(&self, id: Uuid) -> Result<Option<Image>> {

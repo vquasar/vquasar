@@ -207,8 +207,23 @@ export interface Image {
   default_size_bytes: number | null;
   cloud_init: boolean;
   os: string | null;
+  // Lifecycle (M14b)
+  status: string; // ready | importing | failed
+  managed: boolean;
+  size_bytes: number | null;
+  error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ImportImageRequest {
+  name: string;
+  url: string;
+  format: "raw" | "qcow2";
+  boot: BootSpec;
+  default_size_bytes?: number | null;
+  cloud_init?: boolean;
+  os?: string | null;
 }
 
 export interface Template {

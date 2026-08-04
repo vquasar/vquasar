@@ -134,6 +134,15 @@ export function useCreateImage() {
   });
 }
 
+export function useImportImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("./types").ImportImageRequest) =>
+      api.post<Image>("/images/import", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
+  });
+}
+
 export function useUpdateImage() {
   const qc = useQueryClient();
   return useMutation({

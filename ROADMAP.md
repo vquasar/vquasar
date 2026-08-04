@@ -131,8 +131,16 @@ Split into three shippable slices.
   its volumes; deleting an attached volume is rejected. New `volume:*`
   permissions. Caveats/follow-ups: detach needs the VM stopped (CH has no disk
   hot-unplug yet); image-backed / bootable volumes; boot-from-volume.
-- **Image lifecycle**: upload / download / build workflow (images are currently
-  pre-placed files registered by path).
+- **M14b — image lifecycle (import from URL).** ✅ **Done.** Images can be
+  imported through the platform, not just registered by path: `POST
+  /images/import {name, url, format, boot, …}` creates the record in `importing`
+  state and downloads the file in the background (curl → shared storage), then
+  flips it to `ready` (with the detected virtual size) or `failed` (with the
+  error). Images gained `status`/`managed`/`size_bytes`/`error`; VM/template
+  creation is gated on `ready`; deleting a `managed` (imported) image removes its
+  backing file, while a registered-by-path image's file is left alone. UI: an
+  “Import from URL” dialog + a status column. Follow-ups: direct file upload
+  (multipart), image build/customization workflow, checksum verification.
 - Snapshots and backups.
 - Additional storage backends and per-VM storage policy.
 

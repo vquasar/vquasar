@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -14,8 +15,15 @@ import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
+import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
-import { useCreateImage, useDeleteImage, useImages, useUpdateImage } from "../api/hooks";
+import {
+  useCreateImage,
+  useDeleteImage,
+  useImages,
+  useImportImage,
+  useUpdateImage,
+} from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { formatBytes, formatDate } from "../format";
 import type { BootSpec, CreateImageRequest, Image } from "../api/types";
@@ -123,14 +131,91 @@ function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void
   );
 }
 
+function ImportDialog({ onClose }: { onClose: () => void }) {
+  const imp = useImportImage();
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [format, setFormat] = useState<"raw" | "qcow2">("qcow2");
+  const [os, setOs] = useState("");
+  const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
+  const [sizeGib, setSizeGib] = useState("");
+  const [cloudInit, setCloudInit] = useState(true);
+
+  const submit = () =>
+    imp.mutate(
+      {
+        name,
+        url,
+        format,
+        os: os || null,
+        cloud_init: cloudInit,
+        boot: { type: "firmware", firmware },
+        default_size_bytes: sizeGib ? Math.round(Number(sizeGib) * GIB) : null,
+      },
+      { onSuccess: onClose },
+    );
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Import image from URL</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <TextField
+            label="URL"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://cloud-images.ubuntu.com/…/disk.img"
+          />
+          <Stack direction="row" spacing={2}>
+            <TextField select label="Format" value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")} sx={{ minWidth: 120 }}>
+              <MenuItem value="qcow2">qcow2</MenuItem>
+              <MenuItem value="raw">raw</MenuItem>
+            </TextField>
+            <TextField label="OS label" value={os} onChange={(e) => setOs(e.target.value)} fullWidth placeholder="ubuntu-26.04" />
+          </Stack>
+          <TextField label="Firmware (UEFI) path" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+          <TextField label="Default size (GiB, optional)" value={sizeGib} onChange={(e) => setSizeGib(e.target.value)} />
+          <FormControlLabel
+            control={<Switch checked={cloudInit} onChange={(e) => setCloudInit(e.target.checked)} />}
+            label="Uses cloud-init"
+          />
+          <Typography variant="caption" color="text.secondary">
+            The download runs in the background; the image becomes usable when it turns “ready”.
+          </Typography>
+          {imp.error && <Alert severity="error">{(imp.error as Error).message}</Alert>}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" onClick={submit} disabled={!name || !url || imp.isPending}>
+          Import
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function StatusChip({ image }: { image: Image }) {
+  const color = image.status === "ready" ? "success" : image.status === "failed" ? "error" : "warning";
+  return <Chip size="small" color={color} label={image.status} title={image.error ?? undefined} />;
+}
+
 export function Images() {
   const images = useImages();
   const del = useDeleteImage();
   const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Image | null } | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const columns: GridColDef<Image>[] = [
     { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
+    {
+      field: "status",
+      headerName: "Status",
+      width: 110,
+      renderCell: (p) => <StatusChip image={p.row} />,
+    },
     { field: "os", headerName: "OS", width: 140, valueGetter: (v) => v ?? "—" },
     { field: "format", headerName: "Format", width: 90 },
     { field: "source_path", headerName: "Base disk", flex: 1, minWidth: 240 },
@@ -164,9 +249,14 @@ export function Images() {
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Images</Typography>
         {can("image:create") && (
-          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
-            Register image
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button startIcon={<CloudDownloadIcon />} onClick={() => setImporting(true)}>
+              Import from URL
+            </Button>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
+              Register image
+            </Button>
+          </Stack>
         )}
       </Stack>
       {images.isError && <Alert severity="error">{(images.error as Error).message}</Alert>}
@@ -181,6 +271,7 @@ export function Images() {
         />
       </div>
       {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
+      {importing && <ImportDialog onClose={() => setImporting(false)} />}
     </Stack>
   );
 }

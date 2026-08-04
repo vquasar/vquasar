@@ -89,6 +89,7 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         .route("/volumes/:id/attach", post(volumes::attach))
         .route("/volumes/:id/detach", post(volumes::detach))
         .route("/images", get(images::list).post(images::create))
+        .route("/images/import", post(images::import))
         .route(
             "/images/:id",
             get(images::get)
