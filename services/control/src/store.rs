@@ -842,6 +842,16 @@ impl Store {
         Ok(res.rows_affected())
     }
 
+    /// Free the addresses held by a single NIC (on a NIC network change — M13d).
+    pub async fn release_nic_allocations(&self, vm_id: Uuid, nic_index: i32) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM ip_allocations WHERE vm_id=$1 AND nic_index=$2")
+            .bind(vm_id)
+            .bind(nic_index)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     // ---- security groups (design M13c) -----------------------------------
 
     pub async fn list_security_groups(&self) -> Result<Vec<SecurityGroup>> {

@@ -210,10 +210,11 @@ impl VmManager {
                 },
             );
         } else {
-            // Already running: re-apply the per-NIC security-group firewall so
-            // rule changes take effect without recreating the TAP (design M13c).
+            // Already running: reconcile each NIC's dataplane in place — move it
+            // if its network changed (M13d) and re-apply the firewall (M13c),
+            // without recreating the TAP.
             for (index, binding) in bindings.iter().enumerate() {
-                self.network.refresh_firewall(id, index, binding).await?;
+                self.network.rehome(id, index, binding).await?;
             }
         }
         let managed = vms.get(&id).expect("just inserted");

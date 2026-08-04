@@ -31,12 +31,25 @@ use crate::store::{Image, Store, Template, Vm};
 /// family is assigned. Idempotent per (network, ip) via the DB unique index.
 async fn allocate_nic_ips(store: &Store, vm_id: Uuid, spec: &VirtualMachineSpec) -> ApiResult<()> {
     for (index, nic) in spec.network_interfaces.iter().enumerate() {
+        allocate_one_nic(store, vm_id, nic, index).await?;
+    }
+    Ok(())
+}
+
+/// Allocate the static IP(s) for a single NIC on a managed network (M13a/M13d).
+async fn allocate_one_nic(
+    store: &Store,
+    vm_id: Uuid,
+    nic: &NetworkInterfaceSpec,
+    index: usize,
+) -> ApiResult<()> {
+    {
         let network = store
             .get_network(nic.network_id.as_uuid())
             .await?
             .ok_or_else(|| ApiError::invalid(format!("network not found: {}", nic.network_id)))?;
         if !network.is_managed() {
-            continue;
+            return Ok(());
         }
         let mac = nic.mac.clone().unwrap_or_else(|| allocate_mac(vm_id, index));
 
@@ -99,6 +112,73 @@ async fn allocate_nic_ips(store: &Store, vm_id: Uuid, spec: &VirtualMachineSpec)
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangeNic {
+    /// The network to move this NIC onto.
+    pub network_id: Uuid,
+    /// Optionally replace the NIC's security groups at the same time.
+    #[serde(default)]
+    pub security_groups: Option<Vec<Uuid>>,
+}
+
+/// Move an existing NIC to a different network on a running VM (design M13d).
+/// The agent re-homes the NIC's TAP on the dataplane (no VM restart); the guest
+/// keeps its MAC and IP, so on a different subnet it must renew DHCP or be
+/// reconfigured to use the new network at L3.
+pub async fn change_nic(
+    State(store): State<Store>,
+    _: RequireVmUpdate,
+    Path((id, index)): Path<(Uuid, usize)>,
+    Json(body): Json<ChangeNic>,
+) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    let vm = store
+        .get_vm(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+    let mut spec = vm.spec.0.clone();
+    if index >= spec.network_interfaces.len() {
+        return Err(ApiError::invalid(format!("nic index {index} out of range")));
+    }
+    store
+        .get_network(body.network_id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("network not found: {}", body.network_id)))?;
+
+    // Retarget the NIC. Drop any operator-requested static IPs — they belonged
+    // to the old network — and re-allocate from the new one.
+    {
+        let nic = &mut spec.network_interfaces[index];
+        nic.network_id = ch_model::NetworkId::from(body.network_id);
+        nic.addresses.clear();
+        if let Some(sgs) = &body.security_groups {
+            nic.security_groups = sgs.clone();
+        }
+    }
+    spec.validate()
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
+
+    // Swap allocations: free the old NIC addresses, then allocate on the new net.
+    store.release_nic_allocations(id, index as i32).await?;
+    allocate_one_nic(&store, id, &spec.network_interfaces[index], index).await?;
+
+    // Persist (bumps generation) so the reconciler re-homes the TAP.
+    let vm = store
+        .set_vm_spec(id, &spec)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+    let task = store.insert_task("vm.nic.change", Some(vm.id)).await?;
+    store
+        .insert_event("vm", Some(vm.id), "vm.nic.changed", "info", &vm.name)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Accepted {
+            vm_id: vm.id,
+            task_id: task.id,
+        }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

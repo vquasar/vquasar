@@ -292,3 +292,25 @@ export function useDeleteSgRule() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["security-groups"] }),
   });
 }
+
+export function useChangeNic() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({
+      id,
+      index,
+      networkId,
+      securityGroups,
+    }: {
+      id: string;
+      index: number;
+      networkId: string;
+      securityGroups?: string[];
+    }) =>
+      api.put<Accepted>(`/vms/${id}/nics/${index}`, {
+        network_id: networkId,
+        ...(securityGroups ? { security_groups: securityGroups } : {}),
+      }),
+    onSuccess: invalidate,
+  });
+}

@@ -53,6 +53,7 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         .route("/vms/:id/start", post(vms::start))
         .route("/vms/:id/stop", post(vms::stop))
         .route("/vms/:id/migrate", post(vms::migrate))
+        .route("/vms/:id/nics/:index", axum::routing::put(vms::change_nic))
         .route("/vms/:id/console", get(crate::console::console_ws))
         .route("/networks", get(networks::list).post(networks::create))
         .route(

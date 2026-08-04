@@ -57,10 +57,11 @@ pub trait NetworkBackend: Send + Sync {
     async fn prepare(&self, vm: VmId, index: usize, binding: &NicBinding) -> Result<PreparedNic>;
     /// Remove the TAP and its dataplane port (idempotent).
     async fn release(&self, vm: VmId, index: usize) -> Result<()>;
-    /// Re-apply just the security-group firewall for an already-present NIC, so
-    /// rule changes reach a running VM without recreating its TAP (design M13c).
-    /// Idempotent; a no-op for backends without a firewall.
-    async fn refresh_firewall(&self, _vm: VmId, _index: usize, _binding: &NicBinding) -> Result<()> {
+    /// Reconcile an already-present NIC's dataplane without recreating its TAP:
+    /// move it to its network's bridge if the network changed (design M13d) and
+    /// re-apply the security-group firewall so rule changes take effect (M13c).
+    /// Idempotent; a no-op for backends without a dataplane.
+    async fn rehome(&self, _vm: VmId, _index: usize, _binding: &NicBinding) -> Result<()> {
         Ok(())
     }
 }
@@ -94,6 +95,69 @@ impl OvsNetworkBackend {
             crate::firewall::clear(bridge, tap).await
         }
     }
+
+    /// Ensure a per-VNI overlay bridge and its full-mesh of VXLAN tunnel ports
+    /// exist (design M13b), returning the bridge name.
+    async fn ensure_overlay(&self, vni: u32, peers: &[String]) -> Result<String> {
+        let br = overlay_bridge(vni);
+        run("ovs-vsctl", &["--may-exist", "add-br", &br]).await?;
+        let _ = run("ip", &["link", "set", &br, "up"]).await;
+        let mut peers = peers.to_vec();
+        peers.sort();
+        peers.dedup();
+        for (i, peer) in peers.iter().enumerate() {
+            let port = format!("vx{i}");
+            run(
+                "ovs-vsctl",
+                &[
+                    "--may-exist",
+                    "add-port",
+                    &br,
+                    &port,
+                    "--",
+                    "set",
+                    "interface",
+                    &port,
+                    "type=vxlan",
+                    &format!("options:remote_ip={peer}"),
+                    &format!("options:key={vni}"),
+                ],
+            )
+            .await?;
+        }
+        Ok(br)
+    }
+
+    /// The bridge a NIC should live on: a per-VNI overlay bridge, or the shared
+    /// integration bridge for flat/VLAN.
+    async fn desired_bridge(&self, binding: &NicBinding) -> Result<String> {
+        if binding.vni != 0 {
+            self.ensure_overlay(binding.vni, &binding.overlay_peers).await
+        } else {
+            Ok(self.bridge.clone())
+        }
+    }
+
+    /// Set (or clear) the 802.1Q tag on a TAP port for flat/VLAN placement.
+    async fn set_vlan(&self, tap: &str, vlan: u16) -> Result<()> {
+        if vlan != 0 {
+            run("ovs-vsctl", &["set", "port", tap, &format!("tag={vlan}")]).await
+        } else {
+            let _ = run("ovs-vsctl", &["clear", "port", tap, "tag"]).await;
+            Ok(())
+        }
+    }
+
+    /// Delete an overlay bridge once its last guest TAP has left (design M13b).
+    async fn gc_overlay_if_empty(&self, br: &str) {
+        if br.starts_with("vxbr") {
+            if let Ok(ports) = run_stdout("ovs-vsctl", &["list-ports", br]).await {
+                if !ports.lines().any(|p| p.trim().starts_with("tap")) {
+                    let _ = run("ovs-vsctl", &["--if-exists", "del-br", br]).await;
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -109,56 +173,14 @@ impl NetworkBackend for OvsNetworkBackend {
         run("ip", &["tuntap", "add", "dev", &tap, "mode", "tap"]).await?;
         run("ip", &["link", "set", &tap, "up"]).await?;
 
-        // VXLAN overlay (design M13b): the TAP goes on a per-VNI bridge with a
-        // full mesh of tunnel ports to the peer hosts, isolated on the wire by
-        // the VNI — no physical-switch VLAN needed.
-        if binding.vni != 0 {
-            let br = overlay_bridge(binding.vni);
-            run("ovs-vsctl", &["--may-exist", "add-br", &br]).await?;
-            let _ = run("ip", &["link", "set", &br, "up"]).await;
-            // One tunnel port per peer. Names are stable per (sorted) peer index
-            // so repeated reconciles are idempotent (--may-exist).
-            let mut peers = binding.overlay_peers.clone();
-            peers.sort();
-            peers.dedup();
-            for (i, peer) in peers.iter().enumerate() {
-                let port = format!("vx{i}");
-                run(
-                    "ovs-vsctl",
-                    &[
-                        "--may-exist",
-                        "add-port",
-                        &br,
-                        &port,
-                        "--",
-                        "set",
-                        "interface",
-                        &port,
-                        "type=vxlan",
-                        &format!("options:remote_ip={peer}"),
-                        &format!("options:key={}", binding.vni),
-                    ],
-                )
-                .await?;
-            }
-            // Guest TAP untagged: the overlay bridge is the network's L2 domain.
-            run("ovs-vsctl", &["--may-exist", "add-port", &br, &tap]).await?;
-            self.apply_firewall(&br, &tap, binding).await?;
-            return Ok(PreparedNic {
-                tap,
-                mac: binding.mac.clone(),
-            });
+        // Place the TAP on its network's bridge: a per-VNI overlay bridge (M13b)
+        // or the shared integration bridge (flat/VLAN), then apply the firewall.
+        let br = self.desired_bridge(binding).await?;
+        run("ovs-vsctl", &["--may-exist", "add-port", &br, &tap]).await?;
+        if binding.vni == 0 {
+            self.set_vlan(&tap, binding.vlan).await?;
         }
-
-        // Flat/VLAN: TAP on the shared integration bridge, optionally 802.1Q.
-        let mut args = vec!["--may-exist", "add-port", &self.bridge, &tap];
-        let tag; // keep the formatted string alive for the borrow
-        if binding.vlan != 0 {
-            tag = format!("tag={}", binding.vlan);
-            args.push(&tag);
-        }
-        run("ovs-vsctl", &args).await?;
-        self.apply_firewall(&self.bridge, &tap, binding).await?;
+        self.apply_firewall(&br, &tap, binding).await?;
 
         Ok(PreparedNic {
             tap,
@@ -166,14 +188,29 @@ impl NetworkBackend for OvsNetworkBackend {
         })
     }
 
-    async fn refresh_firewall(&self, vm: VmId, index: usize, binding: &NicBinding) -> Result<()> {
+    async fn rehome(&self, vm: VmId, index: usize, binding: &NicBinding) -> Result<()> {
         let tap = tap_name(vm, index);
-        // The TAP may not be attached yet on the first reconcile; that's fine —
-        // prepare() applies the firewall, and the next tick refreshes it.
-        if let Ok(br) = run_stdout("ovs-vsctl", &["port-to-br", &tap]).await {
-            self.apply_firewall(br.trim(), &tap, binding).await?;
+        // The TAP may not be attached yet on the first reconcile; prepare() owns
+        // initial placement, so only act once it exists on some bridge.
+        let Ok(current) = run_stdout("ovs-vsctl", &["port-to-br", &tap]).await else {
+            return Ok(());
+        };
+        let current = current.trim().to_string();
+        let desired = self.desired_bridge(binding).await?;
+
+        if current != desired {
+            // NIC network changed (design M13d): move the TAP to the new bridge.
+            // CH keeps the same TAP fd, so the VM is not restarted; only its L2
+            // placement changes.
+            let _ = crate::firewall::clear(&current, &tap).await;
+            let _ = run("ovs-vsctl", &["--if-exists", "del-port", &current, &tap]).await;
+            run("ovs-vsctl", &["--may-exist", "add-port", &desired, &tap]).await?;
+            self.gc_overlay_if_empty(&current).await;
         }
-        Ok(())
+        if binding.vni == 0 {
+            self.set_vlan(&tap, binding.vlan).await?;
+        }
+        self.apply_firewall(&desired, &tap, binding).await
     }
 
     async fn release(&self, vm: VmId, index: usize) -> Result<()> {
@@ -185,15 +222,8 @@ impl NetworkBackend for OvsNetworkBackend {
             // Remove this NIC's security-group flows before the port (design M13c).
             let _ = crate::firewall::clear(&br, &tap).await;
             let _ = run("ovs-vsctl", &["--if-exists", "del-port", &br, &tap]).await;
-            // Garbage-collect an overlay bridge once its last guest TAP is gone
-            // (this also removes its tunnel ports).
-            if br.starts_with("vxbr") {
-                if let Ok(ports) = run_stdout("ovs-vsctl", &["list-ports", &br]).await {
-                    if !ports.lines().any(|p| p.trim().starts_with("tap")) {
-                        let _ = run("ovs-vsctl", &["--if-exists", "del-br", &br]).await;
-                    }
-                }
-            }
+            // Garbage-collect an overlay bridge once its last guest TAP is gone.
+            self.gc_overlay_if_empty(&br).await;
         } else {
             // Not on any bridge; still fall back to the integration bridge.
             let _ = run("ovs-vsctl", &["--if-exists", "del-port", &self.bridge, &tap]).await;

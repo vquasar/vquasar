@@ -24,7 +24,16 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import EditIcon from "@mui/icons-material/Edit";
-import { useHosts, useMigrateVm, useNetworks, useUpdateVm, useVm, useVmAction } from "../api/hooks";
+import {
+  useChangeNic,
+  useHosts,
+  useMigrateVm,
+  useNetworks,
+  useSecurityGroups,
+  useUpdateVm,
+  useVm,
+  useVmAction,
+} from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatBytes, formatDate, formatMib, shortId } from "../format";
@@ -169,6 +178,91 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <TableCell sx={{ color: "text.secondary", width: 180, border: 0 }}>{label}</TableCell>
       <TableCell sx={{ border: 0 }}>{value}</TableCell>
     </TableRow>
+  );
+}
+
+/// A VM's NICs with a "change network" action (design M13d).
+function NicList({ vmId, nics }: { vmId: string; nics: { network_id: string; security_groups?: string[] }[] }) {
+  const networks = useNetworks();
+  const securityGroups = useSecurityGroups();
+  const change = useChangeNic();
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+  const [networkId, setNetworkId] = useState("");
+  const [sgIds, setSgIds] = useState<string[]>([]);
+  const nameOf = (id: string) => networks.data?.find((n) => n.id === id)?.name ?? id.slice(0, 8);
+
+  const open = (i: number) => {
+    setEditIdx(i);
+    setNetworkId(nics[i].network_id);
+    setSgIds(nics[i].security_groups ?? []);
+  };
+  const submit = () => {
+    if (editIdx == null) return;
+    change.mutate(
+      { id: vmId, index: editIdx, networkId, securityGroups: sgIds },
+      { onSuccess: () => setEditIdx(null) },
+    );
+  };
+
+  return (
+    <>
+      {nics.map((nic, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span>
+            eth{i}: {nameOf(nic.network_id)}
+          </span>
+          <Button size="small" onClick={() => open(i)}>
+            Change network
+          </Button>
+        </div>
+      ))}
+      {nics.length === 0 && <span>none</span>}
+      <Dialog open={editIdx != null} onClose={() => setEditIdx(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Change eth{editIdx} network</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              select
+              label="Network"
+              value={networkId}
+              onChange={(e) => setNetworkId(e.target.value)}
+            >
+              {(networks.data ?? []).map((n) => (
+                <MenuItem key={n.id} value={n.id}>
+                  {n.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              label="Security groups (optional)"
+              value={sgIds}
+              onChange={(e) =>
+                setSgIds(typeof e.target.value === "string" ? [e.target.value] : (e.target.value as string[]))
+              }
+              SelectProps={{ multiple: true }}
+            >
+              {(securityGroups.data ?? []).map((g) => (
+                <MenuItem key={g.id} value={g.id}>
+                  {g.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <Typography variant="caption" color="text.secondary">
+              The NIC re-homes without a restart. The guest keeps its IP, so on a different subnet
+              renew DHCP or reconfigure it.
+            </Typography>
+            {change.error && <Alert severity="error">{(change.error as Error).message}</Alert>}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditIdx(null)}>Cancel</Button>
+          <Button variant="contained" onClick={submit} disabled={!networkId || change.isPending}>
+            Change
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 }
 
@@ -340,7 +434,7 @@ export function VmDetail() {
                       </div>
                     ))}
                   />
-                  <Row label="NICs" value={v.spec.network_interfaces.length} />
+                  <Row label="NICs" value={<NicList vmId={v.id} nics={v.spec.network_interfaces} />} />
                 </TableBody>
               </Table>
             </CardContent>

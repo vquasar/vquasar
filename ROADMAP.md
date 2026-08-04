@@ -103,8 +103,15 @@ Split into three shippable slices.
   guest-to-guest traffic on the same L2 too. Follow-ups: remote-group refs,
   egress enforcement, per-tenant default groups.
 - Per-tenant network isolation (tenancy/projects).
-- Change an existing NIC's network on a running VM (needs a detach/reattach or
-  recreate path; CH cannot re-tag a live TAP).
+- **M13d — Change a NIC's network on a running VM.** ✅ **Done.** `PUT
+  /vms/:id/nics/:index` retargets a NIC (network + optional security groups). The
+  TAP name is stable per (vm, nic), so the agent re-homes it on OVS — move it to
+  the new network's bridge (overlay ↔ integration) or re-tag its VLAN, GC an
+  emptied overlay bridge, re-apply the firewall — all without recreating the TAP,
+  so CH's fd is untouched and the VM is **not restarted**. Control swaps the IP
+  allocation to the new network. Caveat: the guest keeps its MAC/IP, so on a
+  different subnet it must renew DHCP or be reconfigured at L3 (a link-bounce
+  hot-replug to force guest re-init is a follow-up).
 - Cloud-init `phone_home` as a fallback for guest-IP discovery when a guest
   filters ICMP or sits off the flat L2 (see the corresponding memory note).
 
