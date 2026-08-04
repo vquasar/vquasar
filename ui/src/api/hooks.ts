@@ -338,9 +338,33 @@ export function useVolumes() {
 export function useCreateVolume() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; size_bytes: number; format: string }) =>
-      api.post<Volume>("/volumes", body),
+    mutationFn: (body: {
+      name: string;
+      size_bytes: number;
+      format: string;
+      source_image_id?: string | null;
+    }) => api.post<Volume>("/volumes", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["volumes"] }),
+  });
+}
+
+export function useCreateVmFromVolume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      name: string;
+      volume_id: string;
+      boot_vcpus: number;
+      max_vcpus: number;
+      memory_mib: number;
+      network_id?: string | null;
+      security_groups?: string[];
+      cloud_init?: import("./types").CloudInitSpec | null;
+    }) => api.post<Accepted>("/vms/from-volume", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["volumes"] });
+      qc.invalidateQueries({ queryKey: ["vms"] });
+    },
   });
 }
 

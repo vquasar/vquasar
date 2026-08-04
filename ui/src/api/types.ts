@@ -371,6 +371,7 @@ export interface Volume {
   format: string;
   attached_vm_id: string | null;
   attached_serial: number | null;
+  source_image_id: string | null; // set ⇒ bootable (M14d)
   path: string;
   created_at: string;
   updated_at: string;

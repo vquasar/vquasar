@@ -114,6 +114,111 @@ async fn allocate_one_nic(
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateVmFromVolume {
+    pub name: String,
+    pub volume_id: Uuid,
+    pub boot_vcpus: u32,
+    pub max_vcpus: u32,
+    pub memory_mib: u64,
+    #[serde(default)]
+    pub network_id: Option<Uuid>,
+    #[serde(default)]
+    pub security_groups: Vec<Uuid>,
+    #[serde(default)]
+    pub cloud_init: Option<CloudInitSpec>,
+}
+
+/// Boot a VM from an existing bootable volume (design M14d). The volume is the
+/// root disk (using its source image's boot recipe) and stays attached; on VM
+/// deletion it detaches and survives.
+pub async fn create_from_volume(
+    State(store): State<Store>,
+    _: RequireVmCreate,
+    Json(body): Json<CreateVmFromVolume>,
+) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    if body.name.is_empty() {
+        return Err(ApiError::invalid("name is required"));
+    }
+    let vol = store
+        .get_volume(body.volume_id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("volume not found: {}", body.volume_id)))?;
+    let Some(image_id) = vol.source_image_id else {
+        return Err(ApiError::invalid("volume is not bootable (not cloned from an image)"));
+    };
+    if vol.attached_vm_id.is_some() {
+        return Err(ApiError::invalid("volume is already attached"));
+    }
+    let image = store
+        .get_image(image_id)
+        .await?
+        .ok_or_else(|| ApiError::invalid("source image not found"))?;
+
+    let vm_id = Uuid::new_v4();
+    let disk = DiskSpec {
+        path: crate::api::volumes::volume_path(store.shared_volumes_dir(), vol.id, &vol.format),
+        readonly: false,
+        image_type: if vol.format == "raw" {
+            DiskImageType::Raw
+        } else {
+            DiskImageType::Qcow2
+        },
+        source: None, // the volume is already provisioned
+        size_bytes: None,
+    };
+    let network_interfaces = body
+        .network_id
+        .map(|network_id| {
+            vec![NetworkInterfaceSpec {
+                network_id: ch_model::NetworkId::from(network_id),
+                mac: None,
+                addresses: Vec::new(),
+                security_groups: body.security_groups.clone(),
+            }]
+        })
+        .unwrap_or_default();
+    let spec = VirtualMachineSpec {
+        desired_power_state: DesiredPowerState::Running,
+        cpu: CpuSpec {
+            boot_vcpus: body.boot_vcpus,
+            max_vcpus: body.max_vcpus.max(body.boot_vcpus),
+        },
+        memory: MemorySpec {
+            size_mib: body.memory_mib,
+            max_size_mib: None,
+        },
+        boot: image.boot.0.clone(),
+        disks: vec![disk],
+        network_interfaces,
+        placement: PlacementSpec::default(),
+        cloud_init: body.cloud_init,
+    };
+    spec.validate()
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
+
+    let vm = store.insert_vm_with_id(vm_id, &body.name, &spec).await?;
+    if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {
+        let _ = store.delete_vm_row(vm.id).await;
+        return Err(e);
+    }
+    // Mark the volume attached as the boot disk (serial 0).
+    store
+        .set_volume_attachment(vol.id, Some(vm_id), Some(0))
+        .await?;
+    let task = store.insert_task("vm.create", Some(vm.id)).await?;
+    store
+        .insert_event("vm", Some(vm.id), "vm.created", "info", &vm.name)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Accepted {
+            vm_id: vm.id,
+            task_id: task.id,
+        }),
+    ))
+}
+
 /// cloud-init `phone_home` callback (design M13e): a guest POSTs here on first
 /// boot. The request's source address is the guest's IP (phone_home's payload
 /// carries no IP), so we record it as the VM's discovered address — a fallback

@@ -34,7 +34,7 @@ fn ext(format: &str) -> &str {
 }
 
 /// The backing-file path for a volume on shared storage.
-fn volume_path(dir: &str, id: Uuid, format: &str) -> PathBuf {
+pub(crate) fn volume_path(dir: &str, id: Uuid, format: &str) -> PathBuf {
     PathBuf::from(dir).join(format!("vol-{id}.{}", ext(format)))
 }
 
@@ -73,9 +73,14 @@ pub async fn get(
 #[derive(Deserialize)]
 pub struct CreateVolume {
     pub name: String,
+    /// Blank size, or the minimum size when cloning from an image (grown to fit).
+    #[serde(default)]
     pub size_bytes: i64,
     #[serde(default = "default_format")]
     pub format: String,
+    /// Clone from this image to make a bootable volume (design M14d).
+    #[serde(default)]
+    pub source_image_id: Option<Uuid>,
 }
 
 fn default_format() -> String {
@@ -90,28 +95,68 @@ pub async fn create(
     if body.name.trim().is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
-    if body.size_bytes <= 0 {
-        return Err(ApiError::invalid("size_bytes must be positive"));
-    }
     if !matches!(body.format.as_str(), "raw" | "qcow2") {
         return Err(ApiError::invalid("format must be raw or qcow2"));
     }
 
     let id = Uuid::new_v4();
-    let path = volume_path(store.shared_volumes_dir(), id, &body.format);
-    provision_blank(&path, &body.format, body.size_bytes as u64).await?;
+
+    // Clone-from-image (bootable) vs blank data volume.
+    let (format, size, path) = if let Some(image_id) = body.source_image_id {
+        let img = store
+            .get_image(image_id)
+            .await?
+            .ok_or_else(|| ApiError::invalid(format!("image not found: {image_id}")))?;
+        if img.status != "ready" {
+            return Err(ApiError::invalid("image is not ready"));
+        }
+        let format = img.format.clone();
+        let path = volume_path(store.shared_volumes_dir(), id, &format);
+        // Full, independent copy so the volume outlives the image.
+        qemu_img(&["convert", "-O", ext(&format), &img.source_path, &path.to_string_lossy()]).await?;
+        if body.size_bytes > 0 {
+            // Grow to the requested size if it exceeds the image's virtual size.
+            let _ = qemu_img(&["resize", &path.to_string_lossy(), &body.size_bytes.to_string()]).await;
+        }
+        let size = disk_virtual_size(&path).await.unwrap_or(body.size_bytes.max(0));
+        (format, size, path)
+    } else {
+        if body.size_bytes <= 0 {
+            return Err(ApiError::invalid("size_bytes must be positive"));
+        }
+        let path = volume_path(store.shared_volumes_dir(), id, &body.format);
+        provision_blank(&path, &body.format, body.size_bytes as u64).await?;
+        (body.format.clone(), body.size_bytes, path)
+    };
 
     match store
-        .create_volume(id, body.name.trim(), body.size_bytes, &body.format)
+        .create_volume(id, body.name.trim(), size, &format, body.source_image_id)
         .await
     {
         Ok(v) => Ok((StatusCode::CREATED, Json(view(&store, v)))),
         Err(e) => {
-            // Roll back the file if the metadata insert failed.
             let _ = tokio::fs::remove_file(&path).await;
             Err(e.into())
         }
     }
+}
+
+/// Guest-visible size of a disk via `qemu-img info` (best-effort).
+async fn disk_virtual_size(path: &std::path::Path) -> Option<i64> {
+    let p = path.to_string_lossy().into_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("qemu-img")
+            .args(["info", "--output=json", &p])
+            .output()
+    })
+    .await
+    .ok()?
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    v.get("virtual-size").and_then(|s| s.as_i64())
 }
 
 pub async fn delete(

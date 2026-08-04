@@ -21,14 +21,18 @@ import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
 import RestoreIcon from "@mui/icons-material/Restore";
+import RocketLaunchIcon from "@mui/icons-material/RocketLaunch";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import {
   useAttachVolume,
   useCreateSnapshot,
+  useCreateVmFromVolume,
   useCreateVolume,
   useDeleteSnapshot,
   useDeleteVolume,
   useDetachVolume,
+  useImages,
+  useNetworks,
   useRevertSnapshot,
   useVms,
   useVolumes,
@@ -43,41 +47,119 @@ const fmtSize = (b: number) => `${(b / GIB).toFixed(b % GIB === 0 ? 0 : 1)} GiB`
 
 function CreateDialog({ onClose }: { onClose: () => void }) {
   const create = useCreateVolume();
+  const images = useImages();
   const [name, setName] = useState("");
+  const [source, setSource] = useState<"blank" | "image">("blank");
+  const [imageId, setImageId] = useState("");
   const [gib, setGib] = useState("10");
   const [format, setFormat] = useState("qcow2");
+  const readyImages = (images.data ?? []).filter((i) => i.status === "ready");
+
   const submit = () =>
     create.mutate(
-      { name, size_bytes: Math.round(Number(gib) * GIB), format },
+      {
+        name,
+        size_bytes: gib ? Math.round(Number(gib) * GIB) : 0,
+        format,
+        source_image_id: source === "image" ? imageId : null,
+      },
       { onSuccess: onClose },
     );
+  const valid =
+    !!name && (source === "blank" ? Number(gib) > 0 : !!imageId);
+
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle>Create volume</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <TextField select label="Source" value={source} onChange={(e) => setSource(e.target.value as "blank" | "image")}>
+            <MenuItem value="blank">Blank data volume</MenuItem>
+            <MenuItem value="image">Clone from image (bootable)</MenuItem>
+          </TextField>
+          {source === "image" && (
+            <TextField select label="Image" value={imageId} onChange={(e) => setImageId(e.target.value)}>
+              {readyImages.map((i) => (
+                <MenuItem key={i.id} value={i.id}>
+                  {i.name} ({i.format})
+                </MenuItem>
+              ))}
+            </TextField>
+          )}
           <TextField
-            label="Size (GiB)"
+            label={source === "image" ? "Size (GiB, optional — grows the clone)" : "Size (GiB)"}
             type="number"
             value={gib}
             onChange={(e) => setGib(e.target.value)}
           />
-          <TextField select label="Format" value={format} onChange={(e) => setFormat(e.target.value)}>
-            <MenuItem value="qcow2">qcow2 (thin)</MenuItem>
-            <MenuItem value="raw">raw</MenuItem>
-          </TextField>
+          {source === "blank" && (
+            <TextField select label="Format" value={format} onChange={(e) => setFormat(e.target.value)}>
+              <MenuItem value="qcow2">qcow2 (thin)</MenuItem>
+              <MenuItem value="raw">raw</MenuItem>
+            </TextField>
+          )}
           {create.error && <Alert severity="error">{(create.error as Error).message}</Alert>}
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button
-          variant="contained"
-          onClick={submit}
-          disabled={!name || !(Number(gib) > 0) || create.isPending}
-        >
+        <Button variant="contained" onClick={submit} disabled={!valid || create.isPending}>
           Create
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function BootDialog({ volume, onClose }: { volume: Volume; onClose: () => void }) {
+  const boot = useCreateVmFromVolume();
+  const networks = useNetworks();
+  const [name, setName] = useState("");
+  const [vcpus, setVcpus] = useState("2");
+  const [memMib, setMemMib] = useState("2048");
+  const [networkId, setNetworkId] = useState("");
+  const [password, setPassword] = useState("");
+  const submit = () =>
+    boot.mutate(
+      {
+        name,
+        volume_id: volume.id,
+        boot_vcpus: Number(vcpus),
+        max_vcpus: Number(vcpus),
+        memory_mib: Number(memMib),
+        network_id: networkId || null,
+        cloud_init: password ? { password } : null,
+      },
+      { onSuccess: onClose },
+    );
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Boot VM from {volume.name}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TextField label="VM name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <Stack direction="row" spacing={2}>
+            <TextField label="vCPUs" type="number" value={vcpus} onChange={(e) => setVcpus(e.target.value)} fullWidth />
+            <TextField label="Memory (MiB)" type="number" value={memMib} onChange={(e) => setMemMib(e.target.value)} fullWidth />
+          </Stack>
+          <TextField select label="Network (optional)" value={networkId} onChange={(e) => setNetworkId(e.target.value)}>
+            <MenuItem value="">None</MenuItem>
+            {(networks.data ?? []).map((n) => (
+              <MenuItem key={n.id} value={n.id}>{n.name}</MenuItem>
+            ))}
+          </TextField>
+          <TextField label="cloud-init password (optional)" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <Typography variant="caption" color="text.secondary">
+            The volume becomes the VM's root disk and stays attached; it survives VM deletion.
+          </Typography>
+          {boot.error && <Alert severity="error">{(boot.error as Error).message}</Alert>}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" onClick={submit} disabled={!name || boot.isPending}>
+          Boot
         </Button>
       </DialogActions>
     </Dialog>
@@ -194,12 +276,24 @@ export function Volumes() {
   const [creating, setCreating] = useState(false);
   const [attachVol, setAttachVol] = useState<Volume | null>(null);
   const [snapVol, setSnapVol] = useState<Volume | null>(null);
+  const [bootVol, setBootVol] = useState<Volume | null>(null);
 
   const vmName = (id: string | null) =>
     id ? (vms.data?.find((v) => v.id === id)?.name ?? id.slice(0, 8)) : null;
 
   const cols: GridColDef<Volume>[] = [
-    { field: "name", headerName: "Name", flex: 1, minWidth: 140 },
+    {
+      field: "name",
+      headerName: "Name",
+      flex: 1,
+      minWidth: 160,
+      renderCell: (p) => (
+        <span>
+          {p.row.name}{" "}
+          {p.row.source_image_id && <Chip size="small" color="secondary" variant="outlined" label="bootable" sx={{ ml: 0.5 }} />}
+        </span>
+      ),
+    },
     { field: "size_bytes", headerName: "Size", width: 110, valueGetter: (v) => fmtSize(v as number) },
     { field: "format", headerName: "Format", width: 90 },
     {
@@ -224,7 +318,7 @@ export function Volumes() {
       field: "actions",
       type: "actions",
       headerName: "",
-      width: 140,
+      width: 180,
       getActions: (p) => {
         const items = [];
         if (can("volume:read")) {
@@ -234,6 +328,16 @@ export function Volumes() {
               icon={<PhotoCameraIcon />}
               label="Snapshots"
               onClick={() => setSnapVol(p.row)}
+            />,
+          );
+        }
+        if (can("vm:create") && p.row.source_image_id && !p.row.attached_vm_id) {
+          items.push(
+            <GridActionsCellItem
+              key="boot"
+              icon={<RocketLaunchIcon />}
+              label="Boot VM"
+              onClick={() => setBootVol(p.row)}
             />,
           );
         }
@@ -304,6 +408,7 @@ export function Volumes() {
       {snapVol && (
         <SnapshotsDialog volume={snapVol} canManage={can("volume:update")} onClose={() => setSnapVol(null)} />
       )}
+      {bootVol && <BootDialog volume={bootVol} onClose={() => setBootVol(null)} />}
     </Stack>
   );
 }

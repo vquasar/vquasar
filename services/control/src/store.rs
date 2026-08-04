@@ -124,6 +124,8 @@ pub struct Volume {
     pub format: String,
     pub attached_vm_id: Option<Uuid>,
     pub attached_serial: Option<i32>,
+    /// Image this volume was cloned from (design M14d); `Some` ⇒ bootable.
+    pub source_image_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1056,16 +1058,18 @@ impl Store {
         name: &str,
         size_bytes: i64,
         format: &str,
+        source_image_id: Option<Uuid>,
     ) -> Result<Volume> {
         let now = Utc::now();
         sqlx::query_as::<_, Volume>(
-            "INSERT INTO volumes (id, name, size_bytes, format, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$5) RETURNING *",
+            "INSERT INTO volumes (id, name, size_bytes, format, source_image_id, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING *",
         )
         .bind(id)
         .bind(name)
         .bind(size_bytes)
         .bind(format)
+        .bind(source_image_id)
         .bind(now)
         .fetch_one(&self.pool)
         .await

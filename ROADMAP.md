@@ -148,6 +148,13 @@ Split into three shippable slices.
   VM (the VMM holds an exclusive lock). UI: a Snapshots dialog on the Volumes
   page. Follow-ups: VM-consistent (multi-volume) snapshots, external/backing-file
   snapshots, off-host backup/export.
+- **M14d — bootable / image-backed volumes.** ✅ **Done.** A volume can be
+  created by cloning an image (`POST /volumes {source_image_id}` → `qemu-img
+  convert` a full, independent copy, optionally grown), making it a persistent
+  root disk. `POST /vms/from-volume {name, volume_id, cpu, memory, network,
+  cloud_init}` boots a VM using the volume as its root disk with the source
+  image's boot recipe; the volume stays attached (serial 0) and survives VM
+  deletion. UI: "clone from image" in volume create + a "Boot VM" action.
 - Additional storage backends and per-VM storage policy.
 
 ### Compute & lifecycle

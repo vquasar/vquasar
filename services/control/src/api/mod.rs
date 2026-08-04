@@ -47,6 +47,7 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         .route("/hosts/:id", get(hosts::get))
         .route("/vms", get(vms::list).post(vms::create))
         .route("/vms/from-template", post(vms::create_from_template))
+        .route("/vms/from-volume", post(vms::create_from_volume))
         .route(
             "/vms/:id",
             get(vms::get).patch(vms::update).delete(vms::delete),
