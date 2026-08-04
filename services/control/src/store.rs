@@ -128,6 +128,15 @@ pub struct Volume {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A point-in-time volume snapshot (design M14c).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct VolumeSnapshot {
+    pub id: Uuid,
+    pub volume_id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A security group (design M13c).
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct SecurityGroup {
@@ -1064,6 +1073,50 @@ impl Store {
 
     pub async fn delete_volume(&self, id: Uuid) -> Result<bool> {
         let res = sqlx::query("DELETE FROM volumes WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    // ---- volume snapshots (design M14c) ----------------------------------
+
+    pub async fn list_volume_snapshots(&self, volume_id: Uuid) -> Result<Vec<VolumeSnapshot>> {
+        sqlx::query_as::<_, VolumeSnapshot>(
+            "SELECT * FROM volume_snapshots WHERE volume_id=$1 ORDER BY created_at",
+        )
+        .bind(volume_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn get_volume_snapshot(&self, id: Uuid) -> Result<Option<VolumeSnapshot>> {
+        sqlx::query_as::<_, VolumeSnapshot>("SELECT * FROM volume_snapshots WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn create_volume_snapshot(
+        &self,
+        id: Uuid,
+        volume_id: Uuid,
+        name: &str,
+    ) -> Result<VolumeSnapshot> {
+        sqlx::query_as::<_, VolumeSnapshot>(
+            "INSERT INTO volume_snapshots (id, volume_id, name, created_at)
+             VALUES ($1,$2,$3,$4) RETURNING *",
+        )
+        .bind(id)
+        .bind(volume_id)
+        .bind(name)
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn delete_volume_snapshot(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM volume_snapshots WHERE id=$1")
             .bind(id)
             .execute(&self.pool)
             .await?;

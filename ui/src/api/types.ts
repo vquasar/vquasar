@@ -375,3 +375,10 @@ export interface Volume {
   created_at: string;
   updated_at: string;
 }
+
+export interface VolumeSnapshot {
+  id: string;
+  volume_id: string;
+  name: string;
+  created_at: string;
+}

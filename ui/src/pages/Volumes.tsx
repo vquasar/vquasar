@@ -10,18 +10,29 @@ import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableRow from "@mui/material/TableRow";
+import IconButton from "@mui/material/IconButton";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
+import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
+import RestoreIcon from "@mui/icons-material/Restore";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import {
   useAttachVolume,
+  useCreateSnapshot,
   useCreateVolume,
+  useDeleteSnapshot,
   useDeleteVolume,
   useDetachVolume,
+  useRevertSnapshot,
   useVms,
   useVolumes,
+  useVolumeSnapshots,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { formatDate } from "../format";
@@ -108,6 +119,72 @@ function AttachDialog({ volume, vms, onClose }: { volume: Volume; vms: Vm[]; onC
   );
 }
 
+function SnapshotsDialog({ volume, canManage, onClose }: { volume: Volume; canManage: boolean; onClose: () => void }) {
+  const snaps = useVolumeSnapshots(volume.id);
+  const create = useCreateSnapshot();
+  const del = useDeleteSnapshot();
+  const revert = useRevertSnapshot();
+  const [name, setName] = useState("");
+  const err = (create.error || del.error || revert.error) as Error | null;
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Snapshots — {volume.name}</DialogTitle>
+      <DialogContent>
+        {volume.format !== "qcow2" && (
+          <Alert severity="info" sx={{ mb: 1 }}>Snapshots require a qcow2 volume.</Alert>
+        )}
+        {err && <Alert severity="error" sx={{ mb: 1 }}>{err.message}</Alert>}
+        {revert.isSuccess && <Alert severity="success" sx={{ mb: 1 }}>Reverted.</Alert>}
+        {canManage && volume.format === "qcow2" && (
+          <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+            <TextField size="small" label="Snapshot name" value={name} onChange={(e) => setName(e.target.value)} fullWidth />
+            <Button
+              variant="outlined"
+              startIcon={<PhotoCameraIcon />}
+              disabled={!name || create.isPending}
+              onClick={() => create.mutate({ volumeId: volume.id, name }, { onSuccess: () => setName("") })}
+            >
+              Take
+            </Button>
+          </Stack>
+        )}
+        <Table size="small">
+          <TableBody>
+            {(snaps.data ?? []).map((s) => (
+              <TableRow key={s.id}>
+                <TableCell>{s.name}</TableCell>
+                <TableCell>{formatDate(s.created_at)}</TableCell>
+                <TableCell align="right">
+                  {canManage && (
+                    <>
+                      <IconButton size="small" title="Revert to this snapshot" onClick={() => revert.mutate({ volumeId: volume.id, snapId: s.id })}>
+                        <RestoreIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton size="small" title="Delete snapshot" onClick={() => del.mutate({ volumeId: volume.id, snapId: s.id })}>
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+            {snaps.data?.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={3}>
+                  <Typography variant="body2" color="text.secondary">No snapshots.</Typography>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 export function Volumes() {
   const volumes = useVolumes();
   const vms = useVms();
@@ -116,6 +193,7 @@ export function Volumes() {
   const { can } = usePermissions();
   const [creating, setCreating] = useState(false);
   const [attachVol, setAttachVol] = useState<Volume | null>(null);
+  const [snapVol, setSnapVol] = useState<Volume | null>(null);
 
   const vmName = (id: string | null) =>
     id ? (vms.data?.find((v) => v.id === id)?.name ?? id.slice(0, 8)) : null;
@@ -146,9 +224,19 @@ export function Volumes() {
       field: "actions",
       type: "actions",
       headerName: "",
-      width: 100,
+      width: 140,
       getActions: (p) => {
         const items = [];
+        if (can("volume:read")) {
+          items.push(
+            <GridActionsCellItem
+              key="snap"
+              icon={<PhotoCameraIcon />}
+              label="Snapshots"
+              onClick={() => setSnapVol(p.row)}
+            />,
+          );
+        }
         if (can("volume:update")) {
           if (p.row.attached_vm_id) {
             items.push(
@@ -212,6 +300,9 @@ export function Volumes() {
       {creating && <CreateDialog onClose={() => setCreating(false)} />}
       {attachVol && (
         <AttachDialog volume={attachVol} vms={vms.data ?? []} onClose={() => setAttachVol(null)} />
+      )}
+      {snapVol && (
+        <SnapshotsDialog volume={snapVol} canManage={can("volume:update")} onClose={() => setSnapVol(null)} />
       )}
     </Stack>
   );

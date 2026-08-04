@@ -141,7 +141,13 @@ Split into three shippable slices.
   backing file, while a registered-by-path image's file is left alone. UI: an
   “Import from URL” dialog + a status column. Follow-ups: direct file upload
   (multipart), image build/customization workflow, checksum verification.
-- Snapshots and backups.
+- **M14c — volume snapshots.** ✅ **Done.** Point-in-time snapshots of a qcow2
+  volume via internal qcow2 snapshots (control runs `qemu-img snapshot` on shared
+  storage; the record id is the snapshot tag). Create / list / delete / revert
+  (`/volumes/:id/snapshots…`); qcow2-only, and the volume must not be on a running
+  VM (the VMM holds an exclusive lock). UI: a Snapshots dialog on the Volumes
+  page. Follow-ups: VM-consistent (multi-volume) snapshots, external/backing-file
+  snapshots, off-host backup/export.
 - Additional storage backends and per-VM storage policy.
 
 ### Compute & lifecycle

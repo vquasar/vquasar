@@ -15,7 +15,7 @@ use ch_model::{DiskImageType, DiskSpec};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::authz::{AuthUser, RequireVolumeCreate, RequireVolumeUpdate};
-use crate::store::{Store, Volume};
+use crate::store::{Store, Volume, VolumeSnapshot};
 
 /// Volume + its derived backing-file path and attachment.
 #[derive(Serialize)]
@@ -208,6 +208,120 @@ pub async fn detach(
     store.set_volume_attachment(id, None, None).await?;
     let v = store.get_volume(id).await?.unwrap();
     Ok(Json(view(&store, v)))
+}
+
+// ---- snapshots (design M14c) -----------------------------------------------
+
+/// Guard shared by snapshot create/revert: the volume must be qcow2 and not held
+/// by a running VMM (which holds an exclusive lock on the file).
+async fn snapshottable(store: &Store, v: &Volume) -> ApiResult<()> {
+    if v.format != "qcow2" {
+        return Err(ApiError::invalid("snapshots require a qcow2 volume"));
+    }
+    if let Some(vm_id) = v.attached_vm_id {
+        if let Some(vm) = store.get_vm(vm_id).await? {
+            if vm.phase == "Running" || vm.phase == "Starting" {
+                return Err(ApiError::invalid(
+                    "stop the VM before snapshotting/reverting this volume",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn list_snapshots(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<VolumeSnapshot>>> {
+    user.require("volume:read")?;
+    Ok(Json(store.list_volume_snapshots(id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct CreateSnapshot {
+    pub name: String,
+}
+
+pub async fn create_snapshot(
+    State(store): State<Store>,
+    _: RequireVolumeUpdate,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateSnapshot>,
+) -> ApiResult<(StatusCode, Json<VolumeSnapshot>)> {
+    if body.name.trim().is_empty() {
+        return Err(ApiError::invalid("name is required"));
+    }
+    let v = store
+        .get_volume(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+    snapshottable(&store, &v).await?;
+    let snap_id = Uuid::new_v4();
+    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    // Tag the qcow2 internal snapshot with the record id (stable + unique).
+    qemu_img(&["snapshot", "-c", &snap_id.to_string(), &path.to_string_lossy()]).await?;
+    let snap = store
+        .create_volume_snapshot(snap_id, id, body.name.trim())
+        .await?;
+    Ok((StatusCode::CREATED, Json(snap)))
+}
+
+pub async fn delete_snapshot(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path((id, snap_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    user.require("volume:update")?;
+    let v = store
+        .get_volume(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+    if store.get_volume_snapshot(snap_id).await?.is_none() {
+        return Err(ApiError::invalid("snapshot not found"));
+    }
+    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    // Best-effort qcow2 delete (ignore if already gone), then drop the record.
+    let _ = qemu_img(&["snapshot", "-d", &snap_id.to_string(), &path.to_string_lossy()]).await;
+    store.delete_volume_snapshot(snap_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn revert_snapshot(
+    State(store): State<Store>,
+    _: RequireVolumeUpdate,
+    Path((id, snap_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    let v = store
+        .get_volume(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+    if store.get_volume_snapshot(snap_id).await?.is_none() {
+        return Err(ApiError::invalid("snapshot not found"));
+    }
+    snapshottable(&store, &v).await?;
+    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    qemu_img(&["snapshot", "-a", &snap_id.to_string(), &path.to_string_lossy()]).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Run `qemu-img <args>` on a blocking thread (control's tokio has no process).
+async fn qemu_img(args: &[&str]) -> ApiResult<()> {
+    let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("qemu-img").args(&owned).output()
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("qemu-img join: {e}")))?
+    .map_err(|e| ApiError::internal(format!("qemu-img: {e}")))?;
+    if !out.status.success() {
+        return Err(ApiError::internal(format!(
+            "qemu-img failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Provision a blank disk image on shared storage via `qemu-img` (run on a

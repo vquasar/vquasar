@@ -374,3 +374,39 @@ export function useDetachVolume() {
     },
   });
 }
+
+// --- Volume snapshots (M14c) ---
+import type { VolumeSnapshot } from "./types";
+
+export function useVolumeSnapshots(volumeId: string | undefined) {
+  return useQuery({
+    queryKey: ["volumes", volumeId, "snapshots"],
+    queryFn: () => api.get<VolumeSnapshot[]>(`/volumes/${volumeId}/snapshots`),
+    enabled: !!volumeId,
+  });
+}
+
+export function useCreateSnapshot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ volumeId, name }: { volumeId: string; name: string }) =>
+      api.post<VolumeSnapshot>(`/volumes/${volumeId}/snapshots`, { name }),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["volumes", v.volumeId, "snapshots"] }),
+  });
+}
+
+export function useDeleteSnapshot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ volumeId, snapId }: { volumeId: string; snapId: string }) =>
+      api.del<void>(`/volumes/${volumeId}/snapshots/${snapId}`),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["volumes", v.volumeId, "snapshots"] }),
+  });
+}
+
+export function useRevertSnapshot() {
+  return useMutation({
+    mutationFn: ({ volumeId, snapId }: { volumeId: string; snapId: string }) =>
+      api.post<void>(`/volumes/${volumeId}/snapshots/${snapId}/revert`),
+  });
+}

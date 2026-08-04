@@ -88,6 +88,18 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         .route("/volumes/:id", get(volumes::get).delete(volumes::delete))
         .route("/volumes/:id/attach", post(volumes::attach))
         .route("/volumes/:id/detach", post(volumes::detach))
+        .route(
+            "/volumes/:id/snapshots",
+            get(volumes::list_snapshots).post(volumes::create_snapshot),
+        )
+        .route(
+            "/volumes/:id/snapshots/:snap_id",
+            axum::routing::delete(volumes::delete_snapshot),
+        )
+        .route(
+            "/volumes/:id/snapshots/:snap_id/revert",
+            post(volumes::revert_snapshot),
+        )
         .route("/images", get(images::list).post(images::create))
         .route("/images/import", post(images::import))
         .route(
