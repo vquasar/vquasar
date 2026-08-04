@@ -950,6 +950,37 @@ impl Store {
         .await
     }
 
+    /// Bump the generation of every VM whose NICs reference `sg_id`, so the
+    /// reconcile loop re-applies the (changed) firewall to running VMs (M13c).
+    /// Returns how many VMs were touched.
+    pub async fn touch_vms_using_security_group(&self, sg_id: Uuid) -> Result<u64> {
+        let vms = sqlx::query_as::<_, Vm>("SELECT * FROM virtual_machines WHERE phase <> 'Deleting'")
+            .fetch_all(&self.pool)
+            .await?;
+        let ids: Vec<Uuid> = vms
+            .into_iter()
+            .filter(|vm| {
+                vm.spec
+                    .0
+                    .network_interfaces
+                    .iter()
+                    .any(|n| n.security_groups.contains(&sg_id))
+            })
+            .map(|vm| vm.id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let res = sqlx::query(
+            "UPDATE virtual_machines SET generation=generation+1, updated_at=$2 WHERE id = ANY($1)",
+        )
+        .bind(&ids)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn delete_sg_rule(&self, sg_id: Uuid, rule_id: Uuid) -> Result<bool> {
         let res = sqlx::query(
             "DELETE FROM security_group_rules WHERE id=$1 AND security_group_id=$2",

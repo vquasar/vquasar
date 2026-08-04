@@ -57,6 +57,12 @@ pub trait NetworkBackend: Send + Sync {
     async fn prepare(&self, vm: VmId, index: usize, binding: &NicBinding) -> Result<PreparedNic>;
     /// Remove the TAP and its dataplane port (idempotent).
     async fn release(&self, vm: VmId, index: usize) -> Result<()>;
+    /// Re-apply just the security-group firewall for an already-present NIC, so
+    /// rule changes reach a running VM without recreating its TAP (design M13c).
+    /// Idempotent; a no-op for backends without a firewall.
+    async fn refresh_firewall(&self, _vm: VmId, _index: usize, _binding: &NicBinding) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// The host-local TAP name for a VM NIC.
@@ -158,6 +164,16 @@ impl NetworkBackend for OvsNetworkBackend {
             tap,
             mac: binding.mac.clone(),
         })
+    }
+
+    async fn refresh_firewall(&self, vm: VmId, index: usize, binding: &NicBinding) -> Result<()> {
+        let tap = tap_name(vm, index);
+        // The TAP may not be attached yet on the first reconcile; that's fine —
+        // prepare() applies the firewall, and the next tick refreshes it.
+        if let Ok(br) = run_stdout("ovs-vsctl", &["port-to-br", &tap]).await {
+            self.apply_firewall(br.trim(), &tap, binding).await?;
+        }
+        Ok(())
     }
 
     async fn release(&self, vm: VmId, index: usize) -> Result<()> {

@@ -180,6 +180,8 @@ pub async fn add_rule(
             cidr,
         )
         .await?;
+    // Re-apply the firewall to any running VMs using this group (M13c).
+    store.touch_vms_using_security_group(id).await?;
     Ok((StatusCode::CREATED, Json(rule)))
 }
 
@@ -190,6 +192,7 @@ pub async fn delete_rule(
 ) -> ApiResult<StatusCode> {
     user.require("network:update")?;
     if store.delete_sg_rule(id, rule_id).await? {
+        store.touch_vms_using_security_group(id).await?;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::invalid("rule not found"))

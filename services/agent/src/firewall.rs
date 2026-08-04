@@ -159,10 +159,13 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     f.push(format!(
         "cookie={c},table={RESULT_TABLE},priority=100,ct_zone={z},ct_state=+inv+trk,actions=drop"
     ));
-    // New egress from the VM is allowed (default-allow egress), commit it.
-    f.push(format!(
-        "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},actions={commit}"
-    ));
+    // New egress from the VM is allowed (default-allow egress), commit it. A
+    // ct(commit) action requires a known dl_type, so match ip / ipv6 explicitly.
+    for l3 in ["ip", "ipv6"] {
+        f.push(format!(
+            "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},{l3},actions={commit}"
+        ));
+    }
     // New ingress: only where an allow-rule matches.
     for r in rules {
         for m in rule_matches(r) {

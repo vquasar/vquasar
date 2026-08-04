@@ -161,6 +161,9 @@ pub struct TemplateOverrides {
     pub disk_size_bytes: Option<u64>,
     #[serde(default)]
     pub network_id: Option<Uuid>,
+    /// Security groups applied to the NIC (design M13c).
+    #[serde(default)]
+    pub security_groups: Vec<Uuid>,
     #[serde(default)]
     pub cloud_init: Option<CloudInitSpec>,
 }
@@ -266,7 +269,7 @@ fn build_spec_from_template(
                 network_id: ch_model::NetworkId::from(network_id),
                 mac: None,
                 addresses: Vec::new(),
-                security_groups: Vec::new(),
+                security_groups: ov.security_groups.clone(),
             }]
         })
         .unwrap_or_default();

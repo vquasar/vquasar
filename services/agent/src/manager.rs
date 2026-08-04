@@ -209,6 +209,12 @@ impl VmManager {
                     console,
                 },
             );
+        } else {
+            // Already running: re-apply the per-NIC security-group firewall so
+            // rule changes take effect without recreating the TAP (design M13c).
+            for (index, binding) in bindings.iter().enumerate() {
+                self.network.refresh_firewall(id, index, binding).await?;
+            }
         }
         let managed = vms.get(&id).expect("just inserted");
 
