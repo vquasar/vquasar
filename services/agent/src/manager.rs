@@ -337,6 +337,27 @@ impl VmManager {
         Ok(())
     }
 
+    /// Live resource metrics for one VM (design M15a). Returns a not-running
+    /// sample if the VM isn't managed here or has no VMM process.
+    pub async fn metrics(&self, id: VmId) -> crate::metrics::VmMetrics {
+        // Fetch pid + CH counters under the lock (quick), then sample CPU/mem
+        // outside it (the CPU window sleeps ~200ms).
+        let (pid, counters) = {
+            let vms = self.vms.lock().await;
+            match vms.get(&id) {
+                Some(m) => (
+                    m.vmm.pid(),
+                    m.vmm.counters().await.unwrap_or_else(|_| serde_json::json!({})),
+                ),
+                None => (None, serde_json::json!({})),
+            }
+        };
+        match pid {
+            Some(pid) => crate::metrics::sample(pid, &counters).await,
+            None => crate::metrics::VmMetrics::default(),
+        }
+    }
+
     /// Observed state of one VM.
     pub async fn get(&self, id: VmId) -> Result<ObservedVm> {
         let vms = self.vms.lock().await;

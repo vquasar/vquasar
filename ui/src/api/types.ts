@@ -383,3 +383,17 @@ export interface VolumeSnapshot {
   name: string;
   created_at: string;
 }
+
+export interface VmMetrics {
+  running: boolean;
+  cpu_pct: number;
+  mem_bytes: number;
+  disk_read_bytes: number;
+  disk_write_bytes: number;
+  disk_read_ops: number;
+  disk_write_ops: number;
+  net_rx_bytes: number;
+  net_tx_bytes: number;
+  net_rx_packets: number;
+  net_tx_packets: number;
+}

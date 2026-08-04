@@ -19,6 +19,9 @@ service HostAgent {
   rpc GetVm(GetVmRequest) returns (GetVmResponse);
   rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
 
+  // Live resource metrics for one VM (design M15a).
+  rpc GetVmMetrics(GetVmMetricsRequest) returns (VmMetricsResponse);
+
   // Reconcile a VM towards the desired spec (idempotent, section 22).
   rpc EnsureVm(EnsureVmRequest) returns (EnsureVmResponse);
 
@@ -90,6 +93,24 @@ message GetHostInfoResponse {
 // ---- VM lifecycle --------------------------------------------------------
 
 // VM identity is always the authoritative UUID (section 23).
+message GetVmMetricsRequest { string vm_id = 1; }
+
+// Live per-VM resource metrics (design M15a). CPU/memory are host-observed from
+// the VMM process; disk/net are cumulative counters from Cloud Hypervisor.
+message VmMetricsResponse {
+  bool running = 1;
+  double cpu_pct = 2;        // host-observed VMM CPU %, summed across vCPUs
+  uint64 mem_bytes = 3;      // VMM resident set size
+  uint64 disk_read_bytes = 4;
+  uint64 disk_write_bytes = 5;
+  uint64 disk_read_ops = 6;
+  uint64 disk_write_ops = 7;
+  uint64 net_rx_bytes = 8;
+  uint64 net_tx_bytes = 9;
+  uint64 net_rx_packets = 10;
+  uint64 net_tx_packets = 11;
+}
+
 message GetVmRequest { string vm_id = 1; }
 message GetVmResponse { VmObservedState state = 1; }
 

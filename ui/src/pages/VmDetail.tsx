@@ -33,6 +33,7 @@ import {
   useUpdateVm,
   useVm,
   useVmAction,
+  useVmMetrics,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
@@ -266,6 +267,53 @@ function NicList({ vmId, nics }: { vmId: string; nics: { network_id: string; sec
   );
 }
 
+/// Live resource usage, polled from the agent via GET /vms/:id/metrics (M15a).
+/// Rendered only for a running VM; the agent reports not-running otherwise.
+function MetricsCard({ vmId }: { vmId: string }) {
+  const q = useVmMetrics(vmId);
+  const m = q.data;
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="h6" gutterBottom>
+          Live metrics
+        </Typography>
+        {!m || !m.running ? (
+          <Typography color="text.secondary">
+            {q.isLoading ? "Loading…" : "Not running — no live metrics."}
+          </Typography>
+        ) : (
+          <Table size="small">
+            <TableBody>
+              <Row label="CPU" value={`${m.cpu_pct.toFixed(1)} %`} />
+              <Row label="Memory (RSS)" value={formatBytes(m.mem_bytes)} />
+              <Row
+                label="Disk read"
+                value={`${formatBytes(m.disk_read_bytes)} · ${m.disk_read_ops.toLocaleString()} ops`}
+              />
+              <Row
+                label="Disk write"
+                value={`${formatBytes(m.disk_write_bytes)} · ${m.disk_write_ops.toLocaleString()} ops`}
+              />
+              <Row
+                label="Net RX"
+                value={`${formatBytes(m.net_rx_bytes)} · ${m.net_rx_packets.toLocaleString()} pkts`}
+              />
+              <Row
+                label="Net TX"
+                value={`${formatBytes(m.net_tx_bytes)} · ${m.net_tx_packets.toLocaleString()} pkts`}
+              />
+            </TableBody>
+          </Table>
+        )}
+        <Typography variant="caption" color="text.secondary">
+          Disk and network are cumulative since boot; CPU is a live sample.
+        </Typography>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function VmDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -439,6 +487,9 @@ export function VmDetail() {
               </Table>
             </CardContent>
           </Card>
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <MetricsCard vmId={v.id} />
         </Grid>
       </Grid>
     </Stack>

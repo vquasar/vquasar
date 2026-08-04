@@ -61,12 +61,25 @@ impl RuntimeLayout {
     }
 
     /// Remove a VM's runtime directory and all its contents.
+    ///
+    /// The serial-console task creates `serial.log` shortly after boot; deleting
+    /// a VM right after it starts can race that create against `remove_dir_all`,
+    /// yielding `DirectoryNotEmpty` (the dir walk rmdir's after the new file
+    /// appears). The console task creates at most that one file, so a couple of
+    /// bounded retries reliably win the race.
     pub async fn remove_vm_dir(&self, id: VmId) -> std::io::Result<()> {
-        match tokio::fs::remove_dir_all(self.vm_dir(id)).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+        let dir = self.vm_dir(id);
+        for attempt in 0..5 {
+            match tokio::fs::remove_dir_all(&dir).await {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempt < 4 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(e) => return Err(e),
+            }
         }
+        Ok(())
     }
 
     /// Enumerate VM ids that have a runtime directory (used on restart to

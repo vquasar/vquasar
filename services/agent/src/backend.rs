@@ -44,6 +44,8 @@ pub trait ManagedVmm: Send + Sync {
     /// Terminate the underlying VMM process (no-op when detached or fake).
     async fn terminate(&mut self) -> Result<()>;
     fn pid(&self) -> Option<u32>;
+    /// Cumulative CH I/O counters for live metrics (design M15a).
+    async fn counters(&self) -> Result<serde_json::Value>;
 }
 
 #[async_trait]
@@ -78,6 +80,9 @@ impl ManagedVmm for CloudHypervisor {
     fn pid(&self) -> Option<u32> {
         CloudHypervisor::pid(self)
     }
+    async fn counters(&self) -> Result<serde_json::Value> {
+        CloudHypervisor::counters(self).await
+    }
 }
 
 #[async_trait]
@@ -111,6 +116,9 @@ impl ManagedVmm for FakeHypervisor {
     }
     fn pid(&self) -> Option<u32> {
         None
+    }
+    async fn counters(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({}))
     }
 }
 

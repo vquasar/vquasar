@@ -17,9 +17,9 @@ use ch_proto::agent::vm_observed_state::Phase;
 use ch_proto::agent::{
     ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DiscardVmRequest, EnsureVmRequest,
     EnsureVmResponse, FinalizeReceiveRequest, GetHostInfoRequest, GetHostInfoResponse,
-    GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse, OperationResponse,
-    PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest, StartVmRequest,
-    StopVmRequest, VmObservedState,
+    GetVmMetricsRequest, GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse,
+    OperationResponse, PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest,
+    StartVmRequest, StopVmRequest, VmMetricsResponse, VmObservedState,
 };
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
@@ -81,6 +81,27 @@ impl HostAgent for AgentService {
         let obs = self.manager.get(id).await.map_err(to_status)?;
         Ok(Response::new(GetVmResponse {
             state: Some(to_proto(obs)),
+        }))
+    }
+
+    async fn get_vm_metrics(
+        &self,
+        request: Request<GetVmMetricsRequest>,
+    ) -> Result<Response<VmMetricsResponse>, Status> {
+        let id = Self::parse_id(&request.into_inner().vm_id)?;
+        let m = self.manager.metrics(id).await;
+        Ok(Response::new(VmMetricsResponse {
+            running: m.running,
+            cpu_pct: m.cpu_pct,
+            mem_bytes: m.mem_bytes,
+            disk_read_bytes: m.disk_read_bytes,
+            disk_write_bytes: m.disk_write_bytes,
+            disk_read_ops: m.disk_read_ops,
+            disk_write_ops: m.disk_write_ops,
+            net_rx_bytes: m.net_rx_bytes,
+            net_tx_bytes: m.net_tx_bytes,
+            net_rx_packets: m.net_rx_packets,
+            net_tx_packets: m.net_tx_packets,
         }))
     }
 

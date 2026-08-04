@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 use ch_proto::agent::host_agent_client::HostAgentClient;
 use ch_proto::agent::{
     DeleteVmRequest, DiscardVmRequest, EnsureVmRequest, FinalizeReceiveRequest, GetHostInfoRequest,
-    GetHostInfoResponse, ListVmsRequest, NetworkBinding, PrepareReceiveRequest,
-    SendMigrationRequest, VmObservedState,
+    GetHostInfoResponse, GetVmMetricsRequest, ListVmsRequest, NetworkBinding, PrepareReceiveRequest,
+    SendMigrationRequest, VmMetricsResponse, VmObservedState,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
@@ -105,6 +105,14 @@ impl Agent {
     pub async fn list_vms(&self) -> Result<Vec<VmObservedState>, AgentError> {
         let mut client = self.client().await?;
         Ok(client.list_vms(ListVmsRequest {}).await?.into_inner().vms)
+    }
+
+    pub async fn get_vm_metrics(&self, vm_id: String) -> Result<VmMetricsResponse, AgentError> {
+        let mut client = self.client().await?;
+        Ok(client
+            .get_vm_metrics(GetVmMetricsRequest { vm_id })
+            .await?
+            .into_inner())
     }
 
     /// Reconcile a VM towards `spec_json` (the JSON-encoded orchestration spec)

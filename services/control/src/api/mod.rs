@@ -59,6 +59,7 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         // Public: cloud-init phone_home IP-discovery fallback (design M13e).
         .route("/phone-home/:vm_id", post(vms::phone_home))
         .route("/vms/:id/console", get(crate::console::console_ws))
+        .route("/vms/:id/metrics", get(vms::metrics))
         .route("/networks", get(networks::list).post(networks::create))
         .route(
             "/networks/:id",

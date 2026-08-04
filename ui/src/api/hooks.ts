@@ -19,6 +19,7 @@ import type {
   Template,
   UpdateVmRequest,
   Vm,
+  VmMetrics,
 } from "./types";
 
 const POLL_MS = 3000;
@@ -441,5 +442,15 @@ export function useRevertSnapshot() {
   return useMutation({
     mutationFn: ({ volumeId, snapId }: { volumeId: string; snapId: string }) =>
       api.post<void>(`/volumes/${volumeId}/snapshots/${snapId}/revert`),
+  });
+}
+
+// --- Per-VM metrics (M15a) ---
+export function useVmMetrics(id: string | undefined) {
+  return useQuery({
+    queryKey: ["vms", id, "metrics"],
+    queryFn: () => api.get<VmMetrics>(`/vms/${id}/metrics`),
+    enabled: !!id,
+    refetchInterval: POLL_MS,
   });
 }

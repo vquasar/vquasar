@@ -219,6 +219,61 @@ pub async fn create_from_volume(
     ))
 }
 
+#[derive(Serialize, Default)]
+pub struct VmMetricsView {
+    pub running: bool,
+    pub cpu_pct: f64,
+    pub mem_bytes: u64,
+    pub disk_read_bytes: u64,
+    pub disk_write_bytes: u64,
+    pub disk_read_ops: u64,
+    pub disk_write_ops: u64,
+    pub net_rx_bytes: u64,
+    pub net_tx_bytes: u64,
+    pub net_rx_packets: u64,
+    pub net_tx_packets: u64,
+}
+
+/// Live resource metrics for a VM (design M15a): proxied from its host's agent.
+/// Returns a not-running sample when the VM is unscheduled or its agent is
+/// unreachable, rather than erroring.
+pub async fn metrics(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<VmMetricsView>> {
+    user.require("vm:read")?;
+    let vm = store
+        .get_vm(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+    let Some(host_id) = vm.host_id else {
+        return Ok(Json(VmMetricsView::default()));
+    };
+    let Some(host) = store.get_host(host_id).await? else {
+        return Ok(Json(VmMetricsView::default()));
+    };
+    match crate::agent::Agent::new(host.endpoint)
+        .get_vm_metrics(id.to_string())
+        .await
+    {
+        Ok(m) => Ok(Json(VmMetricsView {
+            running: m.running,
+            cpu_pct: m.cpu_pct,
+            mem_bytes: m.mem_bytes,
+            disk_read_bytes: m.disk_read_bytes,
+            disk_write_bytes: m.disk_write_bytes,
+            disk_read_ops: m.disk_read_ops,
+            disk_write_ops: m.disk_write_ops,
+            net_rx_bytes: m.net_rx_bytes,
+            net_tx_bytes: m.net_tx_bytes,
+            net_rx_packets: m.net_rx_packets,
+            net_tx_packets: m.net_tx_packets,
+        })),
+        Err(_) => Ok(Json(VmMetricsView::default())),
+    }
+}
+
 /// cloud-init `phone_home` callback (design M13e): a guest POSTs here on first
 /// boot. The request's source address is the guest's IP (phone_home's payload
 /// carries no IP), so we record it as the VM's discovered address — a fallback

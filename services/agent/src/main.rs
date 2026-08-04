@@ -13,6 +13,7 @@ mod grpc;
 mod inventory;
 mod ipdiscovery;
 mod manager;
+mod metrics;
 mod network;
 mod runtime;
 mod storage;

@@ -148,6 +148,13 @@ impl CloudHypervisor {
             .await
     }
 
+    /// Cumulative per-device I/O counters from Cloud Hypervisor (design M15a):
+    /// a map of device-id → {counter → value}. Returned raw for the caller to
+    /// aggregate, since device ids/keys vary by CH version.
+    pub async fn counters(&self) -> Result<serde_json::Value> {
+        self.api.get_json("/vm.counters").await
+    }
+
     /// Fetch raw CH VM info, or `None` when no VM exists / the VMM is
     /// unreachable. Used for idempotency checks.
     async fn current_state(&self) -> Option<VmState> {
