@@ -55,6 +55,32 @@ pub struct VirtualMachineSpec {
     /// generates a per-VM seed ISO and attaches it read-only (design M9).
     #[serde(default)]
     pub cloud_init: Option<CloudInitSpec>,
+    /// Machine profile (design M15, microVMs). `Standard` is the full device
+    /// model; `MicroVm` is a minimal, fast-booting profile (direct-kernel
+    /// boot, no cloud-init seed disk, pvpanic, single PCI segment).
+    #[serde(default)]
+    pub machine_type: MachineType,
+}
+
+/// The VM's machine profile (design M15, microVMs).
+///
+/// Cloud Hypervisor is already PVH-lightweight (no Firecracker-style mode), so
+/// `MicroVm` is not a separate hypervisor mode but an *enforced minimal shape*:
+/// direct-kernel/initramfs boot only, no cloud-init ISO seed, a guest-panic
+/// (pvpanic) device, and a single PCI segment. Disks remain optional — a
+/// microVM can be fully diskless (kernel + initramfs) or carry one rootfs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MachineType {
+    #[default]
+    Standard,
+    MicroVm,
+}
+
+impl MachineType {
+    pub fn is_microvm(self) -> bool {
+        matches!(self, MachineType::MicroVm)
+    }
 }
 
 /// Observed state for a virtual machine.
@@ -335,6 +361,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
+            machine_type: MachineType::Standard,
         }
     }
 

@@ -31,10 +31,19 @@ pub struct CreateTemplate {
     /// Cloud-init defaults applied unless overridden at instantiation.
     #[serde(default)]
     pub cloud_init: Option<CloudInitSpec>,
+    /// Machine profile: "standard" (default) or "microvm" (design M15). A
+    /// microvm template must reference a direct-kernel image and cannot carry
+    /// cloud-init defaults.
+    #[serde(default = "default_machine_type")]
+    pub machine_type: String,
 }
 
 fn default_disk_format() -> String {
     "qcow2".to_string()
+}
+
+fn default_machine_type() -> String {
+    "standard".to_string()
 }
 
 pub async fn create(
@@ -54,9 +63,14 @@ pub async fn create(
     if body.disk_format != "raw" && body.disk_format != "qcow2" {
         return Err(ApiError::invalid("disk_format must be 'raw' or 'qcow2'"));
     }
+    if body.machine_type != "standard" && body.machine_type != "microvm" {
+        return Err(ApiError::invalid(
+            "machine_type must be 'standard' or 'microvm'",
+        ));
+    }
     // The referenced image must exist (FK also enforces this, but a clear 400
     // beats a 500 on a bad request).
-    match store.get_image(body.image_id).await? {
+    let image = match store.get_image(body.image_id).await? {
         None => {
             return Err(ApiError::invalid(format!(
                 "image not found: {}",
@@ -70,7 +84,21 @@ pub async fn create(
                 img.status
             )))
         }
-        Some(_) => {}
+        Some(img) => img,
+    };
+    // A microVM needs a direct-kernel image and no cloud-init seed; fail fast
+    // here rather than at every instantiation (design M15).
+    if body.machine_type == "microvm" {
+        if !matches!(image.boot.0, ch_model::BootSpec::DirectKernel { .. }) {
+            return Err(ApiError::invalid(
+                "a microvm template requires a direct-kernel image",
+            ));
+        }
+        if image.cloud_init || body.cloud_init.is_some() {
+            return Err(ApiError::invalid(
+                "a microvm template cannot use cloud-init; use a non-cloud-init image",
+            ));
+        }
     }
     let tpl = store
         .insert_template(
@@ -83,6 +111,7 @@ pub async fn create(
             &body.disk_format,
             body.network_id,
             body.cloud_init.as_ref(),
+            &body.machine_type,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(tpl)))
@@ -103,7 +132,12 @@ pub async fn update(
     if body.disk_format != "raw" && body.disk_format != "qcow2" {
         return Err(ApiError::invalid("disk_format must be 'raw' or 'qcow2'"));
     }
-    match store.get_image(body.image_id).await? {
+    if body.machine_type != "standard" && body.machine_type != "microvm" {
+        return Err(ApiError::invalid(
+            "machine_type must be 'standard' or 'microvm'",
+        ));
+    }
+    let image = match store.get_image(body.image_id).await? {
         None => {
             return Err(ApiError::invalid(format!(
                 "image not found: {}",
@@ -117,7 +151,19 @@ pub async fn update(
                 img.status
             )))
         }
-        Some(_) => {}
+        Some(img) => img,
+    };
+    if body.machine_type == "microvm" {
+        if !matches!(image.boot.0, ch_model::BootSpec::DirectKernel { .. }) {
+            return Err(ApiError::invalid(
+                "a microvm template requires a direct-kernel image",
+            ));
+        }
+        if image.cloud_init || body.cloud_init.is_some() {
+            return Err(ApiError::invalid(
+                "a microvm template cannot use cloud-init; use a non-cloud-init image",
+            ));
+        }
     }
     store
         .update_template(
@@ -131,6 +177,7 @@ pub async fn update(
             &body.disk_format,
             body.network_id,
             body.cloud_init.as_ref(),
+            &body.machine_type,
         )
         .await?
         .map(Json)

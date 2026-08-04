@@ -170,5 +170,6 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
         cloud_init: None,
+        machine_type: ch_model::MachineType::Standard,
     })
 }

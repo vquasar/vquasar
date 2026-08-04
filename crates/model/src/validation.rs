@@ -28,6 +28,12 @@ pub enum ValidationError {
 
     #[error("disk path must not be empty")]
     EmptyDiskPath,
+
+    #[error("a microVM must use direct-kernel boot (firmware boot is not supported)")]
+    MicrovmRequiresDirectKernel,
+
+    #[error("a microVM cannot use a cloud-init seed disk; configure it via the kernel cmdline or initramfs instead")]
+    MicrovmForbidsCloudInit,
 }
 
 impl From<ValidationError> for DomainError {
@@ -74,6 +80,17 @@ impl VirtualMachineSpec {
                 return Err(ValidationError::EmptyDiskPath);
             }
         }
+        // microVM profile (design M15): a minimal, fast-booting shape. Firmware
+        // boot (BIOS/UEFI) and the cloud-init seed disk both defeat that, so
+        // they're rejected rather than silently downgrading the profile.
+        if self.machine_type.is_microvm() {
+            if !matches!(self.boot, BootSpec::DirectKernel { .. }) {
+                return Err(ValidationError::MicrovmRequiresDirectKernel);
+            }
+            if self.cloud_init.is_some() {
+                return Err(ValidationError::MicrovmForbidsCloudInit);
+            }
+        }
         Ok(())
     }
 }
@@ -106,6 +123,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
+            machine_type: crate::vm::MachineType::Standard,
         }
     }
 
@@ -147,6 +165,39 @@ mod tests {
             cmdline: None,
         };
         assert_eq!(s.validate(), Err(ValidationError::EmptyKernelPath));
+    }
+
+    #[test]
+    fn microvm_diskless_directkernel_passes() {
+        let mut s = spec(1, 1, 128);
+        s.machine_type = crate::vm::MachineType::MicroVm;
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn microvm_rejects_firmware_boot() {
+        let mut s = spec(1, 1, 128);
+        s.machine_type = crate::vm::MachineType::MicroVm;
+        s.boot = BootSpec::Firmware {
+            firmware: "/usr/share/ovmf/OVMF.fd".into(),
+        };
+        assert_eq!(
+            s.validate(),
+            Err(ValidationError::MicrovmRequiresDirectKernel)
+        );
+    }
+
+    #[test]
+    fn microvm_rejects_cloud_init() {
+        let mut s = spec(1, 1, 128);
+        s.machine_type = crate::vm::MachineType::MicroVm;
+        s.cloud_init = Some(crate::vm::CloudInitSpec {
+            hostname: Some("m".into()),
+            ssh_authorized_keys: vec![],
+            password: None,
+            user_data: None,
+        });
+        assert_eq!(s.validate(), Err(ValidationError::MicrovmForbidsCloudInit));
     }
 
     #[test]

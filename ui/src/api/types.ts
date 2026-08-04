@@ -42,6 +42,8 @@ export interface PlacementSpec {
   host?: string | null;
 }
 
+export type MachineType = "standard" | "microvm";
+
 export interface VirtualMachineSpec {
   desired_power_state: DesiredPowerState;
   cpu: CpuSpec;
@@ -51,6 +53,9 @@ export interface VirtualMachineSpec {
   network_interfaces: NetworkInterfaceSpec[];
   placement: PlacementSpec;
   cloud_init?: CloudInitSpec | null;
+  // Machine profile (M15). "microvm" = minimal, fast-booting (direct-kernel,
+  // no cloud-init seed, pvpanic, single PCI segment).
+  machine_type?: MachineType;
 }
 
 export type VmPhase =
@@ -240,6 +245,7 @@ export interface Template {
   disk_format: "raw" | "qcow2";
   network_id: string | null;
   cloud_init: CloudInitSpec | null;
+  machine_type: MachineType;
   created_at: string;
   updated_at: string;
 }
@@ -283,6 +289,7 @@ export interface CreateTemplateRequest {
   disk_format?: "raw" | "qcow2";
   network_id?: string | null;
   cloud_init?: CloudInitSpec | null;
+  machine_type?: MachineType;
 }
 
 export interface TemplateOverrides {

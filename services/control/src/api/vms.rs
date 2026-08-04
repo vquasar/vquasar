@@ -193,6 +193,8 @@ pub async fn create_from_volume(
         network_interfaces,
         placement: PlacementSpec::default(),
         cloud_init: body.cloud_init,
+        // Booting a full rootfs volume is a standard VM, not a microVM.
+        machine_type: ch_model::MachineType::Standard,
     };
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -580,6 +582,11 @@ fn build_spec_from_template(
         network_interfaces,
         placement: PlacementSpec::default(),
         cloud_init,
+        machine_type: if template.machine_type == "microvm" {
+            ch_model::MachineType::MicroVm
+        } else {
+            ch_model::MachineType::Standard
+        },
     }
 }
 

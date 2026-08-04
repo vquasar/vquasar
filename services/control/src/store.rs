@@ -200,6 +200,10 @@ pub struct Template {
     pub disk_format: String,
     pub network_id: Option<Uuid>,
     pub cloud_init: Option<Json<CloudInitSpec>>,
+    /// Machine profile for VMs created from this template: "standard" or
+    /// "microvm" (design M15).
+    #[sqlx(default)]
+    pub machine_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1309,14 +1313,15 @@ impl Store {
         disk_format: &str,
         network_id: Option<Uuid>,
         cloud_init: Option<&CloudInitSpec>,
+        machine_type: &str,
     ) -> Result<Template> {
         let now = Utc::now();
         let sealed_ci = self.seal_ci(cloud_init)?;
         let t = sqlx::query_as::<_, Template>(
             "INSERT INTO templates
                 (id, name, image_id, boot_vcpus, max_vcpus, memory_mib, disk_size_bytes,
-                 disk_format, network_id, cloud_init, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+                 disk_format, network_id, cloud_init, machine_type, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11, $11)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
@@ -1330,6 +1335,7 @@ impl Store {
         .bind(network_id)
         .bind(sealed_ci.as_ref().map(Json))
         .bind(now)
+        .bind(machine_type)
         .fetch_one(&self.pool)
         .await?;
         self.open_template_opt(Some(t)).map(|o| o.unwrap())
@@ -1638,12 +1644,13 @@ impl Store {
         disk_format: &str,
         network_id: Option<Uuid>,
         cloud_init: Option<&CloudInitSpec>,
+        machine_type: &str,
     ) -> Result<Option<Template>> {
         let sealed_ci = self.seal_ci(cloud_init)?;
         let t = sqlx::query_as::<_, Template>(
             "UPDATE templates SET name=$2, image_id=$3, boot_vcpus=$4, max_vcpus=$5,
                 memory_mib=$6, disk_size_bytes=$7, disk_format=$8, network_id=$9,
-                cloud_init=$10, updated_at=$11
+                cloud_init=$10, updated_at=$11, machine_type=$12
              WHERE id=$1 RETURNING *",
         )
         .bind(id)
@@ -1657,6 +1664,7 @@ impl Store {
         .bind(network_id)
         .bind(sealed_ci.as_ref().map(Json))
         .bind(Utc::now())
+        .bind(machine_type)
         .fetch_optional(&self.pool)
         .await?;
         self.open_template_opt(t)

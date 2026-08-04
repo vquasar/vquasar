@@ -542,6 +542,10 @@ export function VmDetail() {
               <Table size="small">
                 <TableBody>
                   <Row label="Desired power" value={v.spec.desired_power_state} />
+                  <Row
+                    label="Machine type"
+                    value={v.spec.machine_type === "microvm" ? "microVM" : "standard"}
+                  />
                   <Row label="vCPUs" value={`${v.spec.cpu.boot_vcpus} (max ${v.spec.cpu.max_vcpus})`} />
                   <Row label="Memory" value={formatMib(v.spec.memory.size_mib)} />
                   <Row label="Boot" value={boot} />

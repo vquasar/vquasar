@@ -26,6 +26,21 @@ pub struct VmConfig {
     pub serial: Option<ConsoleConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console: Option<ConsoleConfig>,
+    /// Platform tuning (design M15, microVMs). Only set for the microVM
+    /// profile; omitted otherwise so standard VMs keep CH's defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<PlatformConfig>,
+    /// Guest-panic device (design M15). When `true`, CH exposes a `pvpanic`
+    /// device so a kernel panic in the guest is reported to the host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pvpanic: bool,
+}
+
+/// Cloud Hypervisor `PlatformConfig` (subset). `num_pci_segments` bounds the
+/// PCI topology; microVMs pin it to a single segment for a minimal bus.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlatformConfig {
+    pub num_pci_segments: u16,
 }
 
 /// Cloud Hypervisor `CpusConfig`.
@@ -269,6 +284,14 @@ pub fn to_vm_config(spec: &VirtualMachineSpec, opts: &TranslateOptions) -> VmCon
         },
     };
 
+    // microVM profile (design M15): pin a single PCI segment and enable the
+    // guest-panic device. Standard VMs keep CH's defaults (no platform block,
+    // pvpanic off).
+    let microvm = spec.machine_type.is_microvm();
+    let platform = microvm.then_some(PlatformConfig {
+        num_pci_segments: 1,
+    });
+
     VmConfig {
         cpus,
         memory,
@@ -283,6 +306,8 @@ pub fn to_vm_config(spec: &VirtualMachineSpec, opts: &TranslateOptions) -> VmCon
             socket: None,
             file: None,
         }),
+        platform,
+        pvpanic: microvm,
     }
 }
 
@@ -312,6 +337,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
+            machine_type: ch_model::MachineType::Standard,
         }
     }
 
@@ -332,6 +358,29 @@ mod tests {
         );
         assert_eq!(cfg.disks.len(), 1);
         assert_eq!(cfg.disks[0].image_type, Some(ImageType::Raw));
+    }
+
+    #[test]
+    fn standard_vm_has_no_microvm_devices() {
+        let cfg = to_vm_config(&spec(), &TranslateOptions::default());
+        assert!(!cfg.pvpanic);
+        assert!(cfg.platform.is_none());
+        // pvpanic must be omitted from the wire body when false.
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert!(value.get("pvpanic").is_none());
+        assert!(value.get("platform").is_none());
+    }
+
+    #[test]
+    fn microvm_enables_pvpanic_and_single_pci_segment() {
+        let mut s = spec();
+        s.machine_type = ch_model::MachineType::MicroVm;
+        let cfg = to_vm_config(&s, &TranslateOptions::default());
+        assert!(cfg.pvpanic);
+        assert_eq!(cfg.platform.as_ref().unwrap().num_pci_segments, 1);
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["pvpanic"], true);
+        assert_eq!(value["platform"]["num_pci_segments"], 1);
     }
 
     #[test]

@@ -16,7 +16,7 @@ import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { useCreateNetwork, useCreateVm, useNetworks, useSecurityGroups } from "../api/hooks";
-import type { BootSpec, CreateVmRequest, DiskSpec } from "../api/types";
+import type { BootSpec, CreateVmRequest, DiskSpec, MachineType } from "../api/types";
 
 type BootKind = "direct_kernel" | "firmware";
 
@@ -33,9 +33,11 @@ export function CreateVm() {
   const securityGroups = useSecurityGroups();
 
   const [name, setName] = useState("");
+  const [machineType, setMachineType] = useState<MachineType>("standard");
   const [vcpus, setVcpus] = useState(2);
   const [memoryMib, setMemoryMib] = useState(2048);
   const [bootKind, setBootKind] = useState<BootKind>("direct_kernel");
+  const isMicro = machineType === "microvm";
   const [kernel, setKernel] = useState("/var/lib/ch-orchestrator/images/vmlinuz");
   const [initramfs, setInitramfs] = useState("/var/lib/ch-orchestrator/images/initrd.img");
   const [cmdline, setCmdline] = useState("root=/dev/vda1 rw console=ttyS0");
@@ -49,8 +51,9 @@ export function CreateVm() {
     setDisks((d) => d.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
 
   const submit = () => {
+    // A microVM is always direct-kernel; firmware boot is rejected server-side.
     const boot: BootSpec =
-      bootKind === "direct_kernel"
+      bootKind === "direct_kernel" || isMicro
         ? { type: "direct_kernel", kernel, initramfs: initramfs || null, cmdline: cmdline || null }
         : { type: "firmware", firmware };
 
@@ -70,7 +73,9 @@ export function CreateVm() {
           ? [{ network_id: networkId, ...(sgIds.length ? { security_groups: sgIds } : {}) }]
           : [],
         placement: {},
-        cloud_init: cloudInit.trim() ? { user_data: cloudInit } : null,
+        // microVMs forbid the cloud-init seed disk.
+        cloud_init: !isMicro && cloudInit.trim() ? { user_data: cloudInit } : null,
+        machine_type: machineType,
       },
     };
 
@@ -84,6 +89,25 @@ export function CreateVm() {
         <CardContent>
           <Stack spacing={2}>
             <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+            <TextField
+              select
+              label="Machine type"
+              value={machineType}
+              onChange={(e) => {
+                const mt = e.target.value as MachineType;
+                setMachineType(mt);
+                if (mt === "microvm") setBootKind("direct_kernel");
+              }}
+              sx={{ width: 320 }}
+              helperText={
+                isMicro
+                  ? "Minimal profile: direct-kernel boot, pvpanic, single PCI segment, no cloud-init seed. Boots diskless from kernel+initramfs, or add one rootfs disk."
+                  : "Full device model."
+              }
+            >
+              <MenuItem value="standard">Standard</MenuItem>
+              <MenuItem value="microvm">microVM</MenuItem>
+            </TextField>
             <Stack direction="row" spacing={2}>
               <TextField
                 label="vCPUs"
@@ -110,7 +134,9 @@ export function CreateVm() {
               sx={{ width: 260 }}
             >
               <MenuItem value="direct_kernel">Direct kernel</MenuItem>
-              <MenuItem value="firmware">Firmware (CLOUDHV.fd)</MenuItem>
+              <MenuItem value="firmware" disabled={isMicro}>
+                Firmware (CLOUDHV.fd)
+              </MenuItem>
             </TextField>
             {bootKind === "direct_kernel" ? (
               <>
@@ -201,17 +227,21 @@ export function CreateVm() {
               </TextField>
             )}
 
-            <Divider textAlign="left">Cloud-init</Divider>
-            <TextField
-              label="User-data (#cloud-config, optional)"
-              value={cloudInit}
-              onChange={(e) => setCloudInit(e.target.value)}
-              multiline
-              minRows={4}
-              placeholder={"#cloud-config\nhostname: my-vm\npackages:\n  - nginx"}
-              helperText="Raw NoCloud user-data, used verbatim (replaces the generated defaults)"
-              slotProps={{ input: { sx: { fontFamily: "monospace", fontSize: 13 } } }}
-            />
+            {!isMicro && (
+              <>
+                <Divider textAlign="left">Cloud-init</Divider>
+                <TextField
+                  label="User-data (#cloud-config, optional)"
+                  value={cloudInit}
+                  onChange={(e) => setCloudInit(e.target.value)}
+                  multiline
+                  minRows={4}
+                  placeholder={"#cloud-config\nhostname: my-vm\npackages:\n  - nginx"}
+                  helperText="Raw NoCloud user-data, used verbatim (replaces the generated defaults)"
+                  slotProps={{ input: { sx: { fontFamily: "monospace", fontSize: 13 } } }}
+                />
+              </>
+            )}
 
             {createVm.isError && <Alert severity="error">{(createVm.error as Error).message}</Alert>}
 

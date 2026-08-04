@@ -24,6 +24,6 @@ pub use meta::{Generation, Metadata};
 pub use validation::ValidationError;
 pub use vm::{
     allocate_mac, BootSpec, CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec,
-    MemorySpec, NetworkInterfaceSpec, PlacementSpec, VirtualMachine, VirtualMachineSpec,
-    VirtualMachineStatus, VmPhase,
+    MachineType, MemorySpec, NetworkInterfaceSpec, PlacementSpec, VirtualMachine,
+    VirtualMachineSpec, VirtualMachineStatus, VmPhase,
 };

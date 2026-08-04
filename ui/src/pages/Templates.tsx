@@ -25,7 +25,7 @@ import {
   useUpdateTemplate,
 } from "../api/hooks";
 import { formatBytes, formatDate, formatMib } from "../format";
-import type { CreateTemplateRequest, Template } from "../api/types";
+import type { CreateTemplateRequest, MachineType, Template } from "../api/types";
 import { usePermissions } from "../auth/permissions";
 
 const GIB = 1024 * 1024 * 1024;
@@ -44,8 +44,10 @@ function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => v
   );
   const [format, setFormat] = useState<"qcow2" | "raw">(edit?.disk_format ?? "qcow2");
   const [networkId, setNetworkId] = useState(edit?.network_id ?? "");
+  const [machineType, setMachineType] = useState<MachineType>(edit?.machine_type ?? "standard");
   const [password, setPassword] = useState(edit?.cloud_init?.password ?? "");
   const [sshKey, setSshKey] = useState(edit?.cloud_init?.ssh_authorized_keys?.[0] ?? "");
+  const isMicro = machineType === "microvm";
 
   const submit = () => {
     const body: CreateTemplateRequest = {
@@ -57,8 +59,10 @@ function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => v
       disk_size_bytes: sizeGib ? Math.round(Number(sizeGib) * GIB) : null,
       disk_format: format,
       network_id: networkId || null,
+      machine_type: machineType,
+      // microVMs can't carry a cloud-init seed.
       cloud_init:
-        password || sshKey
+        !isMicro && (password || sshKey)
           ? {
               password: password || null,
               ssh_authorized_keys: sshKey ? [sshKey] : [],
@@ -104,8 +108,26 @@ function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => v
               </MenuItem>
             ))}
           </TextField>
-          <TextField label="Default password (optional)" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <TextField label="Default SSH public key (optional)" value={sshKey} onChange={(e) => setSshKey(e.target.value)} />
+          <TextField
+            select
+            label="Machine type"
+            value={machineType}
+            onChange={(e) => setMachineType(e.target.value as MachineType)}
+            helperText={
+              isMicro
+                ? "Minimal profile: requires a direct-kernel image and no cloud-init."
+                : "Full device model."
+            }
+          >
+            <MenuItem value="standard">Standard</MenuItem>
+            <MenuItem value="microvm">microVM</MenuItem>
+          </TextField>
+          {!isMicro && (
+            <>
+              <TextField label="Default password (optional)" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <TextField label="Default SSH public key (optional)" value={sshKey} onChange={(e) => setSshKey(e.target.value)} />
+            </>
+          )}
           {err && <Alert severity="error">{err.message}</Alert>}
         </Stack>
       </DialogContent>

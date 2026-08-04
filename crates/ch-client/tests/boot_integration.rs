@@ -83,6 +83,7 @@ async fn boots_real_vm_and_emits_serial_output() {
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
         cloud_init: None,
+        machine_type: ch_model::MachineType::Standard,
     };
     spec.validate().expect("spec valid");
 

@@ -141,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
         cloud_init: None,
+        machine_type: ch_model::MachineType::Standard,
     };
     spec.validate()?;
 
