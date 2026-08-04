@@ -103,6 +103,7 @@ pub fn router(store: Store, auth: AuthState) -> Router {
             post(volumes::revert_snapshot),
         )
         .route("/images", get(images::list).post(images::create))
+        .route("/isos", get(images::list_isos))
         .route("/images/import", post(images::import))
         .route(
             "/images/upload",

@@ -94,6 +94,42 @@ pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<
     Ok(Json(store.list_images().await?))
 }
 
+/// An ISO available for read-only attachment as install/driver media (design
+/// M15, Windows guests). ISOs live under `<images_dir>/isos` on shared storage.
+#[derive(Debug, serde::Serialize)]
+pub struct IsoEntry {
+    pub name: String,
+    pub path: String,
+    pub size_bytes: u64,
+}
+
+/// List ISOs available to attach as read-only CDs (e.g. a Windows install ISO
+/// and the virtio-win driver ISO). Read-only: it only enumerates files.
+pub async fn list_isos(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<IsoEntry>>> {
+    user.require("image:read")?;
+    let dir = images_dir(&store).join("isos");
+    let mut out = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("iso") {
+                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                out.push(IsoEntry {
+                    name: path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    path: path.to_string_lossy().into_owned(),
+                    size_bytes: size,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Json(out))
+}
+
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,

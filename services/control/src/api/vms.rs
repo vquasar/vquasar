@@ -381,14 +381,28 @@ pub struct Accepted {
 pub async fn create(
     State(store): State<Store>,
     _: RequireVmCreate,
-    Json(body): Json<CreateVm>,
+    Json(mut body): Json<CreateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    // Pick the id up front so a blank/provisioned disk left without a path can
+    // be auto-placed on shared storage. This lets callers (e.g. the UI Windows
+    // preset) request a blank system disk without knowing server-side paths.
+    let vm_id = Uuid::new_v4();
+    for (i, disk) in body.spec.disks.iter_mut().enumerate() {
+        if disk.needs_provisioning() && disk.path.as_os_str().is_empty() {
+            let ext = match disk.image_type {
+                DiskImageType::Qcow2 => "qcow2",
+                DiskImageType::Raw => "raw",
+            };
+            disk.path = PathBuf::from(store.shared_volumes_dir())
+                .join(format!("{vm_id}-disk{i}.{ext}"));
+        }
+    }
     body.spec
         .validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
 
     // Persist desired state first (section 7), then let reconciliation act.
-    let vm = store.insert_vm(&body.name, &body.spec).await?;
+    let vm = store.insert_vm_with_id(vm_id, &body.name, &body.spec).await?;
     // Allocate static IPs for NICs on managed networks (M13a); roll back the VM
     // row if allocation fails so we never leave a half-provisioned VM.
     if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {

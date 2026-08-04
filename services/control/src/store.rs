@@ -548,10 +548,6 @@ impl Store {
 
     // ---- virtual machines ------------------------------------------------
 
-    pub async fn insert_vm(&self, name: &str, spec: &VirtualMachineSpec) -> Result<Vm> {
-        self.insert_vm_with_id(Uuid::new_v4(), name, spec).await
-    }
-
     /// Insert a VM with a caller-chosen id. Used when the spec must reference the
     /// id before persistence (e.g. a provisioned volume path — design M9).
     pub async fn insert_vm_with_id(

@@ -13,6 +13,7 @@ import type {
   Event,
   Host,
   Image,
+  IsoEntry,
   IpAllocation,
   Network,
   Task,
@@ -124,6 +125,13 @@ export function useImages() {
     queryKey: ["images"],
     queryFn: () => api.get<Image[]>("/images"),
     refetchInterval: POLL_MS,
+  });
+}
+
+export function useIsos() {
+  return useQuery({
+    queryKey: ["isos"],
+    queryFn: () => api.get<IsoEntry[]>("/isos"),
   });
 }
 

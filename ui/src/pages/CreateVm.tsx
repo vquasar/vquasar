@@ -15,8 +15,12 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
-import { useCreateNetwork, useCreateVm, useNetworks, useSecurityGroups } from "../api/hooks";
+import { useCreateNetwork, useCreateVm, useIsos, useNetworks, useSecurityGroups } from "../api/hooks";
+import { formatBytes } from "../format";
 import type { BootSpec, CreateVmRequest, DiskSpec, MachineType } from "../api/types";
+
+const GIB = 1024 * 1024 * 1024;
+const WINDOWS_FIRMWARE = "/var/lib/ch-orchestrator/shared/firmware/CLOUDHV.fd";
 
 type BootKind = "direct_kernel" | "firmware";
 
@@ -31,6 +35,7 @@ export function CreateVm() {
   const networks = useNetworks();
   const createNetwork = useCreateNetwork();
   const securityGroups = useSecurityGroups();
+  const isos = useIsos();
 
   const [name, setName] = useState("");
   const [machineType, setMachineType] = useState<MachineType>("standard");
@@ -43,9 +48,28 @@ export function CreateVm() {
   const [cmdline, setCmdline] = useState("root=/dev/vda1 rw console=ttyS0");
   const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
   const [disks, setDisks] = useState<DiskRow[]>([{ path: "", readonly: false }]);
+  const [sysDiskGib, setSysDiskGib] = useState("");
+  const [isoSel, setIsoSel] = useState<string[]>([]);
   const [networkId, setNetworkId] = useState<string>("");
   const [sgIds, setSgIds] = useState<string[]>([]);
   const [cloudInit, setCloudInit] = useState("");
+
+  // One-click Windows-guest scaffold (M15): UEFI firmware boot, a blank virtio
+  // system disk, and the virtio-win driver ISO attached read-only. Completing
+  // the OS install needs a Windows ISO and (CH being headless) a pre-built
+  // virtio image or an unattended serial setup — see docs/windows-guests.md.
+  const applyWindowsPreset = () => {
+    setMachineType("standard");
+    setBootKind("firmware");
+    setFirmware(WINDOWS_FIRMWARE);
+    setVcpus(2);
+    setMemoryMib(4096);
+    setSysDiskGib("40");
+    setDisks([{ path: "", readonly: false }]);
+    setCloudInit("");
+    const vw = (isos.data ?? []).find((i) => i.name.toLowerCase().includes("virtio-win"));
+    setIsoSel(vw ? [vw.path] : []);
+  };
 
   const setDisk = (i: number, patch: Partial<DiskRow>) =>
     setDisks((d) => d.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
@@ -57,9 +81,26 @@ export function CreateVm() {
         ? { type: "direct_kernel", kernel, initramfs: initramfs || null, cmdline: cmdline || null }
         : { type: "firmware", firmware };
 
-    const diskSpecs: DiskSpec[] = disks
-      .filter((d) => d.path.trim() !== "")
-      .map((d) => ({ path: d.path.trim(), readonly: d.readonly, image_type: "raw" }));
+    const diskSpecs: DiskSpec[] = [
+      // A blank, auto-placed system disk to install onto (server assigns the
+      // path on shared storage from the size alone).
+      ...(sysDiskGib
+        ? [
+            {
+              path: "",
+              readonly: false,
+              image_type: "qcow2" as const,
+              size_bytes: Math.round(Number(sysDiskGib) * GIB),
+            },
+          ]
+        : []),
+      // Explicit disks by path.
+      ...disks
+        .filter((d) => d.path.trim() !== "")
+        .map((d) => ({ path: d.path.trim(), readonly: d.readonly, image_type: "raw" as const })),
+      // ISOs attached read-only as CDs (install media, virtio-win drivers).
+      ...isoSel.map((path) => ({ path, readonly: true, image_type: "raw" as const })),
+    ];
 
     const body: CreateVmRequest = {
       name,
@@ -84,7 +125,12 @@ export function CreateVm() {
 
   return (
     <Stack spacing={2} sx={{ maxWidth: 760 }}>
-      <Typography variant="h5">Create Virtual Machine</Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between">
+        <Typography variant="h5">Create Virtual Machine</Typography>
+        <Button variant="outlined" onClick={applyWindowsPreset}>
+          Windows guest preset
+        </Button>
+      </Stack>
       <Card>
         <CardContent>
           <Stack spacing={2}>
@@ -149,10 +195,47 @@ export function CreateVm() {
                 <TextField label="Kernel cmdline" value={cmdline} onChange={(e) => setCmdline(e.target.value)} />
               </>
             ) : (
-              <TextField label="Firmware path" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+              <>
+                <TextField label="Firmware path" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+                <Alert severity="info">
+                  UEFI firmware boot (for Windows or other UEFI guests). Cloud Hypervisor is headless
+                  and virtio-only, so a fresh Windows install can’t be driven interactively — boot a
+                  pre-built image with virtio drivers, or run an unattended serial setup. See
+                  docs/windows-guests.md.
+                </Alert>
+              </>
             )}
 
             <Divider textAlign="left">Disks</Divider>
+            <TextField
+              label="Blank system disk (GiB, optional)"
+              value={sysDiskGib}
+              onChange={(e) => setSysDiskGib(e.target.value)}
+              helperText="Creates a fresh qcow2 disk on shared storage to install onto (path auto-assigned)."
+              sx={{ maxWidth: 360 }}
+            />
+            <TextField
+              select
+              label="Attach ISOs (read-only)"
+              value={isoSel}
+              onChange={(e) =>
+                setIsoSel(typeof e.target.value === "string" ? [e.target.value] : (e.target.value as string[]))
+              }
+              SelectProps={{ multiple: true }}
+              helperText="Install media / virtio-win drivers, attached as read-only CDs."
+              sx={{ maxWidth: 520 }}
+            >
+              {(isos.data ?? []).map((iso) => (
+                <MenuItem key={iso.path} value={iso.path}>
+                  {iso.name} ({formatBytes(iso.size_bytes)})
+                </MenuItem>
+              ))}
+              {(isos.data ?? []).length === 0 && (
+                <MenuItem value="" disabled>
+                  no ISOs in the image store
+                </MenuItem>
+              )}
+            </TextField>
             {disks.map((d, i) => (
               <Stack key={i} direction="row" spacing={1} alignItems="center">
                 <TextField

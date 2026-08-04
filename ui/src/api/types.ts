@@ -224,6 +224,13 @@ export interface Image {
   updated_at: string;
 }
 
+// ISO available for read-only attachment (M15, Windows guests).
+export interface IsoEntry {
+  name: string;
+  path: string;
+  size_bytes: number;
+}
+
 export interface ImportImageRequest {
   name: string;
   url: string;
