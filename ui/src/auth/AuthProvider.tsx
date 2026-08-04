@@ -63,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [enabled, setEnabled] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | undefined>();
+  const [issuer, setIssuer] = useState("");
   const managerRef = useRef<UserManager | null>(null);
 
   // The token getter reads live state via a ref so client.ts always sees the
@@ -85,6 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         setEnabled(true);
+        setIssuer(cfg.issuer);
         const mgr = buildManager(cfg);
         managerRef.current = mgr;
         mgr.events.addUserLoaded((u) => setUser(u));
@@ -92,6 +94,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         mgr.events.addAccessTokenExpired(() => {
           void mgr.signinSilent().catch(() => setUser(null));
         });
+
+        // Prime the provider metadata now so an unreachable or untrusted IdP
+        // surfaces on the login screen instead of a silent no-op on click.
+        try {
+          await mgr.metadataService.getMetadata();
+        } catch (e) {
+          if (!cancelled) {
+            setError(
+              `Can't reach the identity provider at ${cfg.issuer}. If it uses an ` +
+                `internal CA, open ${cfg.issuer} once in this browser and accept the ` +
+                `certificate (or import the CA), then reload. (${e})`,
+            );
+          }
+        }
 
         // Complete an in-flight redirect (?code=...&state=...).
         const params = new URLSearchParams(window.location.search);
@@ -128,7 +144,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile: user?.profile,
       error,
       login: () => {
-        void managerRef.current?.signinRedirect();
+        setError(undefined);
+        managerRef.current?.signinRedirect().catch((e) =>
+          setError(
+            `Sign-in couldn't start: ${e}. If the identity provider uses an ` +
+              `internal CA, open ${issuer} once in this browser and accept the ` +
+              `certificate (or import the CA), then retry.`,
+          ),
+        );
       },
       logout: () => {
         const mgr = managerRef.current;
@@ -139,7 +162,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
     };
-  }, [loading, enabled, user, error]);
+  }, [loading, enabled, user, error, issuer]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
