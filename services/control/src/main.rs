@@ -10,6 +10,7 @@ mod authn;
 mod authz;
 mod config;
 mod console;
+mod crypto;
 mod netalloc;
 mod rbac;
 mod reconcile;
@@ -59,12 +60,28 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(10)
         .connect(&config.database.url)
         .await?;
-    let store = Store::new(pool, config.storage.shared_volumes_dir.clone());
+    // Field encryption at rest (design M12c). Disabled -> plaintext.
+    let cryptor = crate::crypto::Cryptor::from_config(&config.encryption)
+        .map_err(|e| anyhow::anyhow!("encryption config: {e}"))?;
+    if cryptor.is_some() {
+        info!("field encryption enabled (sensitive cloud-init sealed at rest)");
+    } else {
+        info!("field encryption DISABLED — set [encryption] key to enable");
+    }
+    let store =
+        Store::new(pool, config.storage.shared_volumes_dir.clone()).with_crypto(cryptor.clone());
     store.migrate().await?;
     info!("migrations applied");
     store
         .sync_builtin_roles(&crate::rbac::builtin_roles())
         .await?;
+    // Seal any pre-existing plaintext secrets now that encryption is on.
+    if cryptor.is_some() {
+        let n = store.encrypt_existing().await?;
+        if n > 0 {
+            info!(rows = n, "sealed pre-existing plaintext cloud-init secrets");
+        }
+    }
 
     // Authentication / RBAC wiring (design M12b). Disabled -> dev superuser.
     let auth_state = if config.auth.enabled() {

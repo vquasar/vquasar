@@ -36,6 +36,10 @@
 #   --oidc-ca PATH       Extra CA to trust for the IdP (internal-CA Keycloak)
 #   --bootstrap-admin ID Email/subject granted admin on first login
 #   --allow-no-auth      Dev/lab only: install control without authentication
+#   --enc-key B64        AES-256 key, base64 (openssl rand -base64 32); enables
+#                        field encryption at rest of sensitive cloud-init (M12c)
+#   --enc-key-id ID      Key id stamped into sealed values (default: default)
+#   --enc-old-keys LIST  Decrypt-only keys during rotation: id:b64,id2:b64
 set -euo pipefail
 
 BIN_DIR=/usr/local/bin
@@ -53,6 +57,7 @@ ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
 OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; OIDC_CA=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
+ENC_KEY=""; ENC_KEY_ID=""; ENC_OLD_KEYS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +81,9 @@ while [[ $# -gt 0 ]]; do
     --oidc-ca) OIDC_CA="$2"; shift 2 ;;
     --bootstrap-admin) BOOTSTRAP_ADMIN="$2"; shift 2 ;;
     --allow-no-auth) ALLOW_NO_AUTH=1; shift ;;
+    --enc-key) ENC_KEY="$2"; shift 2 ;;
+    --enc-key-id) ENC_KEY_ID="$2"; shift 2 ;;
+    --enc-old-keys) ENC_OLD_KEYS="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -127,12 +135,20 @@ auth_env() {
   [[ -n "$BOOTSTRAP_ADMIN" ]] && echo "CH_CONTROL_AUTH__BOOTSTRAP_ADMIN=$BOOTSTRAP_ADMIN"
 }
 
+# Emit the field-encryption env vars (design M12c) for the control plane.
+enc_env() {
+  [[ -n "$ENC_KEY" ]] && echo "CH_CONTROL_ENCRYPTION__KEY=$ENC_KEY"
+  [[ -n "$ENC_KEY_ID" ]] && echo "CH_CONTROL_ENCRYPTION__KEY_ID=$ENC_KEY_ID"
+  [[ -n "$ENC_OLD_KEYS" ]] && echo "CH_CONTROL_ENCRYPTION__OLD_KEYS=$ENC_OLD_KEYS"
+}
+
 write_env() {
   if [[ -f "$ENV_FILE" && $FORCE_CONFIG -eq 0 ]]; then
     echo "==> keeping existing config $ENV_FILE (use --force-config to overwrite)"
   else
     cat > "$ENV_FILE"
-    chmod 0644 "$ENV_FILE"
+    # 0600: the env file holds secrets (DB URL, and the M12c encryption key).
+    chmod 0600 "$ENV_FILE"
     echo "==> wrote config $ENV_FILE"
   fi
 }
@@ -198,6 +214,7 @@ CH_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
 ${UI_DIR:+CH_CONTROL_SERVER__UI_DIR=$UI_DIR}
 $(tls_env CONTROL)
 $(auth_env)
+$(enc_env)
 EOF
 
   cat > "$UNIT_DIR/$SVC.service" <<EOF

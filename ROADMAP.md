@@ -60,10 +60,19 @@ Split into three shippable slices.
   first-admin chicken-and-egg). Config-gated: disabled by default (dev
   superuser) so it ships without breaking the running cluster. Remaining:
   stand up a Keycloak instance for end-to-end verification.
-- **M12c — Encryption of sensitive data at rest.** Application-level envelope
-  encryption for sensitive fields (cloud-init passwords / SSH keys / user-data,
-  and any stored credentials/secrets), master key from config/KMS; TLS to
-  PostgreSQL; DB host disk encryption (ops).
+- **M12c — Encryption of sensitive data at rest.** ✅ **Done.** Application-level
+  field encryption of the secret-bearing cloud-init fields (password, user-data,
+  SSH keys) in VM specs and templates: **AES-256-GCM** with a fresh nonce per
+  value, a per-field purpose bound in as AEAD associated data, and a **versioned
+  keyring** (active key + retired decrypt-only keys) for rotation — new writes
+  re-seal under the active key. Sealed values are self-describing
+  (`ENC:1:<key_id>:<nonce>:<ct>`); decryption happens at the store boundary so
+  the agent still receives plaintext (over mTLS) to build the seed ISO.
+  Config-gated (`[encryption] key`, base64-32); absent ⇒ plaintext (backward
+  compatible). Enabling it seals new writes and runs a one-time startup sweep
+  over existing rows (idempotent, no generation bump). Key material lives in the
+  0600 systemd env file. Follow-ups: KMS-backed KEK/DEK envelope + key
+  auto-rotation; TLS to PostgreSQL; DB host-disk encryption (ops).
 
 ### Networking
 - IPAM: control-plane-managed / static IP assignment (stop relying on external

@@ -178,21 +178,170 @@ pub struct Store {
     pool: PgPool,
     /// Shared-storage directory for per-VM provisioned volumes (design M9).
     shared_volumes_dir: std::sync::Arc<str>,
+    /// Field-encryption keyring (design M12c); `None` = plaintext at rest.
+    crypto: Option<std::sync::Arc<crate::crypto::Cryptor>>,
 }
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
+
+fn crypto_err(e: crate::crypto::CryptoError) -> sqlx::Error {
+    sqlx::Error::Protocol(format!("field encryption: {e}"))
+}
+
+/// Whether any sensitive cloud-init field is still stored in plaintext.
+fn needs_sealing(ci: &CloudInitSpec) -> bool {
+    ci.password
+        .as_deref()
+        .is_some_and(|v| !crate::crypto::is_sealed(v))
+        || ci
+            .user_data
+            .as_deref()
+            .is_some_and(|v| !crate::crypto::is_sealed(v))
+        || ci
+            .ssh_authorized_keys
+            .iter()
+            .any(|v| !crate::crypto::is_sealed(v))
+}
 
 impl Store {
     pub fn new(pool: PgPool, shared_volumes_dir: impl Into<String>) -> Self {
         Self {
             pool,
             shared_volumes_dir: shared_volumes_dir.into().into(),
+            crypto: None,
         }
+    }
+
+    /// Attach a field-encryption keyring (design M12c).
+    pub fn with_crypto(mut self, crypto: Option<crate::crypto::Cryptor>) -> Self {
+        self.crypto = crypto.map(std::sync::Arc::new);
+        self
     }
 
     /// The configured shared-storage directory for provisioned volumes.
     pub fn shared_volumes_dir(&self) -> &str {
         &self.shared_volumes_dir
+    }
+
+    // ---- field encryption at rest (design M12c) --------------------------
+
+    /// Return a copy of `spec` with sensitive cloud-init fields sealed (no-op
+    /// when encryption is disabled).
+    fn seal_spec(&self, spec: &VirtualMachineSpec) -> Result<VirtualMachineSpec> {
+        let mut out = spec.clone();
+        if let (Some(c), Some(ci)) = (&self.crypto, out.cloud_init.as_mut()) {
+            c.seal_cloud_init(ci).map_err(crypto_err)?;
+        }
+        Ok(out)
+    }
+
+    /// Decrypt a VM's sensitive cloud-init fields in place.
+    fn open_vm(&self, vm: &mut Vm) -> Result<()> {
+        if let (Some(c), Some(ci)) = (&self.crypto, vm.spec.0.cloud_init.as_mut()) {
+            c.open_cloud_init(ci).map_err(crypto_err)?;
+        }
+        Ok(())
+    }
+
+    fn open_vm_opt(&self, vm: Option<Vm>) -> Result<Option<Vm>> {
+        match vm {
+            Some(mut v) => {
+                self.open_vm(&mut v)?;
+                Ok(Some(v))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn open_vms(&self, mut vms: Vec<Vm>) -> Result<Vec<Vm>> {
+        for v in vms.iter_mut() {
+            self.open_vm(v)?;
+        }
+        Ok(vms)
+    }
+
+    /// Return a sealed copy of an optional cloud-init spec for a template.
+    fn seal_ci(&self, ci: Option<&CloudInitSpec>) -> Result<Option<CloudInitSpec>> {
+        match (&self.crypto, ci) {
+            (Some(c), Some(ci)) => {
+                let mut out = ci.clone();
+                c.seal_cloud_init(&mut out).map_err(crypto_err)?;
+                Ok(Some(out))
+            }
+            (_, other) => Ok(other.cloned()),
+        }
+    }
+
+    fn open_template(&self, t: &mut Template) -> Result<()> {
+        if let (Some(c), Some(ci)) = (&self.crypto, t.cloud_init.as_mut().map(|j| &mut j.0)) {
+            c.open_cloud_init(ci).map_err(crypto_err)?;
+        }
+        Ok(())
+    }
+
+    fn open_template_opt(&self, t: Option<Template>) -> Result<Option<Template>> {
+        match t {
+            Some(mut t) => {
+                self.open_template(&mut t)?;
+                Ok(Some(t))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// One-time sweep: seal any VM/template rows whose sensitive cloud-init
+    /// fields are still stored in plaintext (design M12c). Idempotent —
+    /// already-sealed values are skipped — and it does not bump `generation`,
+    /// so it won't trigger a reconcile. Returns the number of rows sealed.
+    pub async fn encrypt_existing(&self) -> Result<usize> {
+        let Some(c) = self.crypto.clone() else {
+            return Ok(0);
+        };
+        let mut sealed = 0usize;
+
+        // VMs — read raw (no open) so we can tell plaintext from ciphertext.
+        let vms = sqlx::query_as::<_, Vm>("SELECT * FROM virtual_machines")
+            .fetch_all(&self.pool)
+            .await?;
+        for vm in vms {
+            let Some(ci) = vm.spec.0.cloud_init.as_ref() else {
+                continue;
+            };
+            if !needs_sealing(ci) {
+                continue;
+            }
+            let mut spec = vm.spec.0.clone();
+            c.seal_cloud_init(spec.cloud_init.as_mut().unwrap())
+                .map_err(crypto_err)?;
+            sqlx::query("UPDATE virtual_machines SET spec=$2 WHERE id=$1")
+                .bind(vm.id)
+                .bind(Json(&spec))
+                .execute(&self.pool)
+                .await?;
+            sealed += 1;
+        }
+
+        // Templates.
+        let templates = sqlx::query_as::<_, Template>("SELECT * FROM templates")
+            .fetch_all(&self.pool)
+            .await?;
+        for t in templates {
+            let Some(ci) = t.cloud_init.as_ref().map(|j| &j.0) else {
+                continue;
+            };
+            if !needs_sealing(ci) {
+                continue;
+            }
+            let mut ci2 = ci.clone();
+            c.seal_cloud_init(&mut ci2).map_err(crypto_err)?;
+            sqlx::query("UPDATE templates SET cloud_init=$2 WHERE id=$1")
+                .bind(t.id)
+                .bind(Json(&ci2))
+                .execute(&self.pool)
+                .await?;
+            sealed += 1;
+        }
+        Ok(sealed)
     }
 
     /// Apply embedded migrations.
@@ -291,59 +440,68 @@ impl Store {
         spec: &VirtualMachineSpec,
     ) -> Result<Vm> {
         let now = Utc::now();
-        sqlx::query_as::<_, Vm>(
+        let sealed = self.seal_spec(spec)?;
+        let vm = sqlx::query_as::<_, Vm>(
             "INSERT INTO virtual_machines (id, name, spec, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $4)
              RETURNING *",
         )
         .bind(id)
         .bind(name)
-        .bind(Json(spec))
+        .bind(Json(&sealed))
         .bind(now)
         .fetch_one(&self.pool)
-        .await
+        .await?;
+        // Return plaintext to the caller (the row is sealed at rest).
+        self.open_vm_opt(Some(vm)).map(|o| o.unwrap())
     }
 
     pub async fn get_vm(&self, id: Uuid) -> Result<Option<Vm>> {
-        sqlx::query_as::<_, Vm>("SELECT * FROM virtual_machines WHERE id = $1")
+        let vm = sqlx::query_as::<_, Vm>("SELECT * FROM virtual_machines WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await
+            .await?;
+        self.open_vm_opt(vm)
     }
 
     pub async fn list_vms(&self) -> Result<Vec<Vm>> {
-        sqlx::query_as::<_, Vm>("SELECT * FROM virtual_machines ORDER BY created_at")
+        let vms = sqlx::query_as::<_, Vm>("SELECT * FROM virtual_machines ORDER BY created_at")
             .fetch_all(&self.pool)
-            .await
+            .await?;
+        self.open_vms(vms)
     }
 
     /// VMs whose observed state has not caught up with desired state and are
     /// therefore candidates for reconciliation (section 32).
     pub async fn list_vms_to_reconcile(&self) -> Result<Vec<Vm>> {
-        sqlx::query_as::<_, Vm>(
+        let vms = sqlx::query_as::<_, Vm>(
             "SELECT * FROM virtual_machines
              WHERE phase NOT IN ('Running', 'Stopped', 'Failed')
                 OR generation <> observed_generation
              ORDER BY created_at",
         )
         .fetch_all(&self.pool)
-        .await
+        .await?;
+        // Reconciler needs plaintext cloud-init to build the seed ISO.
+        self.open_vms(vms)
     }
 
     /// Set the desired power state on an existing VM (bumps generation so the
     /// controller reconciles it).
     pub async fn set_vm_spec(&self, id: Uuid, spec: &VirtualMachineSpec) -> Result<Option<Vm>> {
-        sqlx::query_as::<_, Vm>(
+        let sealed = self.seal_spec(spec)?;
+        let vm = sqlx::query_as::<_, Vm>(
             "UPDATE virtual_machines
              SET spec=$2, generation=generation+1, updated_at=$3
              WHERE id=$1
              RETURNING *",
         )
         .bind(id)
-        .bind(Json(spec))
+        .bind(Json(&sealed))
         .bind(Utc::now())
         .fetch_optional(&self.pool)
-        .await
+        .await?;
+        self.open_vm_opt(vm)
     }
 
     /// Update a VM's name and/or spec, bumping generation so the controller
@@ -354,7 +512,8 @@ impl Store {
         name: Option<&str>,
         spec: &VirtualMachineSpec,
     ) -> Result<Option<Vm>> {
-        sqlx::query_as::<_, Vm>(
+        let sealed = self.seal_spec(spec)?;
+        let vm = sqlx::query_as::<_, Vm>(
             "UPDATE virtual_machines
              SET name = COALESCE($2, name), spec=$3, generation=generation+1, updated_at=$4
              WHERE id=$1
@@ -362,10 +521,11 @@ impl Store {
         )
         .bind(id)
         .bind(name)
-        .bind(Json(spec))
+        .bind(Json(&sealed))
         .bind(Utc::now())
         .fetch_optional(&self.pool)
-        .await
+        .await?;
+        self.open_vm_opt(vm)
     }
 
     pub async fn assign_vm_host(&self, id: Uuid, host_id: Uuid) -> Result<()> {
@@ -596,7 +756,8 @@ impl Store {
         cloud_init: Option<&CloudInitSpec>,
     ) -> Result<Template> {
         let now = Utc::now();
-        sqlx::query_as::<_, Template>(
+        let sealed_ci = self.seal_ci(cloud_init)?;
+        let t = sqlx::query_as::<_, Template>(
             "INSERT INTO templates
                 (id, name, image_id, boot_vcpus, max_vcpus, memory_mib, disk_size_bytes,
                  disk_format, network_id, cloud_init, created_at, updated_at)
@@ -612,23 +773,29 @@ impl Store {
         .bind(disk_size_bytes)
         .bind(disk_format)
         .bind(network_id)
-        .bind(cloud_init.map(Json))
+        .bind(sealed_ci.as_ref().map(Json))
         .bind(now)
         .fetch_one(&self.pool)
-        .await
+        .await?;
+        self.open_template_opt(Some(t)).map(|o| o.unwrap())
     }
 
     pub async fn get_template(&self, id: Uuid) -> Result<Option<Template>> {
-        sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id=$1")
+        let t = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id=$1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await
+            .await?;
+        self.open_template_opt(t)
     }
 
     pub async fn list_templates(&self) -> Result<Vec<Template>> {
-        sqlx::query_as::<_, Template>("SELECT * FROM templates ORDER BY created_at")
+        let mut ts = sqlx::query_as::<_, Template>("SELECT * FROM templates ORDER BY created_at")
             .fetch_all(&self.pool)
-            .await
+            .await?;
+        for t in ts.iter_mut() {
+            self.open_template(t)?;
+        }
+        Ok(ts)
     }
 
     pub async fn delete_template(&self, id: Uuid) -> Result<bool> {
@@ -917,7 +1084,8 @@ impl Store {
         network_id: Option<Uuid>,
         cloud_init: Option<&CloudInitSpec>,
     ) -> Result<Option<Template>> {
-        sqlx::query_as::<_, Template>(
+        let sealed_ci = self.seal_ci(cloud_init)?;
+        let t = sqlx::query_as::<_, Template>(
             "UPDATE templates SET name=$2, image_id=$3, boot_vcpus=$4, max_vcpus=$5,
                 memory_mib=$6, disk_size_bytes=$7, disk_format=$8, network_id=$9,
                 cloud_init=$10, updated_at=$11
@@ -932,10 +1100,11 @@ impl Store {
         .bind(disk_size_bytes)
         .bind(disk_format)
         .bind(network_id)
-        .bind(cloud_init.map(Json))
+        .bind(sealed_ci.as_ref().map(Json))
         .bind(Utc::now())
         .fetch_optional(&self.pool)
-        .await
+        .await?;
+        self.open_template_opt(t)
     }
 
     // ---- tasks -----------------------------------------------------------

@@ -40,6 +40,10 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
+# Cryptography (design M12c: field encryption at rest)
+aes-gcm = "0.10"
+base64 = "0.22"
+
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -24,7 +24,26 @@ pub struct ControlConfig {
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
+    pub encryption: EncryptionConfig,
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// Field-level encryption of sensitive data at rest (design M12c). Encryption
+/// is on only when `key` is set; otherwise sensitive fields are stored in
+/// plaintext (backward compatible).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EncryptionConfig {
+    /// Active AES-256 key, 32 bytes base64-encoded (`openssl rand -base64 32`).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Identifier stamped into sealed values so keys can be rotated. Defaults
+    /// to "default" when a key is set without an id.
+    #[serde(default)]
+    pub key_id: Option<String>,
+    /// Retired decrypt-only keys during rotation, as "id:base64,id2:base64".
+    #[serde(default)]
+    pub old_keys: Option<String>,
 }
 
 /// OIDC authentication + RBAC bootstrap (design M12b). Auth is enforced only
