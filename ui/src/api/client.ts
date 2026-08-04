@@ -71,3 +71,30 @@ export const api = {
     request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
+
+// Streaming image upload (M14e): sends the raw file as the body with metadata in
+// the query string. Not JSON, so it bypasses the typed `api` client.
+export async function uploadImage(
+  params: Record<string, string>,
+  file: File,
+): Promise<void> {
+  const qs = new URLSearchParams(params).toString();
+  const headers: Record<string, string> = {};
+  const token = authToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(`${BASE}/images/upload?${qs}`, {
+    method: "POST",
+    headers,
+    body: file,
+  });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = (await res.json()) as ApiErrorBody;
+      if (body?.error) message = body.error.message;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(message);
+  }
+}

@@ -194,6 +194,95 @@ pub async fn import(
     Ok((StatusCode::ACCEPTED, Json(image)))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UploadParams {
+    pub name: String,
+    pub format: String,
+    #[serde(default)]
+    pub os: Option<String>,
+    #[serde(default = "default_true")]
+    pub cloud_init: bool,
+    #[serde(default = "default_firmware")]
+    pub firmware: String,
+    #[serde(default)]
+    pub default_size_bytes: Option<i64>,
+}
+
+fn default_firmware() -> String {
+    "/var/lib/ch-orchestrator/firmware/CLOUDHV.fd".into()
+}
+
+/// Upload an image by streaming the disk file in the request body (design M14e).
+/// Metadata comes via query params; the body is the raw image, streamed to
+/// shared storage so arbitrarily large images don't buffer in memory.
+pub async fn upload(
+    State(store): State<Store>,
+    _: RequireImageCreate,
+    axum::extract::Query(p): axum::extract::Query<UploadParams>,
+    body: axum::body::Body,
+) -> ApiResult<(StatusCode, Json<Image>)> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    if p.name.trim().is_empty() {
+        return Err(ApiError::invalid("name is required"));
+    }
+    if !matches!(p.format.as_str(), "raw" | "qcow2") {
+        return Err(ApiError::invalid("format must be 'raw' or 'qcow2'"));
+    }
+    let id = Uuid::new_v4();
+    let ext = if p.format == "raw" { "raw" } else { "qcow2" };
+    let path = images_dir(&store).join(format!("img-{id}.{ext}"));
+    tokio::fs::create_dir_all(images_dir(&store))
+        .await
+        .map_err(|e| ApiError::internal(format!("images dir: {e}")))?;
+    let boot = BootSpec::Firmware {
+        firmware: p.firmware.clone().into(),
+    };
+    // Record it importing; flip to ready/failed once the stream lands.
+    let _image = store
+        .insert_image_importing(
+            id,
+            p.name.trim(),
+            &path.to_string_lossy(),
+            &p.format,
+            &boot,
+            p.default_size_bytes,
+            p.cloud_init,
+            p.os.as_deref(),
+        )
+        .await?;
+
+    // Stream the request body straight to the file.
+    let write: Result<(), String> = async {
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut stream = body.into_data_stream();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| e.to_string())?;
+            file.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        }
+        file.flush().await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    .await;
+
+    match write {
+        Ok(()) => {
+            let size = virtual_size(&path).await;
+            store.set_image_status(id, "ready", size, None).await?;
+            let img = store.get_image(id).await?.unwrap();
+            Ok((StatusCode::CREATED, Json(img)))
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            let _ = store.set_image_status(id, "failed", None, Some(&e)).await;
+            Err(ApiError::internal(format!("upload failed: {e}")))
+        }
+    }
+}
+
 /// Download `url` to `path`, then mark the image ready/failed (design M14b).
 async fn download_image(store: Store, id: Uuid, url: String, path: std::path::PathBuf) {
     let p = path.to_string_lossy().into_owned();

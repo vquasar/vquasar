@@ -104,6 +104,10 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         .route("/images", get(images::list).post(images::create))
         .route("/images/import", post(images::import))
         .route(
+            "/images/upload",
+            post(images::upload).route_layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
             "/images/:id",
             get(images::get)
                 .patch(images::update)

@@ -155,6 +155,11 @@ Split into three shippable slices.
   cloud_init}` boots a VM using the volume as its root disk with the source
   image's boot recipe; the volume stays attached (serial 0) and survives VM
   deletion. UI: "clone from image" in volume create + a "Boot VM" action.
+- **M14e — direct image upload.** ✅ **Done.** `POST /images/upload?name=…&format=…&firmware=…`
+  streams the raw disk file in the request body straight to shared storage (no
+  in-memory buffering; body limit disabled on the route), then registers it
+  ready+managed with the detected size. UI: an "Upload" dialog with a file
+  picker on the Images page. Completes the upload/download/register lifecycle.
 - Additional storage backends and per-VM storage policy.
 
 ### Compute & lifecycle

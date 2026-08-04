@@ -16,6 +16,7 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
+import UploadIcon from "@mui/icons-material/Upload";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import {
   useCreateImage,
@@ -23,6 +24,7 @@ import {
   useImages,
   useImportImage,
   useUpdateImage,
+  useUploadImage,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { formatBytes, formatDate } from "../format";
@@ -196,6 +198,61 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+function UploadDialog({ onClose }: { onClose: () => void }) {
+  const up = useUploadImage();
+  const [name, setName] = useState("");
+  const [format, setFormat] = useState<"raw" | "qcow2">("qcow2");
+  const [os, setOs] = useState("");
+  const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
+  const [file, setFile] = useState<File | null>(null);
+
+  const submit = () => {
+    if (!file) return;
+    up.mutate(
+      { params: { name, format, os, firmware, cloud_init: "true" }, file },
+      { onSuccess: onClose },
+    );
+  };
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Upload image</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <Button variant="outlined" component="label">
+            {file ? file.name : "Choose disk file…"}
+            <input
+              type="file"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setFile(f);
+                if (f && !name) setName(f.name.replace(/\.(qcow2|img|raw)$/i, ""));
+              }}
+            />
+          </Button>
+          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Stack direction="row" spacing={2}>
+            <TextField select label="Format" value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")} sx={{ minWidth: 120 }}>
+              <MenuItem value="qcow2">qcow2</MenuItem>
+              <MenuItem value="raw">raw</MenuItem>
+            </TextField>
+            <TextField label="OS label" value={os} onChange={(e) => setOs(e.target.value)} fullWidth />
+          </Stack>
+          <TextField label="Firmware (UEFI) path" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+          {up.isPending && <Alert severity="info">Uploading… keep this dialog open.</Alert>}
+          {up.error && <Alert severity="error">{(up.error as Error).message}</Alert>}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" onClick={submit} disabled={!name || !file || up.isPending}>
+          Upload
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function StatusChip({ image }: { image: Image }) {
   const color = image.status === "ready" ? "success" : image.status === "failed" ? "error" : "warning";
   return <Chip size="small" color={color} label={image.status} title={image.error ?? undefined} />;
@@ -207,6 +264,7 @@ export function Images() {
   const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Image | null } | null>(null);
   const [importing, setImporting] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   const columns: GridColDef<Image>[] = [
     { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
@@ -250,6 +308,9 @@ export function Images() {
         <Typography variant="h5">Images</Typography>
         {can("image:create") && (
           <Stack direction="row" spacing={1}>
+            <Button startIcon={<UploadIcon />} onClick={() => setUploading(true)}>
+              Upload
+            </Button>
             <Button startIcon={<CloudDownloadIcon />} onClick={() => setImporting(true)}>
               Import from URL
             </Button>
@@ -272,6 +333,7 @@ export function Images() {
       </div>
       {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
       {importing && <ImportDialog onClose={() => setImporting(false)} />}
+      {uploading && <UploadDialog onClose={() => setUploading(false)} />}
     </Stack>
   );
 }

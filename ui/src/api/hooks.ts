@@ -2,7 +2,7 @@
 // exists (design section 33: "Initial implementation may poll").
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, uploadImage } from "./client";
 import type {
   Accepted,
   CreateImageRequest,
@@ -139,6 +139,15 @@ export function useImportImage() {
   return useMutation({
     mutationFn: (body: import("./types").ImportImageRequest) =>
       api.post<Image>("/images/import", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
+  });
+}
+
+export function useUploadImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ params, file }: { params: Record<string, string>; file: File }) =>
+      uploadImage(params, file),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["images"] }),
   });
 }

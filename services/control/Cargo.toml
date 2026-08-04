@@ -17,7 +17,7 @@ ch-common.workspace = true
 ch-model.workspace = true
 ch-proto.workspace = true
 
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync", "fs", "io-util"] }
 tokio-stream = "0.1"
 axum = { workspace = true, features = ["ws"] }
 axum-server.workspace = true
