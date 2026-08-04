@@ -3,6 +3,17 @@
 
 const BASE = "/api/v1";
 
+// The auth layer registers a token getter here so every request carries the
+// bearer token without threading it through each call site. Null in dev mode
+// (auth disabled) or before login. See src/auth/AuthProvider.tsx.
+let tokenGetter: () => string | null = () => null;
+export function setTokenGetter(getter: () => string | null) {
+  tokenGetter = getter;
+}
+export function authToken(): string | null {
+  return tokenGetter();
+}
+
 export interface ApiErrorBody {
   error: { code: string; message: string; request_id: string };
 }
@@ -19,10 +30,15 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "content-type": "application/json" },
-    ...init,
-  });
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const token = tokenGetter();
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!res.ok) {
     let code = `HTTP_${res.status}`;
     let message = res.statusText;
@@ -49,6 +65,8 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),

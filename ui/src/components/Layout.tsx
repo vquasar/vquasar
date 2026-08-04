@@ -1,12 +1,15 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router-dom";
 import AppBar from "@mui/material/AppBar";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Drawer from "@mui/material/Drawer";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
 import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
 import DashboardIcon from "@mui/icons-material/Dashboard";
@@ -17,6 +20,10 @@ import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import AlbumIcon from "@mui/icons-material/Album";
 import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
+import SecurityIcon from "@mui/icons-material/Security";
+import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import { useAuth } from "../auth/AuthProvider";
+import { usePermissions } from "../auth/permissions";
 
 const DRAWER_WIDTH = 220;
 
@@ -31,8 +38,51 @@ const NAV = [
   { to: "/events", label: "Events", icon: <NotificationsIcon /> },
 ];
 
+function UserMenu() {
+  const { enabled, profile, logout } = useAuth();
+  const [anchor, setAnchor] = useState<null | HTMLElement>(null);
+  if (!enabled) {
+    return (
+      <Typography variant="caption" color="text.secondary">
+        auth disabled (dev)
+      </Typography>
+    );
+  }
+  const name =
+    (profile?.preferred_username as string) ||
+    (profile?.name as string) ||
+    (profile?.email as string) ||
+    "account";
+  return (
+    <>
+      <Button
+        color="inherit"
+        size="small"
+        startIcon={<AccountCircleIcon />}
+        onClick={(e) => setAnchor(e.currentTarget)}
+      >
+        {name}
+      </Button>
+      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+        <MenuItem
+          onClick={() => {
+            setAnchor(null);
+            logout();
+          }}
+        >
+          Sign out
+        </MenuItem>
+      </Menu>
+    </>
+  );
+}
+
 export function Layout({ children }: { children: ReactNode }) {
   const location = useLocation();
+  const { can } = usePermissions();
+  const nav = can("iam:read")
+    ? [...NAV, { to: "/iam", label: "Access control", icon: <SecurityIcon /> }]
+    : NAV;
   const isActive = (to: string) =>
     to === "/" ? location.pathname === "/" : location.pathname.startsWith(to);
 
@@ -45,9 +95,7 @@ export function Layout({ children }: { children: ReactNode }) {
             ch-orchestrator
           </Typography>
           <Box sx={{ flexGrow: 1 }} />
-          <Typography variant="caption" color="text.secondary">
-            Cloud Hypervisor control plane
-          </Typography>
+          <UserMenu />
         </Toolbar>
       </AppBar>
       <Drawer
@@ -60,7 +108,7 @@ export function Layout({ children }: { children: ReactNode }) {
       >
         <Toolbar variant="dense" />
         <List>
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <ListItemButton
               key={item.to}
               component={RouterLink}

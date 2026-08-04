@@ -25,6 +25,7 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import EditIcon from "@mui/icons-material/Edit";
 import { useHosts, useMigrateVm, useNetworks, useUpdateVm, useVm, useVmAction } from "../api/hooks";
+import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatBytes, formatDate, formatMib, shortId } from "../format";
 import type { UpdateVmRequest, Vm } from "../api/types";
@@ -178,6 +179,7 @@ export function VmDetail() {
   const action = useVmAction();
   const hosts = useHosts();
   const migrate = useMigrateVm();
+  const { can } = usePermissions();
   const [migrateOpen, setMigrateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [target, setTarget] = useState("");
@@ -200,45 +202,57 @@ export function VmDetail() {
           <StatusChip value={v.phase} />
         </Stack>
         <Stack direction="row" spacing={1}>
-          <Button
-            component={RouterLink}
-            to={`/vms/${id}/console`}
-            startIcon={<TerminalIcon />}
-            variant="outlined"
-          >
-            Console
-          </Button>
-          <Button
-            startIcon={<PlayArrowIcon />}
-            onClick={() => id && action.mutate({ id, action: "start" })}
-            disabled={v.phase === "Running"}
-          >
-            Start
-          </Button>
-          <Button
-            startIcon={<StopIcon />}
-            onClick={() => id && action.mutate({ id, action: "stop" })}
-            disabled={v.phase === "Stopped"}
-          >
-            Stop
-          </Button>
-          <Button startIcon={<EditIcon />} onClick={() => setEditOpen(true)}>
-            Edit
-          </Button>
-          <Button
-            startIcon={<SwapHorizIcon />}
-            onClick={() => setMigrateOpen(true)}
-            disabled={v.phase !== "Running"}
-          >
-            Migrate
-          </Button>
-          <Button
-            color="error"
-            startIcon={<DeleteIcon />}
-            onClick={() => id && action.mutate({ id, action: "delete" }, { onSuccess: () => navigate("/vms") })}
-          >
-            Delete
-          </Button>
+          {can("vm:console") && (
+            <Button
+              component={RouterLink}
+              to={`/vms/${id}/console`}
+              startIcon={<TerminalIcon />}
+              variant="outlined"
+            >
+              Console
+            </Button>
+          )}
+          {can("vm:power") && (
+            <>
+              <Button
+                startIcon={<PlayArrowIcon />}
+                onClick={() => id && action.mutate({ id, action: "start" })}
+                disabled={v.phase === "Running"}
+              >
+                Start
+              </Button>
+              <Button
+                startIcon={<StopIcon />}
+                onClick={() => id && action.mutate({ id, action: "stop" })}
+                disabled={v.phase === "Stopped"}
+              >
+                Stop
+              </Button>
+            </>
+          )}
+          {can("vm:update") && (
+            <Button startIcon={<EditIcon />} onClick={() => setEditOpen(true)}>
+              Edit
+            </Button>
+          )}
+          {can("vm:migrate") && (
+            <Button
+              startIcon={<SwapHorizIcon />}
+              onClick={() => setMigrateOpen(true)}
+              disabled={v.phase !== "Running"}
+            >
+              Migrate
+            </Button>
+          )}
+          {can("vm:delete") && (
+            <Button
+              color="error"
+              startIcon={<DeleteIcon />}
+              onClick={() => id && action.mutate({ id, action: "delete" }, { onSuccess: () => navigate("/vms") })}
+            >
+              Delete
+            </Button>
+          )}
         </Stack>
       </Stack>
 

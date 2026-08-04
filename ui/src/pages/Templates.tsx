@@ -26,6 +26,7 @@ import {
 } from "../api/hooks";
 import { formatBytes, formatDate, formatMib } from "../format";
 import type { CreateTemplateRequest, Template } from "../api/types";
+import { usePermissions } from "../auth/permissions";
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -178,6 +179,7 @@ export function Templates() {
   const templates = useTemplates();
   const images = useImages();
   const del = useDeleteTemplate();
+  const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Template | null } | null>(null);
   const [launch, setLaunch] = useState<Template | null>(null);
 
@@ -218,9 +220,11 @@ export function Templates() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Templates</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
-          Create template
-        </Button>
+        {can("template:create") && (
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
+            Create template
+          </Button>
+        )}
       </Stack>
       {templates.isError && <Alert severity="error">{(templates.error as Error).message}</Alert>}
       {del.isError && <Alert severity="error">{(del.error as Error).message}</Alert>}

@@ -10,6 +10,7 @@ import StopIcon from "@mui/icons-material/Stop";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import { useHosts, useVmAction, useVms } from "../api/hooks";
+import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatDate, formatMib, shortId } from "../format";
 import type { Vm } from "../api/types";
@@ -19,6 +20,7 @@ export function Vms() {
   const hosts = useHosts();
   const action = useVmAction();
   const navigate = useNavigate();
+  const { can } = usePermissions();
 
   const hostName = useMemo(() => {
     const m = new Map<string, string>();
@@ -79,29 +81,39 @@ export function Vms() {
       type: "actions",
       headerName: "Actions",
       width: 130,
-      getActions: (params) => [
-        <GridActionsCellItem
-          key="start"
-          icon={<PlayArrowIcon />}
-          label="Start"
-          onClick={() => action.mutate({ id: params.row.id, action: "start" })}
-          disabled={params.row.phase === "Running"}
-        />,
-        <GridActionsCellItem
-          key="stop"
-          icon={<StopIcon />}
-          label="Stop"
-          onClick={() => action.mutate({ id: params.row.id, action: "stop" })}
-          disabled={params.row.phase === "Stopped"}
-        />,
-        <GridActionsCellItem
-          key="delete"
-          icon={<DeleteIcon />}
-          label="Delete"
-          onClick={() => action.mutate({ id: params.row.id, action: "delete" })}
-          showInMenu
-        />,
-      ],
+      getActions: (params) => {
+        const items = [];
+        if (can("vm:power")) {
+          items.push(
+            <GridActionsCellItem
+              key="start"
+              icon={<PlayArrowIcon />}
+              label="Start"
+              onClick={() => action.mutate({ id: params.row.id, action: "start" })}
+              disabled={params.row.phase === "Running"}
+            />,
+            <GridActionsCellItem
+              key="stop"
+              icon={<StopIcon />}
+              label="Stop"
+              onClick={() => action.mutate({ id: params.row.id, action: "stop" })}
+              disabled={params.row.phase === "Stopped"}
+            />,
+          );
+        }
+        if (can("vm:delete")) {
+          items.push(
+            <GridActionsCellItem
+              key="delete"
+              icon={<DeleteIcon />}
+              label="Delete"
+              onClick={() => action.mutate({ id: params.row.id, action: "delete" })}
+              showInMenu
+            />,
+          );
+        }
+        return items;
+      },
     },
   ];
 
@@ -109,9 +121,11 @@ export function Vms() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Virtual Machines</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => navigate("/vms/new")}>
-          Create VM
-        </Button>
+        {can("vm:create") && (
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => navigate("/vms/new")}>
+            Create VM
+          </Button>
+        )}
       </Stack>
       {vms.isError && <Alert severity="error">{(vms.error as Error).message}</Alert>}
       {action.isError && <Alert severity="error">{(action.error as Error).message}</Alert>}

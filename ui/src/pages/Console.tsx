@@ -9,6 +9,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useVm } from "../api/hooks";
+import { authToken } from "../api/client";
 
 // Interactive serial console (design section 25): browser <-WS-> control
 // <-gRPC-> agent <-> VM serial.
@@ -33,7 +34,11 @@ export function Console() {
     fit.fit();
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/api/v1/vms/${id}/console`);
+    // Browsers can't set headers on a WebSocket handshake, so the bearer token
+    // rides as a query param; the control plane authorizes it (vm:console).
+    const token = authToken();
+    const qs = token ? `?access_token=${encodeURIComponent(token)}` : "";
+    const ws = new WebSocket(`${proto}//${location.host}/api/v1/vms/${id}/console${qs}`);
     ws.binaryType = "arraybuffer";
 
     const encoder = new TextEncoder();

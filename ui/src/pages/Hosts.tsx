@@ -11,6 +11,7 @@ import Alert from "@mui/material/Alert";
 import AddIcon from "@mui/icons-material/Add";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useHosts, useRegisterHost } from "../api/hooks";
+import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatBytes } from "../format";
 import type { Host } from "../api/types";
@@ -93,14 +94,17 @@ function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void 
 export function Hosts() {
   const hosts = useHosts();
   const [dialog, setDialog] = useState(false);
+  const { can } = usePermissions();
 
   return (
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Hosts</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
-          Register host
-        </Button>
+        {can("host:manage") && (
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
+            Register host
+          </Button>
+        )}
       </Stack>
       {hosts.isError && <Alert severity="error">{(hosts.error as Error).message}</Alert>}
       <div style={{ height: 520, width: "100%" }}>

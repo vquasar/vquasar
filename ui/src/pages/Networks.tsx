@@ -13,6 +13,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import { useCreateNetwork, useDeleteNetwork, useNetworks, useUpdateNetwork } from "../api/hooks";
+import { usePermissions } from "../auth/permissions";
 import { formatDate } from "../format";
 import type { Network } from "../api/types";
 
@@ -58,6 +59,7 @@ function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => vo
 export function Networks() {
   const networks = useNetworks();
   const del = useDeleteNetwork();
+  const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Network | null } | null>(null);
 
   const columns: GridColDef<Network>[] = [
@@ -95,9 +97,11 @@ export function Networks() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Networks</Typography>
+        {can("network:create") && (
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
           Create network
         </Button>
+        )}
       </Stack>
       {networks.isError && <Alert severity="error">{(networks.error as Error).message}</Alert>}
       <div style={{ height: 480, width: "100%" }}>

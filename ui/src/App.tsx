@@ -11,8 +11,30 @@ import { Images } from "./pages/Images";
 import { Templates } from "./pages/Templates";
 import { Tasks } from "./pages/Tasks";
 import { Events } from "./pages/Events";
+import { Iam } from "./pages/Iam";
+import { useAuth } from "./auth/AuthProvider";
+import { Login } from "./pages/Login";
+import Box from "@mui/material/Box";
+import CircularProgress from "@mui/material/CircularProgress";
 
 export function App() {
+  const { loading, authenticated } = useAuth();
+
+  if (loading) {
+    return (
+      <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+  if (!authenticated) {
+    return <Login />;
+  }
+
+  return <AuthedApp />;
+}
+
+function AuthedApp() {
   return (
     <Layout>
       <Routes>
@@ -27,6 +49,7 @@ export function App() {
         <Route path="/templates" element={<Templates />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/events" element={<Events />} />
+        <Route path="/iam" element={<Iam />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

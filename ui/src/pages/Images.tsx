@@ -16,6 +16,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import { useCreateImage, useDeleteImage, useImages, useUpdateImage } from "../api/hooks";
+import { usePermissions } from "../auth/permissions";
 import { formatBytes, formatDate } from "../format";
 import type { BootSpec, CreateImageRequest, Image } from "../api/types";
 
@@ -125,6 +126,7 @@ function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void
 export function Images() {
   const images = useImages();
   const del = useDeleteImage();
+  const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Image | null } | null>(null);
 
   const columns: GridColDef<Image>[] = [
@@ -161,9 +163,11 @@ export function Images() {
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Images</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
-          Register image
-        </Button>
+        {can("image:create") && (
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
+            Register image
+          </Button>
+        )}
       </Stack>
       {images.isError && <Alert severity="error">{(images.error as Error).message}</Alert>}
       {del.isError && <Alert severity="error">{(del.error as Error).message}</Alert>}

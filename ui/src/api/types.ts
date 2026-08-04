@@ -223,3 +223,57 @@ export interface UpdateVmRequest {
   add_disk?: { size_bytes: number; image_type?: "raw" | "qcow2" };
   add_nic?: { network_id: string };
 }
+
+// --- IAM (design M12b) ---
+
+export interface AuthConfigView {
+  enabled: boolean;
+  issuer: string;
+  client_id: string;
+}
+
+export interface Me {
+  authenticated: boolean;
+  username?: string | null;
+  email?: string | null;
+  permissions: string[];
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  description?: string | null;
+  builtin: boolean;
+}
+
+export interface RoleView extends Role {
+  permissions: string[];
+}
+
+export interface User {
+  id: string;
+  subject: string;
+  username: string;
+  email?: string | null;
+  display_name?: string | null;
+}
+
+export interface UserView extends User {
+  roles: Role[];
+}
+
+export interface GroupRoleView {
+  group: string;
+  role: string;
+}
+
+export interface CreateRoleRequest {
+  name: string;
+  description?: string | null;
+  permissions: string[];
+}
+
+export interface UpdateRoleRequest {
+  description?: string | null;
+  permissions: string[];
+}
