@@ -63,7 +63,18 @@ pub struct Authenticator {
 impl Authenticator {
     /// Discover the provider's JWKS endpoint and prime the key cache.
     pub async fn discover(cfg: AuthConfig) -> Result<Self, AuthError> {
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        // Trust an internal CA in addition to the system roots when the IdP is
+        // behind one (e.g. Keycloak issued by our own CA).
+        if let Some(ca_path) = &cfg.ca {
+            let pem = std::fs::read(ca_path).map_err(|e| {
+                AuthError::Provider(format!("reading auth CA {ca_path}: {e}"))
+            })?;
+            let cert = reqwest::Certificate::from_pem(&pem)
+                .map_err(|e| AuthError::Provider(format!("parsing auth CA: {e}")))?;
+            builder = builder.add_root_certificate(cert);
+        }
+        let http = builder
             .build()
             .map_err(|e| AuthError::Provider(e.to_string()))?;
         let url = format!(

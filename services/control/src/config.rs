@@ -43,6 +43,11 @@ pub struct AuthConfig {
     /// Identity (email or OIDC subject) granted `admin` on first login.
     #[serde(default)]
     pub bootstrap_admin: Option<String>,
+    /// Extra CA (PEM) to trust when reaching the OIDC provider — for an IdP
+    /// behind an internal CA (e.g. Keycloak on our own CA). Added on top of the
+    /// system roots; omit for a publicly-trusted provider.
+    #[serde(default)]
+    pub ca: Option<String>,
     /// Explicitly disable auth (dev only). Production installs must not set this.
     #[serde(default)]
     pub disabled: bool,
@@ -60,6 +65,7 @@ impl Default for AuthConfig {
             audience: String::new(),
             groups_claim: default_groups_claim(),
             bootstrap_admin: None,
+            ca: None,
             disabled: false,
         }
     }

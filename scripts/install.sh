@@ -33,6 +33,7 @@
 #   --oidc-issuer URL    OIDC issuer (enables auth; design M12b)
 #   --oidc-client-id ID  OIDC client id (for the UI login)
 #   --oidc-audience AUD  Expected token audience
+#   --oidc-ca PATH       Extra CA to trust for the IdP (internal-CA Keycloak)
 #   --bootstrap-admin ID Email/subject granted admin on first login
 #   --allow-no-auth      Dev/lab only: install control without authentication
 set -euo pipefail
@@ -51,7 +52,7 @@ NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
-OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
+OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; OIDC_CA=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --oidc-issuer) OIDC_ISSUER="$2"; shift 2 ;;
     --oidc-client-id) OIDC_CLIENT_ID="$2"; shift 2 ;;
     --oidc-audience) OIDC_AUDIENCE="$2"; shift 2 ;;
+    --oidc-ca) OIDC_CA="$2"; shift 2 ;;
     --bootstrap-admin) BOOTSTRAP_ADMIN="$2"; shift 2 ;;
     --allow-no-auth) ALLOW_NO_AUTH=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -121,6 +123,7 @@ auth_env() {
   [[ -n "$OIDC_ISSUER" ]] && echo "CH_CONTROL_AUTH__ISSUER=$OIDC_ISSUER"
   [[ -n "$OIDC_CLIENT_ID" ]] && echo "CH_CONTROL_AUTH__CLIENT_ID=$OIDC_CLIENT_ID"
   [[ -n "$OIDC_AUDIENCE" ]] && echo "CH_CONTROL_AUTH__AUDIENCE=$OIDC_AUDIENCE"
+  [[ -n "$OIDC_CA" ]] && echo "CH_CONTROL_AUTH__CA=$OIDC_CA"
   [[ -n "$BOOTSTRAP_ADMIN" ]] && echo "CH_CONTROL_AUTH__BOOTSTRAP_ADMIN=$BOOTSTRAP_ADMIN"
 }
 
