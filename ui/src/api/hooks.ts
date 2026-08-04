@@ -314,3 +314,54 @@ export function useChangeNic() {
     onSuccess: invalidate,
   });
 }
+
+// --- Volumes (M14a) ---
+import type { Volume } from "./types";
+
+export function useVolumes() {
+  return useQuery({
+    queryKey: ["volumes"],
+    queryFn: () => api.get<Volume[]>("/volumes"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useCreateVolume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; size_bytes: number; format: string }) =>
+      api.post<Volume>("/volumes", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["volumes"] }),
+  });
+}
+
+export function useDeleteVolume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/volumes/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["volumes"] }),
+  });
+}
+
+export function useAttachVolume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, vmId }: { id: string; vmId: string }) =>
+      api.post<Volume>(`/volumes/${id}/attach`, { vm_id: vmId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["volumes"] });
+      qc.invalidateQueries({ queryKey: ["vms"] });
+    },
+  });
+}
+
+export function useDetachVolume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Volume>(`/volumes/${id}/detach`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["volumes"] });
+      qc.invalidateQueries({ queryKey: ["vms"] });
+    },
+  });
+}

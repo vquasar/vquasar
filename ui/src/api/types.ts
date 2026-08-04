@@ -347,3 +347,16 @@ export interface UpdateRoleRequest {
   description?: string | null;
   permissions: string[];
 }
+
+// Volumes (M14a)
+export interface Volume {
+  id: string;
+  name: string;
+  size_bytes: number;
+  format: string;
+  attached_vm_id: string | null;
+  attached_serial: number | null;
+  path: string;
+  created_at: string;
+  updated_at: string;
+}

@@ -90,6 +90,8 @@ perm_guard!(RequireTemplateCreate => "template:create");
 perm_guard!(RequireTemplateUpdate => "template:update");
 perm_guard!(RequireHostManage => "host:manage");
 perm_guard!(RequireIamManage => "iam:manage");
+perm_guard!(RequireVolumeCreate => "volume:create");
+perm_guard!(RequireVolumeUpdate => "volume:update");
 
 fn bearer(parts: &Parts) -> Option<String> {
     let h = parts.headers.get(axum::http::header::AUTHORIZATION)?;

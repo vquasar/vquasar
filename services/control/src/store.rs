@@ -115,6 +115,19 @@ pub struct IpAllocation {
     pub created_at: DateTime<Utc>,
 }
 
+/// A first-class volume (design M14a).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Volume {
+    pub id: Uuid,
+    pub name: String,
+    pub size_bytes: i64,
+    pub format: String,
+    pub attached_vm_id: Option<Uuid>,
+    pub attached_serial: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// A security group (design M13c).
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct SecurityGroup {
@@ -675,6 +688,11 @@ impl Store {
     pub async fn delete_vm_row(&self, id: Uuid) -> Result<()> {
         // Free any IP allocations this VM held (design M13a) before removing it.
         self.release_vm_allocations(id).await?;
+        // Detach (but keep) any first-class volumes — they outlive the VM (M14a).
+        sqlx::query("UPDATE volumes SET attached_vm_id=NULL, attached_serial=NULL WHERE attached_vm_id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         sqlx::query("DELETE FROM virtual_machines WHERE id=$1")
             .bind(id)
             .execute(&self.pool)
@@ -1001,6 +1019,70 @@ impl Store {
         .await?;
         Ok(res.rows_affected() > 0)
     }
+
+    // ---- volumes (design M14a) -------------------------------------------
+
+    pub async fn list_volumes(&self) -> Result<Vec<Volume>> {
+        sqlx::query_as::<_, Volume>("SELECT * FROM volumes ORDER BY created_at")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_volume(&self, id: Uuid) -> Result<Option<Volume>> {
+        sqlx::query_as::<_, Volume>("SELECT * FROM volumes WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn create_volume(
+        &self,
+        id: Uuid,
+        name: &str,
+        size_bytes: i64,
+        format: &str,
+    ) -> Result<Volume> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Volume>(
+            "INSERT INTO volumes (id, name, size_bytes, format, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$5) RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(size_bytes)
+        .bind(format)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn delete_volume(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM volumes WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Record a volume as attached to a VM at a disk serial (design M14a).
+    pub async fn set_volume_attachment(
+        &self,
+        id: Uuid,
+        vm_id: Option<Uuid>,
+        serial: Option<i32>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE volumes SET attached_vm_id=$2, attached_serial=$3, updated_at=$4 WHERE id=$1",
+        )
+        .bind(id)
+        .bind(vm_id)
+        .bind(serial)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
 
     // ---- images (design M9) ---------------------------------------------
 

@@ -20,6 +20,7 @@ import ShieldIcon from "@mui/icons-material/Shield";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import AlbumIcon from "@mui/icons-material/Album";
+import StorageIcon from "@mui/icons-material/Storage";
 import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
 import SecurityIcon from "@mui/icons-material/Security";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
@@ -33,6 +34,7 @@ const NAV = [
   { to: "/hosts", label: "Hosts", icon: <DnsIcon /> },
   { to: "/vms", label: "Virtual Machines", icon: <ComputerIcon /> },
   { to: "/images", label: "Images", icon: <AlbumIcon /> },
+  { to: "/volumes", label: "Volumes", icon: <StorageIcon /> },
   { to: "/templates", label: "Templates", icon: <ViewQuiltIcon /> },
   { to: "/networks", label: "Networks", icon: <LanIcon /> },
   { to: "/security-groups", label: "Security Groups", icon: <ShieldIcon /> },

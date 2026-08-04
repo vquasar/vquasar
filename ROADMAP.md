@@ -122,8 +122,15 @@ Split into three shippable slices.
   generated user-data only (raw user-data is left untouched).
 
 ### Storage
-- First-class **Volumes API**: create/attach/detach/delete/list independent of a
-  VM.
+- **M14a — first-class Volumes API.** ✅ **Done.** Block devices managed
+  independently of any VM: create/list/get/delete + attach/detach. The control
+  plane eagerly provisions the backing image on shared storage (`qemu-img`, run
+  on dome — the NFS server) as a blank raw/qcow2 disk; attach appends a
+  `DiskSpec` to the target VM's spec (hot-adds live via M10, or on next start),
+  detach removes it. Volumes are **first-class**: deleting a VM detaches (keeps)
+  its volumes; deleting an attached volume is rejected. New `volume:*`
+  permissions. Caveats/follow-ups: detach needs the VM stopped (CH has no disk
+  hot-unplug yet); image-backed / bootable volumes; boot-from-volume.
 - **Image lifecycle**: upload / download / build workflow (images are currently
   pre-placed files registered by path).
 - Snapshots and backups.

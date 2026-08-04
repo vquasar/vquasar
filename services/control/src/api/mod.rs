@@ -12,6 +12,7 @@ mod security_groups;
 mod tasks;
 mod templates;
 mod vms;
+mod volumes;
 
 use axum::routing::{get, post};
 use axum::{Extension, Router};
@@ -83,6 +84,10 @@ pub fn router(store: Store, auth: AuthState) -> Router {
             "/security-groups/:id/rules/:rule_id",
             axum::routing::delete(security_groups::delete_rule),
         )
+        .route("/volumes", get(volumes::list).post(volumes::create))
+        .route("/volumes/:id", get(volumes::get).delete(volumes::delete))
+        .route("/volumes/:id/attach", post(volumes::attach))
+        .route("/volumes/:id/detach", post(volumes::detach))
         .route("/images", get(images::list).post(images::create))
         .route(
             "/images/:id",
