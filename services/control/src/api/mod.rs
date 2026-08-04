@@ -54,6 +54,8 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         .route("/vms/:id/stop", post(vms::stop))
         .route("/vms/:id/migrate", post(vms::migrate))
         .route("/vms/:id/nics/:index", axum::routing::put(vms::change_nic))
+        // Public: cloud-init phone_home IP-discovery fallback (design M13e).
+        .route("/phone-home/:vm_id", post(vms::phone_home))
         .route("/vms/:id/console", get(crate::console::console_ws))
         .route("/networks", get(networks::list).post(networks::create))
         .route(

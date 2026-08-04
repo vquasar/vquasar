@@ -112,8 +112,14 @@ Split into three shippable slices.
   allocation to the new network. Caveat: the guest keeps its MAC/IP, so on a
   different subnet it must renew DHCP or be reconfigured at L3 (a link-bounce
   hot-replug to force guest re-init is a follow-up).
-- Cloud-init `phone_home` as a fallback for guest-IP discovery when a guest
-  filters ICMP or sits off the flat L2 (see the corresponding memory note).
+- **M13e — cloud-init `phone_home` IP-discovery fallback.** ✅ **Done.** For
+  guests the agentless ARP/neighbour sweep can't see (ICMP-filtered), generated
+  cloud-init tells the guest to POST to a public control endpoint on first boot;
+  the request's source IP is recorded as the VM's observed address. The agent
+  injects the internal CA (cloud-init `ca_certs`) so an HTTPS control endpoint is
+  trusted. Config-gated on the agent (control URL at install). Only works where
+  the guest can route to control (the management/flat network); added to
+  generated user-data only (raw user-data is left untouched).
 
 ### Storage
 - First-class **Volumes API**: create/attach/detach/delete/list independent of a

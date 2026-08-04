@@ -24,7 +24,21 @@ pub struct AgentConfig {
     #[serde(default)]
     pub tls: TlsSection,
     #[serde(default)]
+    pub phone_home: PhoneHomeSection,
+    #[serde(default)]
     pub logging: LoggingSection,
+}
+
+/// cloud-init phone_home IP-discovery fallback (design M13e). When `url` (the
+/// control plane's base URL) is set, generated cloud-init tells the guest to
+/// POST to `<url>/api/v1/phone-home/$INSTANCE_ID` on first boot; the control
+/// plane records the request's source IP. If the agent has a TLS CA configured,
+/// it is injected into the guest (cloud-init `ca_certs`) so an HTTPS control
+/// endpoint with an internal CA is trusted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PhoneHomeSection {
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// Mutual-TLS material for the agent's gRPC server (design M12a). When all three

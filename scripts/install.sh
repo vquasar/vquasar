@@ -25,6 +25,8 @@
 #   --ch-binary PATH     cloud-hypervisor path     (default: /var/lib/ch-orchestrator/bin/cloud-hypervisor)
 #   --grpc-listen ADDR   gRPC listen               (default: 0.0.0.0:9500)
 #   --seccomp MODE       CH seccomp                (default: log)
+#   --phone-home-url URL Control base URL for cloud-init phone_home IP discovery
+#                        (design M13e), e.g. https://172.16.56.8:8080
 #
 # control options:
 #   --db-url URL         Postgres URL              (default: postgres://ch:ch@127.0.0.1:5432/ch_orchestrator)
@@ -53,7 +55,7 @@ ROLE="${1:-}"; shift || true
 
 BINARY=""; NO_START=0; FORCE_CONFIG=0
 NAME="$(hostname -s 2>/dev/null || hostname)"
-ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"
+ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
 OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; OIDC_CA=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --ch-binary) CH_BINARY="$2"; shift 2 ;;
     --grpc-listen) GRPC_LISTEN="$2"; shift 2 ;;
     --seccomp) SECCOMP="$2"; shift 2 ;;
+    --phone-home-url) PHONE_HOME_URL="$2"; shift 2 ;;
     --db-url) DB_URL="$2"; shift 2 ;;
     --listen) LISTEN="$2"; shift 2 ;;
     --ui-dir) UI_DIR="$2"; shift 2 ;;
@@ -172,6 +175,7 @@ CH_AGENT_HYPERVISOR__SECCOMP=$SECCOMP
 CH_AGENT_MIGRATION__TRANSPORT=tcp
 # Advertise an IP, not a hostname: the static CH binary has no working resolver.
 CH_AGENT_MIGRATION__ADVERTISE_HOST=$ADVERTISE_HOST
+${PHONE_HOME_URL:+CH_AGENT_PHONE_HOME__URL=$PHONE_HOME_URL}
 $(tls_env AGENT)
 EOF
 

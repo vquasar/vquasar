@@ -78,7 +78,18 @@ async fn main() -> anyhow::Result<()> {
         bridge = %config.network.bridge,
         "network dataplane configured"
     );
-    let storage = crate::storage::StorageProvisioner::new(config.storage.shared_dir.clone());
+    // cloud-init phone_home IP-discovery fallback (design M13e): inject our CA so
+    // the guest trusts an internal-CA HTTPS control endpoint.
+    let phone_home_ca = config
+        .tls
+        .ca
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let storage = crate::storage::StorageProvisioner::new(config.storage.shared_dir.clone())
+        .with_phone_home(config.phone_home.url.clone(), phone_home_ca);
+    if let Some(url) = &config.phone_home.url {
+        info!(%url, "cloud-init phone_home enabled");
+    }
     info!(shared_dir = %config.storage.shared_dir.display(), "storage provisioner configured");
     // Agentless guest-IP discovery via neighbor snooping on the bridge (M11).
     let ipdiscovery = crate::ipdiscovery::IpDiscovery::new(config.network.bridge.clone());

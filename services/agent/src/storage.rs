@@ -31,13 +31,28 @@ type Result<T> = std::result::Result<T, StorageError>;
 pub struct StorageProvisioner {
     /// Root of shared storage; cloud-init seeds live under `<shared_dir>/seeds`.
     shared_dir: PathBuf,
+    /// Control-plane base URL for cloud-init phone_home (design M13e); `None`
+    /// disables it.
+    phone_home_url: Option<String>,
+    /// PEM CA to trust in the guest (so an internal-CA HTTPS control endpoint is
+    /// reachable for phone_home).
+    trusted_ca: Option<String>,
 }
 
 impl StorageProvisioner {
     pub fn new(shared_dir: impl Into<PathBuf>) -> Self {
         Self {
             shared_dir: shared_dir.into(),
+            phone_home_url: None,
+            trusted_ca: None,
         }
+    }
+
+    /// Configure the cloud-init phone_home fallback (design M13e).
+    pub fn with_phone_home(mut self, url: Option<String>, trusted_ca: Option<String>) -> Self {
+        self.phone_home_url = url.filter(|u| !u.is_empty());
+        self.trusted_ca = trusted_ca;
+        self
     }
 
     /// Provision any disks that carry a base image, generate a cloud-init seed
@@ -174,7 +189,12 @@ impl StorageProvisioner {
             }
             let hostname = ci.hostname.clone().unwrap_or_else(|| name.to_string());
             let meta_data = format!("instance-id: {id}\nlocal-hostname: {hostname}\n");
-            let user_data = render_user_data(ci, &hostname);
+            let user_data = render_user_data(
+                ci,
+                &hostname,
+                self.phone_home_url.as_deref(),
+                self.trusted_ca.as_deref(),
+            );
 
             // Stage the files in a temp dir, then pack them into an ISO labelled
             // `cidata` (what cloud-init's NoCloud datasource looks for). A
@@ -211,8 +231,15 @@ impl StorageProvisioner {
     }
 }
 
-/// Render `#cloud-config` user-data from a [`CloudInitSpec`].
-fn render_user_data(ci: &CloudInitSpec, hostname: &str) -> String {
+/// Render `#cloud-config` user-data from a [`CloudInitSpec`]. `phone_home_url`
+/// and `trusted_ca` add the M13e IP-discovery fallback to *generated* user-data
+/// (operator-supplied raw user-data is returned verbatim).
+fn render_user_data(
+    ci: &CloudInitSpec,
+    hostname: &str,
+    phone_home_url: Option<&str>,
+    trusted_ca: Option<&str>,
+) -> String {
     if let Some(raw) = &ci.user_data {
         return raw.clone();
     }
@@ -236,6 +263,21 @@ fn render_user_data(ci: &CloudInitSpec, hostname: &str) -> String {
         "    content: |\n",
         "      SUBSYSTEM==\"cpu\", ACTION==\"add\", TEST==\"online\", ATTR{online}==\"0\", ATTR{online}=\"1\"\n",
     ));
+
+    if let Some(url) = phone_home_url {
+        // Trust our internal CA first (runs before phone_home) so an HTTPS
+        // control endpoint is reachable (design M13e).
+        if let Some(ca) = trusted_ca.filter(|c| !c.trim().is_empty()) {
+            s.push_str("ca_certs:\n  trusted:\n    - |\n");
+            for line in ca.trim().lines() {
+                s.push_str(&format!("      {line}\n"));
+            }
+        }
+        let base = url.trim_end_matches('/');
+        s.push_str(&format!(
+            "phone_home:\n  url: {base}/api/v1/phone-home/$INSTANCE_ID\n  post:\n    - instance_id\n    - hostname\n  tries: 10\n"
+        ));
+    }
     s
 }
 
@@ -305,11 +347,12 @@ mod tests {
             password: Some("pw".into()),
             user_data: None,
         };
-        let s = render_user_data(&ci, "h");
+        let s = render_user_data(&ci, "h", None, None);
         assert!(s.starts_with("#cloud-config"));
         assert!(s.contains("password: pw"));
         assert!(s.contains("ssh-ed25519 AAAA"));
         assert!(s.contains("ssh_pwauth: true"));
+        assert!(!s.contains("phone_home"));
     }
 
     #[test]
@@ -320,9 +363,27 @@ mod tests {
             password: None,
             user_data: Some("#cloud-config\nruncmd: [echo hi]\n".into()),
         };
+        // Raw user-data is returned verbatim even with phone_home configured.
         assert_eq!(
-            render_user_data(&ci, "h"),
+            render_user_data(&ci, "h", Some("https://c:8080"), Some("CA")),
             "#cloud-config\nruncmd: [echo hi]\n"
         );
+    }
+
+    #[test]
+    fn user_data_injects_phone_home_and_ca(  ) {
+        let ci = CloudInitSpec {
+            hostname: Some("h".into()),
+            ssh_authorized_keys: vec![],
+            password: None,
+            user_data: None,
+        };
+        let ca = "-----BEGIN CERTIFICATE-----\nABCD\n-----END CERTIFICATE-----";
+        let s = render_user_data(&ci, "h", Some("https://172.16.56.8:8080/"), Some(ca));
+        assert!(s.contains("phone_home:"));
+        // trailing slash trimmed, $INSTANCE_ID templated for cloud-init.
+        assert!(s.contains("url: https://172.16.56.8:8080/api/v1/phone-home/$INSTANCE_ID"));
+        assert!(s.contains("ca_certs:"));
+        assert!(s.contains("-----BEGIN CERTIFICATE-----"));
     }
 }

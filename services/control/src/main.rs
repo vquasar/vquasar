@@ -152,16 +152,20 @@ async fn main() -> anyhow::Result<()> {
             h.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
         });
         info!(api = %config.server.listen, "serving REST API at /api/v1 over HTTPS");
+        // Connect-info so the phone_home endpoint can read the guest's source IP.
         axum_server::bind_rustls(addr, tls)
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await?;
     } else {
         let listener = tokio::net::TcpListener::bind(&config.server.listen).await?;
         info!(api = %config.server.listen, "serving REST API at /api/v1 (plaintext — configure [tls])");
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     }
 
     info!("ch-control stopped");

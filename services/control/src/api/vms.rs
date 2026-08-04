@@ -114,6 +114,28 @@ async fn allocate_one_nic(
     Ok(())
 }
 
+/// cloud-init `phone_home` callback (design M13e): a guest POSTs here on first
+/// boot. The request's source address is the guest's IP (phone_home's payload
+/// carries no IP), so we record it as the VM's discovered address — a fallback
+/// for guests the agentless ARP/neighbour sweep can't see (e.g. ICMP-filtered).
+/// Public + unauthenticated: the guest cannot hold a token; it's identified by
+/// the vm id in the path, and this only ever records an observed IP.
+pub async fn phone_home(
+    State(store): State<Store>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(vm_id): Path<Uuid>,
+) -> StatusCode {
+    let ip = peer.ip().to_string();
+    // Only accept for a known VM; ignore otherwise (don't leak existence).
+    if matches!(store.get_vm(vm_id).await, Ok(Some(_))) {
+        let _ = store.set_vm_ip(vm_id, &ip).await;
+        let _ = store
+            .insert_event("vm", Some(vm_id), "vm.phone_home", "info", &ip)
+            .await;
+    }
+    StatusCode::NO_CONTENT
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChangeNic {
     /// The network to move this NIC onto.
