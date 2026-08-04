@@ -46,6 +46,16 @@ pub struct HostStatus {
     pub cloud_hypervisor_version: Option<String>,
     pub logical_cpus: Option<u32>,
     pub cpu_model: Option<String>,
+    /// CPU vendor id (e.g. `GenuineIntel`), used with `cpu_features` to gate
+    /// live migration between hosts with different CPUs (design M15,
+    /// cross-CPU migration).
+    pub cpu_vendor: Option<String>,
+    /// Curated guest-visible CPU ISA feature flags (a subset of
+    /// `/proc/cpuinfo` flags), sorted. Migration to a host that lacks a
+    /// feature the source guest could use would fault the guest, so the
+    /// control plane refuses it (Cloud Hypervisor cannot mask CPUID).
+    #[serde(default)]
+    pub cpu_features: Vec<String>,
     pub total_memory_bytes: Option<u64>,
     pub available_memory_bytes: Option<u64>,
     /// Number of VMs currently placed on this host.

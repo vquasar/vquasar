@@ -93,6 +93,9 @@ export interface Host {
   cloud_hypervisor_version: string | null;
   logical_cpus: number | null;
   cpu_model: string | null;
+  // Cross-CPU migration (M15): vendor + curated guest-visible ISA flags.
+  cpu_vendor: string | null;
+  cpu_features: string[];
   total_memory_bytes: number | null;
   available_memory_bytes: number | null;
   vm_count: number;

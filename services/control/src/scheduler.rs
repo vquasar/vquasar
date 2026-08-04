@@ -90,6 +90,8 @@ mod tests {
             cloud_hypervisor_version: None,
             logical_cpus: Some(cpus),
             cpu_model: None,
+            cpu_vendor: None,
+            cpu_features: Vec::new(),
             total_memory_bytes: Some(total_gib * 1024 * 1024 * 1024),
             available_memory_bytes: Some(total_gib * 1024 * 1024 * 1024),
             vm_count: 0,

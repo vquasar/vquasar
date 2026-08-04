@@ -25,6 +25,8 @@ pub fn collect() -> HostStatus {
         cloud_hypervisor_version: None, // populated in Milestone 2
         logical_cpus: logical_cpus(),
         cpu_model: cpu_model(),
+        cpu_vendor: cpuinfo_field("vendor_id"),
+        cpu_features: guest_cpu_features(),
         total_memory_bytes: meminfo_bytes("MemTotal"),
         available_memory_bytes: meminfo_bytes("MemAvailable"),
         vm_count: 0,
@@ -62,15 +64,85 @@ fn logical_cpus() -> Option<u32> {
 }
 
 fn cpu_model() -> Option<String> {
+    cpuinfo_field("model name")
+}
+
+/// Return the value of the first matching `/proc/cpuinfo` field (e.g.
+/// `model name`, `vendor_id`). All physical cores repeat the same values, so
+/// the first hit is representative.
+fn cpuinfo_field(field: &str) -> Option<String> {
     let contents = fs::read_to_string("/proc/cpuinfo").ok()?;
     for line in contents.lines() {
         if let Some((key, value)) = line.split_once(':') {
-            if key.trim() == "model name" {
-                return Some(value.trim().to_string());
+            if key.trim() == field {
+                let v = value.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
             }
         }
     }
     None
+}
+
+/// Curated allow-list of guest-visible x86 CPU **ISA** feature flags, as they
+/// appear in `/proc/cpuinfo`. We report only these for migration compatibility
+/// and deliberately exclude host/topology/mitigation/hypervisor flags (`ht`,
+/// `pti`, `ibrs_enhanced`, `constant_tsc`, `vmx`, `hypervisor`, …) which differ
+/// between otherwise-identical hosts and would cause spurious incompatibility.
+/// A missing entry only under-reports (a rare feature goes ungated); the set is
+/// kept broad enough to catch the ISA gaps that actually fault guests
+/// (AVX-512 variants, VNNI, MPX, UMIP, SHA, …).
+const GUEST_CPU_FEATURES: &[&str] = &[
+    // Base ISA / legacy SIMD
+    "fpu", "mmx", "mmxext", "fxsr", "sse", "sse2", "sse3", "pni", "ssse3", "sse4_1", "sse4_2",
+    "sse4a", "3dnow", "3dnowext", "3dnowprefetch", "cx8", "cx16", "cmov", "clflush", "movbe",
+    // 64-bit / paging / misc base
+    "lm", "nx", "syscall", "rdtscp", "pdpe1gb", "pcid", "invpcid", "fsgsbase", "rdpid",
+    // AVX / AVX2
+    "avx", "avx2", "f16c", "fma", "fma4",
+    // AVX-512
+    "avx512f", "avx512dq", "avx512cd", "avx512bw", "avx512vl", "avx512ifma", "avx512vbmi",
+    "avx512_vbmi2", "avx512_vnni", "avx512_bitalg", "avx512_vpopcntdq", "avx512_4vnniw",
+    "avx512_4fmaps", "avx512_bf16", "avx512_fp16", "avx512er", "avx512pf",
+    // AVX-VNNI (non-512) and newer
+    "avx_vnni", "avx_vnni_int8", "avx_ne_convert",
+    // Bit manipulation / integer
+    "bmi1", "bmi2", "abm", "lzcnt", "popcnt", "adx", "tbm",
+    // Crypto
+    "aes", "pclmulqdq", "sha_ni", "vaes", "vpclmulqdq", "gfni",
+    // Random
+    "rdrand", "rdseed",
+    // Memory protection
+    "mpx", "umip", "pku", "smap", "smep",
+    // XSAVE family
+    "xsave", "xsaveopt", "xsavec", "xsaves", "xgetbv1",
+    // TSX
+    "rtm", "hle",
+    // Cacheline control
+    "clflushopt", "clwb", "cldemote", "clzero",
+    // Direct stores / serialization / newer misc
+    "movdiri", "movdir64b", "serialize", "waitpkg", "enqcmd", "ptwrite", "pconfig", "wbnoinvd",
+    "prefetchwt1", "erms",
+    // AMX
+    "amx_tile", "amx_int8", "amx_bf16",
+];
+
+/// The subset of this host's `/proc/cpuinfo` flags that are guest-visible ISA
+/// features (intersection with [`GUEST_CPU_FEATURES`]), sorted for stable
+/// comparison and display.
+fn guest_cpu_features() -> Vec<String> {
+    let Some(flags) = cpuinfo_field("flags") else {
+        return Vec::new();
+    };
+    let present: std::collections::HashSet<&str> = flags.split_whitespace().collect();
+    let mut out: Vec<String> = GUEST_CPU_FEATURES
+        .iter()
+        .filter(|f| present.contains(**f))
+        .map(|f| f.to_string())
+        .collect();
+    out.sort();
+    out
 }
 
 /// Parse a `/proc/meminfo` field (reported in kB) into bytes.

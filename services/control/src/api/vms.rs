@@ -765,6 +765,11 @@ pub async fn stop(
 #[derive(Debug, Deserialize)]
 pub struct MigrateRequest {
     pub target_host_id: Uuid,
+    /// Proceed even if the target CPU is not compatible with the source
+    /// (design M15). The guest may fault if it uses a missing feature — only
+    /// set this when you know it does not. Ignored when already compatible.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Request a live migration of a running VM to another host (section 28). The
@@ -801,6 +806,55 @@ pub async fn migrate(
         return Err(ApiError::invalid(
             "a migration is already in progress for this VM",
         ));
+    }
+
+    // CPU compatibility gate (design M15): Cloud Hypervisor can't mask CPUID,
+    // so refuse a migration to a host missing features the guest could use,
+    // unless the operator forces it.
+    let source = store
+        .get_host(source_host_id)
+        .await?
+        .ok_or_else(|| ApiError::invalid("VM's source host is not registered"))?;
+    let compat = crate::cpucompat::check(
+        source.cpu_vendor.as_deref(),
+        &source.cpu_features,
+        target.cpu_vendor.as_deref(),
+        &target.cpu_features,
+    );
+    match &compat {
+        crate::cpucompat::CpuCompat::Compatible => {}
+        crate::cpucompat::CpuCompat::Unknown => {
+            // Can't prove compatibility (missing inventory); allow but record it.
+            store
+                .insert_event(
+                    "vm",
+                    Some(id),
+                    "migration.cpu_unverified",
+                    "warning",
+                    &compat.reason(),
+                )
+                .await?;
+        }
+        _incompatible => {
+            if !body.force {
+                return Err(ApiError::invalid(format!(
+                    "target host {} is not CPU-compatible with source host {}: {}. \
+                     Migrating anyway may crash the guest; retry with force=true to override.",
+                    target.name,
+                    source.name,
+                    compat.reason(),
+                )));
+            }
+            store
+                .insert_event(
+                    "vm",
+                    Some(id),
+                    "migration.cpu_override",
+                    "warning",
+                    &format!("forced despite incompatibility: {}", compat.reason()),
+                )
+                .await?;
+        }
     }
 
     let task = store.insert_task("vm.migrate", Some(id)).await?;

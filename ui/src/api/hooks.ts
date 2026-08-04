@@ -217,8 +217,8 @@ export function useVmAction() {
 export function useMigrateVm() {
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: ({ id, targetHostId }: { id: string; targetHostId: string }) =>
-      api.post<Accepted>(`/vms/${id}/migrate`, { target_host_id: targetHostId }),
+    mutationFn: ({ id, targetHostId, force }: { id: string; targetHostId: string; force?: boolean }) =>
+      api.post<Accepted>(`/vms/${id}/migrate`, { target_host_id: targetHostId, force: force ?? false }),
     onSuccess: invalidate,
   });
 }

@@ -76,6 +76,8 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
                     cloud_hypervisor_version: none_if_empty(info.cloud_hypervisor_version),
                     logical_cpus: Some(info.logical_cpus as i32),
                     cpu_model: none_if_empty(info.cpu_model),
+                    cpu_vendor: none_if_empty(info.cpu_vendor),
+                    cpu_features: info.cpu_features,
                     total_memory_bytes: Some(info.total_memory_bytes as i64),
                     available_memory_bytes: Some(info.available_memory_bytes as i64),
                     vm_count: info.vm_count as i32,

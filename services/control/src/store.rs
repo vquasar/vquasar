@@ -24,6 +24,9 @@ pub struct Host {
     pub cloud_hypervisor_version: Option<String>,
     pub logical_cpus: Option<i32>,
     pub cpu_model: Option<String>,
+    pub cpu_vendor: Option<String>,
+    #[sqlx(default)]
+    pub cpu_features: Vec<String>,
     pub total_memory_bytes: Option<i64>,
     pub available_memory_bytes: Option<i64>,
     pub vm_count: i32,
@@ -276,6 +279,8 @@ pub struct HostInventory {
     pub cloud_hypervisor_version: Option<String>,
     pub logical_cpus: Option<i32>,
     pub cpu_model: Option<String>,
+    pub cpu_vendor: Option<String>,
+    pub cpu_features: Vec<String>,
     pub total_memory_bytes: Option<i64>,
     pub available_memory_bytes: Option<i64>,
     pub vm_count: i32,
@@ -496,7 +501,8 @@ impl Store {
         sqlx::query(
             "UPDATE hosts SET state='Ready', hostname=$2, architecture=$3, kernel_version=$4,
                 cloud_hypervisor_version=$5, logical_cpus=$6, cpu_model=$7, total_memory_bytes=$8,
-                available_memory_bytes=$9, vm_count=$10, last_heartbeat=$11, updated_at=$11
+                available_memory_bytes=$9, vm_count=$10, last_heartbeat=$11, updated_at=$11,
+                cpu_vendor=$12, cpu_features=$13
              WHERE id=$1",
         )
         .bind(id)
@@ -510,6 +516,8 @@ impl Store {
         .bind(inv.available_memory_bytes)
         .bind(inv.vm_count)
         .bind(now)
+        .bind(&inv.cpu_vendor)
+        .bind(&inv.cpu_features)
         .execute(&self.pool)
         .await
         .map(|_| ())

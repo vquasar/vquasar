@@ -10,6 +10,7 @@ mod authn;
 mod authz;
 mod config;
 mod console;
+mod cpucompat;
 mod crypto;
 mod ipam;
 mod netalloc;

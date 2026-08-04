@@ -4,6 +4,8 @@ import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
+import Checkbox from "@mui/material/Checkbox";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -38,9 +40,46 @@ import {
 import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatBytes, formatDate, formatMib, shortId } from "../format";
-import type { UpdateVmRequest, Vm } from "../api/types";
+import type { Host, UpdateVmRequest, Vm } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
+
+/// Client-side mirror of the server's CPU migration gate (design M15): a guest
+/// can migrate to `target` only if it has the same vendor and a superset of the
+/// source host's guest-visible CPU features. Purely advisory here — the control
+/// plane enforces it — but it lets us disable/annotate incompatible targets.
+type CpuVerdict =
+  | { kind: "ok" }
+  | { kind: "unknown" }
+  | { kind: "vendor"; source: string; target: string }
+  | { kind: "missing"; missing: string[] };
+
+function cpuCompat(source: Host | undefined, target: Host): CpuVerdict {
+  if (!source) return { kind: "unknown" };
+  const sv = source.cpu_vendor;
+  const tv = target.cpu_vendor;
+  if (sv && tv && sv !== tv) return { kind: "vendor", source: sv, target: tv };
+  if (!sv || !tv) return { kind: "unknown" };
+  const sf = source.cpu_features ?? [];
+  const tf = target.cpu_features ?? [];
+  if (sf.length === 0 || tf.length === 0) return { kind: "unknown" };
+  const have = new Set(tf);
+  const missing = sf.filter((f) => !have.has(f));
+  return missing.length ? { kind: "missing", missing } : { kind: "ok" };
+}
+
+function verdictLabel(v: CpuVerdict): string {
+  switch (v.kind) {
+    case "ok":
+      return "CPU-compatible";
+    case "unknown":
+      return "CPU features unknown";
+    case "vendor":
+      return `vendor mismatch (${v.source} → ${v.target})`;
+    case "missing":
+      return `missing: ${v.missing.join(", ")}`;
+  }
+}
 
 function EditVmDialog({ vm, onClose }: { vm: Vm; onClose: () => void }) {
   const update = useUpdateVm();
@@ -325,6 +364,7 @@ export function VmDetail() {
   const [migrateOpen, setMigrateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [target, setTarget] = useState("");
+  const [force, setForce] = useState(false);
 
   if (vm.isLoading) return <Typography>Loading…</Typography>;
   if (vm.isError) return <Alert severity="error">{(vm.error as Error).message}</Alert>;
@@ -406,22 +446,54 @@ export function VmDetail() {
       <Dialog open={migrateOpen} onClose={() => setMigrateOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Migrate “{v.name}”</DialogTitle>
         <DialogContent>
-          <TextField
-            select
-            label="Target host"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            fullWidth
-            sx={{ mt: 1 }}
-          >
-            {(hosts.data ?? [])
-              .filter((h) => h.state === "Ready" && h.schedulable && h.id !== v.host_id)
-              .map((h) => (
-                <MenuItem key={h.id} value={h.id}>
-                  {h.name}
-                </MenuItem>
-              ))}
-          </TextField>
+          {(() => {
+            const sourceHost = (hosts.data ?? []).find((h) => h.id === v.host_id);
+            const candidates = (hosts.data ?? []).filter(
+              (h) => h.state === "Ready" && h.schedulable && h.id !== v.host_id,
+            );
+            const targetHost = candidates.find((h) => h.id === target);
+            const verdict = targetHost ? cpuCompat(sourceHost, targetHost) : null;
+            const incompatible = verdict?.kind === "vendor" || verdict?.kind === "missing";
+            return (
+              <>
+                <TextField
+                  select
+                  label="Target host"
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  fullWidth
+                  sx={{ mt: 1 }}
+                >
+                  {candidates.map((h) => {
+                    const vd = cpuCompat(sourceHost, h);
+                    const bad = vd.kind === "vendor" || vd.kind === "missing";
+                    return (
+                      <MenuItem key={h.id} value={h.id} disabled={bad && !force}>
+                        {h.name} — {verdictLabel(vd)}
+                      </MenuItem>
+                    );
+                  })}
+                </TextField>
+                {incompatible && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    Target CPU is not compatible with the source: {verdict && verdictLabel(verdict)}.
+                    Cloud Hypervisor can’t mask CPU features, so the guest may crash if it uses one
+                    the target lacks. Enable “force” only if you know it doesn’t.
+                  </Alert>
+                )}
+                <FormControlLabel
+                  sx={{ mt: 1 }}
+                  control={<Checkbox checked={force} onChange={(e) => setForce(e.target.checked)} />}
+                  label="Force migrate despite CPU incompatibility"
+                />
+                {migrate.isError && (
+                  <Alert severity="error" sx={{ mt: 1 }}>
+                    {(migrate.error as Error).message}
+                  </Alert>
+                )}
+              </>
+            );
+          })()}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setMigrateOpen(false)}>Cancel</Button>
@@ -431,7 +503,7 @@ export function VmDetail() {
             onClick={() =>
               id &&
               migrate.mutate(
-                { id, targetHostId: target },
+                { id, targetHostId: target, force },
                 { onSuccess: () => setMigrateOpen(false) },
               )
             }

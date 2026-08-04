@@ -88,6 +88,10 @@ message GetHostInfoResponse {
   uint64 total_memory_bytes = 8;
   uint64 available_memory_bytes = 9;
   uint32 vm_count = 10;
+  // CPU vendor + curated guest-visible ISA feature flags, used to gate
+  // cross-CPU live migration (design M15).
+  string cpu_vendor = 11;
+  repeated string cpu_features = 12;
 }
 
 // ---- VM lifecycle --------------------------------------------------------
