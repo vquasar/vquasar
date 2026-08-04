@@ -278,11 +278,13 @@ fn render_user_data(
         // Use curl rather than cloud-init's phone_home module: the module posts
         // via Python requests, which trusts certifi's bundle and ignores the
         // ca_certs-injected system store, so an internal-CA HTTPS endpoint fails.
-        // curl uses /etc/ssl/certs (which ca_certs updated). The POST carries no
-        // body; control records the request's source IP as the guest's address.
+        // curl uses the system CA store (which ca_certs updates via
+        // update-ca-certificates / update-ca-trust) — no explicit --cacert, so it
+        // works across Debian and RHEL guests whose bundle paths differ. The POST
+        // carries no body; control records the request's source IP.
         let base = url.trim_end_matches('/');
         s.push_str(&format!(
-            "runcmd:\n  - [\"sh\", \"-c\", \"for i in $(seq 1 12); do curl -fsS --cacert /etc/ssl/certs/ca-certificates.crt -X POST {base}/api/v1/phone-home/{instance_id} && break; sleep 5; done\"]\n"
+            "runcmd:\n  - [\"sh\", \"-c\", \"for i in $(seq 1 12); do curl -fsS -X POST {base}/api/v1/phone-home/{instance_id} && break; sleep 5; done\"]\n"
         ));
     }
     s
@@ -387,8 +389,10 @@ mod tests {
         };
         let ca = "-----BEGIN CERTIFICATE-----\nABCD\n-----END CERTIFICATE-----";
         let s = render_user_data(&ci, "h", "vm-42", Some("https://172.16.56.8:8080/"), Some(ca));
-        // curl-based phone home to the vm-id URL (trailing slash trimmed).
-        assert!(s.contains("curl -fsS --cacert /etc/ssl/certs/ca-certificates.crt"));
+        // curl-based phone home to the vm-id URL (trailing slash trimmed);
+        // no explicit --cacert so it works across Debian/RHEL guests.
+        assert!(s.contains("curl -fsS -X POST"));
+        assert!(!s.contains("--cacert"));
         assert!(s.contains("https://172.16.56.8:8080/api/v1/phone-home/vm-42"));
         assert!(s.contains("ca_certs:"));
         assert!(s.contains("-----BEGIN CERTIFICATE-----"));
