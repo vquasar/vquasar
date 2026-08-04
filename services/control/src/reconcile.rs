@@ -298,7 +298,7 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
     }
 
     // 3. Resolve per-NIC dataplane bindings (MACs + VLANs).
-    let bindings = match resolve_bindings(store, vm).await? {
+    let bindings = match resolve_bindings(store, vm, host_id).await? {
         Some(b) => b,
         None => {
             // A referenced network does not exist yet; defer.
@@ -484,9 +484,27 @@ async fn build_network_config(store: &Store, vm: &Vm) -> anyhow::Result<String> 
     Ok(crate::ipam::render_network_config(&nics))
 }
 
-/// Extract a host's underlay IP/host from its agent endpoint for VXLAN
-/// `remote_ip` (design M13b): strip any scheme and the port. e.g.
-/// `https://172.16.56.81:9500` → `172.16.56.81`.
+/// Resolve a host's agent endpoint to an underlay **IP** for VXLAN `remote_ip`
+/// (design M13b). OVS rejects hostnames, so a name is resolved via DNS
+/// (preferring IPv4); an endpoint that is already an IP is returned as-is.
+async fn resolve_underlay(endpoint: &str) -> Option<String> {
+    let host = underlay_ip(endpoint)?;
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host);
+    }
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+        .await
+        .ok()?
+        .collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.first())
+        .map(|a| a.ip().to_string())
+}
+
+/// Extract a host's underlay IP/host from its agent endpoint: strip any scheme
+/// and the port. e.g. `https://172.16.56.81:9500` → `172.16.56.81`.
 fn underlay_ip(endpoint: &str) -> Option<String> {
     let host = endpoint
         .rsplit_once("://")
@@ -505,17 +523,25 @@ fn underlay_ip(endpoint: &str) -> Option<String> {
 
 /// Resolve a VM's NICs into agent dataplane bindings (MAC + VLAN/VNI), allocating
 /// MACs deterministically. Returns `None` if a referenced network is missing.
-async fn resolve_bindings(store: &Store, vm: &Vm) -> anyhow::Result<Option<Vec<NetworkBinding>>> {
+async fn resolve_bindings(
+    store: &Store,
+    vm: &Vm,
+    this_host: Uuid,
+) -> anyhow::Result<Option<Vec<NetworkBinding>>> {
     let mut bindings = Vec::with_capacity(vm.spec.network_interfaces.len());
 
     // Underlay IPs of the *other* hosts, for any VXLAN tunnel mesh (design M13b).
-    let overlay_peers: Vec<String> = store
-        .list_hosts()
-        .await?
-        .into_iter()
-        .filter(|h| Some(h.id) != vm.host_id)
-        .filter_map(|h| underlay_ip(&h.endpoint))
-        .collect();
+    // Exclude this VM's assigned host (passed in, since `vm.host_id` may still be
+    // stale on the tick it was first scheduled) so no host tunnels to itself.
+    let mut overlay_peers: Vec<String> = Vec::new();
+    for h in store.list_hosts().await? {
+        if h.id == this_host {
+            continue;
+        }
+        if let Some(ip) = resolve_underlay(&h.endpoint).await {
+            overlay_peers.push(ip);
+        }
+    }
 
     for (index, nic) in vm.spec.network_interfaces.iter().enumerate() {
         let Some(network) = store.get_network(nic.network_id.as_uuid()).await? else {

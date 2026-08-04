@@ -24,6 +24,20 @@ echo "==> Creating integration bridge $BRIDGE"
 sudo ovs-vsctl --may-exist add-br "$BRIDGE"
 sudo ovs-vsctl list-br
 
+# VXLAN overlay networks (design M13b) tunnel over UDP 4789 between hosts. Open
+# it on the underlay firewall, or overlay traffic is silently dropped on ingress
+# (firewalld's default reject) even though the tunnels come up cleanly.
+if command -v firewall-cmd >/dev/null && sudo firewall-cmd --state >/dev/null 2>&1; then
+  echo "==> Opening VXLAN underlay port 4789/udp (firewalld)"
+  sudo firewall-cmd --add-port=4789/udp --permanent >/dev/null || true
+  sudo firewall-cmd --add-port=4789/udp >/dev/null || true
+elif command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q active; then
+  echo "==> Opening VXLAN underlay port 4789/udp (ufw)"
+  sudo ufw allow 4789/udp || true
+else
+  echo "==> NOTE: ensure UDP 4789 (VXLAN) is open between hosts for overlay networks"
+fi
+
 echo
 echo "Done. Start the agent with:  CH_AGENT_NETWORK__BRIDGE=$BRIDGE"
 echo "The agent must run privileged (root or CAP_NET_ADMIN) to create TAPs and"
