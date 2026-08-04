@@ -84,7 +84,15 @@ Split into three shippable slices.
   matched) into the seed so the guest configures statically — no DHCP. Observed
   guest IP for managed NICs comes from the allocation (authoritative) rather than
   the ARP sweep. Follow-ups: IPv6 SLAAC/DHCPv6 interop, reserved/excluded ranges.
-- VLAN-isolated and cross-host L2 networks via a VXLAN (or similar) overlay.
+- **M13b — Cross-host L2 via VXLAN overlay.** ✅ **Done.** A network can opt into
+  a VXLAN overlay (auto-allocated VNI, mutually exclusive with 802.1Q VLAN): an
+  isolated L2 segment that spans hosts over the management underlay with no
+  physical-switch VLAN trunk. The agent places overlay TAPs on a per-VNI OVS
+  bridge (`vxbr<vni>`) with a full mesh of `type=vxlan` tunnel ports (key=VNI) to
+  the peer hosts (control derives peer underlay IPs from host endpoints); pure L2
+  learning bridges it, no OpenFlow. Overlay NICs get MTU 1450 in the netplan to
+  absorb encap overhead. Idle overlay bridges are GC'd. Follow-ups: BUM/ARP
+  suppression, L3 gateways between overlays, EVPN control plane.
 - Security groups / per-tenant network isolation.
 - Change an existing NIC's network on a running VM (needs a detach/reattach or
   recreate path; CH cannot re-tag a live TAP).

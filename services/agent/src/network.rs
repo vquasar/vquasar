@@ -21,12 +21,22 @@ pub enum NetworkError {
 
 type Result<T> = std::result::Result<T, NetworkError>;
 
-/// A control-resolved NIC binding: the guest MAC and its VLAN on the bridge.
+/// A control-resolved NIC binding: the guest MAC and its dataplane placement.
 #[derive(Debug, Clone)]
 pub struct NicBinding {
     pub mac: String,
-    /// 802.1Q tag; 0 means untagged/flat.
+    /// 802.1Q tag on the integration bridge; 0 means untagged/flat.
     pub vlan: u16,
+    /// VXLAN VNI (design M13b); 0 ⇒ not an overlay. When set, the TAP is placed
+    /// on a per-VNI overlay bridge with a tunnel mesh to `overlay_peers`.
+    pub vni: u32,
+    /// Underlay IPs of the other hosts, for the VXLAN tunnel mesh.
+    pub overlay_peers: Vec<String>,
+}
+
+/// The per-VNI overlay bridge name (design M13b). `vxbr` + ≤8 digits ≤ IFNAMSIZ.
+fn overlay_bridge(vni: u32) -> String {
+    format!("vxbr{vni}")
 }
 
 /// A prepared host interface ready to hand to Cloud Hypervisor.
@@ -79,6 +89,47 @@ impl NetworkBackend for OvsNetworkBackend {
         run("ip", &["tuntap", "add", "dev", &tap, "mode", "tap"]).await?;
         run("ip", &["link", "set", &tap, "up"]).await?;
 
+        // VXLAN overlay (design M13b): the TAP goes on a per-VNI bridge with a
+        // full mesh of tunnel ports to the peer hosts, isolated on the wire by
+        // the VNI — no physical-switch VLAN needed.
+        if binding.vni != 0 {
+            let br = overlay_bridge(binding.vni);
+            run("ovs-vsctl", &["--may-exist", "add-br", &br]).await?;
+            let _ = run("ip", &["link", "set", &br, "up"]).await;
+            // One tunnel port per peer. Names are stable per (sorted) peer index
+            // so repeated reconciles are idempotent (--may-exist).
+            let mut peers = binding.overlay_peers.clone();
+            peers.sort();
+            peers.dedup();
+            for (i, peer) in peers.iter().enumerate() {
+                let port = format!("vx{i}");
+                run(
+                    "ovs-vsctl",
+                    &[
+                        "--may-exist",
+                        "add-port",
+                        &br,
+                        &port,
+                        "--",
+                        "set",
+                        "interface",
+                        &port,
+                        "type=vxlan",
+                        &format!("options:remote_ip={peer}"),
+                        &format!("options:key={}", binding.vni),
+                    ],
+                )
+                .await?;
+            }
+            // Guest TAP untagged: the overlay bridge is the network's L2 domain.
+            run("ovs-vsctl", &["--may-exist", "add-port", &br, &tap]).await?;
+            return Ok(PreparedNic {
+                tap,
+                mac: binding.mac.clone(),
+            });
+        }
+
+        // Flat/VLAN: TAP on the shared integration bridge, optionally 802.1Q.
         let mut args = vec!["--may-exist", "add-port", &self.bridge, &tap];
         let tag; // keep the formatted string alive for the borrow
         if binding.vlan != 0 {
@@ -95,12 +146,24 @@ impl NetworkBackend for OvsNetworkBackend {
 
     async fn release(&self, vm: VmId, index: usize) -> Result<()> {
         let tap = tap_name(vm, index);
-        // Best-effort and idempotent: ignore "already gone".
-        let _ = run(
-            "ovs-vsctl",
-            &["--if-exists", "del-port", &self.bridge, &tap],
-        )
-        .await;
+        // Find whichever bridge holds the TAP (integration or a per-VNI overlay)
+        // so release works without knowing the original binding.
+        if let Ok(br) = run_stdout("ovs-vsctl", &["port-to-br", &tap]).await {
+            let br = br.trim().to_string();
+            let _ = run("ovs-vsctl", &["--if-exists", "del-port", &br, &tap]).await;
+            // Garbage-collect an overlay bridge once its last guest TAP is gone
+            // (this also removes its tunnel ports).
+            if br.starts_with("vxbr") {
+                if let Ok(ports) = run_stdout("ovs-vsctl", &["list-ports", &br]).await {
+                    if !ports.lines().any(|p| p.trim().starts_with("tap")) {
+                        let _ = run("ovs-vsctl", &["--if-exists", "del-br", &br]).await;
+                    }
+                }
+            }
+        } else {
+            // Not on any bridge; still fall back to the integration bridge.
+            let _ = run("ovs-vsctl", &["--if-exists", "del-port", &self.bridge, &tap]).await;
+        }
         let _ = run("ip", &["link", "del", &tap]).await;
         Ok(())
     }
@@ -110,6 +173,19 @@ async fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let output = Command::new(cmd).args(args).output().await?;
     if output.status.success() {
         Ok(())
+    } else {
+        Err(NetworkError::Command {
+            cmd: format!("{cmd} {}", args.join(" ")),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+/// Run a command and return its trimmed stdout, erroring on non-zero exit.
+async fn run_stdout(cmd: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(cmd).args(args).output().await?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         Err(NetworkError::Command {
             cmd: format!("{cmd} {}", args.join(" ")),
@@ -161,6 +237,8 @@ mod tests {
                 &NicBinding {
                     mac: "02:00:00:00:00:01".into(),
                     vlan: 0,
+                    vni: 0,
+                    overlay_peers: Vec::new(),
                 },
             )
             .await

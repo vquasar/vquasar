@@ -104,6 +104,8 @@ export interface Network {
   id: string;
   name: string;
   vlan: number | null;
+  // VXLAN overlay (M13b): set ⇒ VNI-isolated overlay spanning hosts.
+  vni: number | null;
   // IPAM (M13a): a family is control-plane-managed (static) when its cidr is set.
   cidr_v4: string | null;
   gateway_v4: string | null;
@@ -194,6 +196,10 @@ export interface Template {
 export interface CreateNetworkRequest {
   name: string;
   vlan?: number | null;
+  // VXLAN overlay (M13b): overlay=true auto-allocates a VNI (mutually exclusive
+  // with vlan); vni overrides the auto-allocation.
+  overlay?: boolean;
+  vni?: number | null;
   // IPAM (M13a); omit a family's cidr to leave it on DHCP.
   cidr_v4?: string | null;
   gateway_v4?: string | null;

@@ -162,6 +162,8 @@ pub struct NicRender {
     pub gateway4: Option<String>,
     pub gateway6: Option<String>,
     pub dns: Vec<String>,
+    /// Link MTU, e.g. 1450 to absorb VXLAN overhead (design M13b).
+    pub mtu: Option<u32>,
 }
 
 /// Render a cloud-init (netplan v2) `network-config`. NICs with `addresses` get
@@ -174,6 +176,9 @@ pub fn render_network_config(nics: &[NicRender]) -> String {
         s.push_str("    match:\n");
         s.push_str(&format!("      macaddress: \"{}\"\n", nic.mac));
         s.push_str(&format!("    set-name: {}\n", nic.set_name));
+        if let Some(mtu) = nic.mtu {
+            s.push_str(&format!("    mtu: {mtu}\n"));
+        }
         if nic.addresses.is_empty() {
             s.push_str("    dhcp4: true\n");
             continue;
@@ -319,6 +324,7 @@ mod tests {
                 gateway4: Some("192.168.10.1".into()),
                 gateway6: Some("fd00:56::1".into()),
                 dns: vec!["1.1.1.1".into()],
+                mtu: None,
             },
             NicRender {
                 set_name: "eth1".into(),
@@ -327,6 +333,7 @@ mod tests {
                 gateway4: None,
                 gateway6: None,
                 dns: vec![],
+                mtu: None,
             },
         ];
         let out = render_network_config(&nics);

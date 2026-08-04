@@ -7,6 +7,7 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
+import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
@@ -32,6 +33,9 @@ function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => vo
   const create = useCreateNetwork();
   const update = useUpdateNetwork();
   const [name, setName] = useState(edit?.name ?? "");
+  const [mode, setMode] = useState<"flat" | "vlan" | "vxlan">(
+    edit?.vni != null ? "vxlan" : edit?.vlan != null ? "vlan" : "flat",
+  );
   const [vlan, setVlan] = useState(edit?.vlan != null ? String(edit.vlan) : "");
   const [cidr4, setCidr4] = useState(edit?.cidr_v4 ?? "");
   const [gw4, setGw4] = useState(edit?.gateway_v4 ?? "");
@@ -42,7 +46,8 @@ function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => vo
   const submit = () => {
     const body: CreateNetworkRequest = {
       name,
-      vlan: vlan ? Number(vlan) : null,
+      vlan: mode === "vlan" && vlan ? Number(vlan) : null,
+      overlay: mode === "vxlan",
       cidr_v4: empty(cidr4),
       gateway_v4: empty(gw4),
       cidr_v6: empty(cidr6),
@@ -65,11 +70,32 @@ function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => vo
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           <TextField
-            label="VLAN (optional, 1–4094)"
-            value={vlan}
-            onChange={(e) => setVlan(e.target.value)}
-            helperText="Leave blank for a flat provider network"
-          />
+            select
+            label="Type"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as "flat" | "vlan" | "vxlan")}
+            helperText={
+              mode === "vxlan"
+                ? "VXLAN overlay: isolated L2 spanning hosts (VNI auto-allocated)"
+                : mode === "vlan"
+                  ? "802.1Q VLAN on the integration bridge"
+                  : "Flat/untagged provider network"
+            }
+          >
+            <MenuItem value="flat">Flat (untagged)</MenuItem>
+            <MenuItem value="vlan">VLAN (802.1Q)</MenuItem>
+            <MenuItem value="vxlan">VXLAN overlay</MenuItem>
+          </TextField>
+          {mode === "vlan" && (
+            <TextField
+              label="VLAN tag (1–4094)"
+              value={vlan}
+              onChange={(e) => setVlan(e.target.value)}
+            />
+          )}
+          {mode === "vxlan" && edit?.vni != null && (
+            <TextField label="VNI" value={edit.vni} disabled />
+          )}
           <Divider textAlign="left">
             <Typography variant="caption" color="text.secondary">
               IP management (leave a family blank for DHCP)
@@ -182,10 +208,19 @@ export function Networks() {
   const columns: GridColDef<Network>[] = [
     { field: "name", headerName: "Name", flex: 1, minWidth: 140 },
     {
-      field: "vlan",
-      headerName: "VLAN",
-      width: 90,
-      valueGetter: (v) => (v == null ? "flat" : v),
+      field: "type",
+      headerName: "Type",
+      width: 150,
+      valueGetter: (_v, row) =>
+        row.vni != null ? `VXLAN ${row.vni}` : row.vlan != null ? `VLAN ${row.vlan}` : "flat",
+      renderCell: (p) =>
+        p.row.vni != null ? (
+          <Chip size="small" color="secondary" label={`VXLAN ${p.row.vni}`} />
+        ) : p.row.vlan != null ? (
+          <Chip size="small" label={`VLAN ${p.row.vlan}`} variant="outlined" />
+        ) : (
+          <span>flat</span>
+        ),
     },
     {
       field: "subnet",

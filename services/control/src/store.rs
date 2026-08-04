@@ -56,6 +56,10 @@ pub struct Network {
     pub name: String,
     /// 802.1Q VLAN tag; `None` is a flat/untagged provider network.
     pub vlan: Option<i32>,
+    /// VXLAN VNI (design M13b): `Some` ⇒ this network is a VXLAN overlay,
+    /// isolated by VNI and spanning hosts over the underlay. Mutually exclusive
+    /// with `vlan`.
+    pub vni: Option<i32>,
     // IPAM (design M13a): a family is managed (static, control-plane IPAM) when
     // its cidr is set; otherwise that family is left to external DHCP.
     pub cidr_v4: Option<String>,
@@ -75,6 +79,11 @@ impl Network {
     /// Whether any family is under control-plane IPAM (vs external DHCP).
     pub fn is_managed(&self) -> bool {
         self.cidr_v4.is_some() || self.cidr_v6.is_some()
+    }
+
+    /// Whether this network is a VXLAN overlay (design M13b).
+    pub fn is_overlay(&self) -> bool {
+        self.vni.is_some()
     }
 }
 
@@ -651,24 +660,27 @@ impl Store {
 
     // ---- networks --------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_network(
         &self,
         name: &str,
         vlan: Option<i32>,
+        vni: Option<i32>,
         ipam: &NetworkIpam,
     ) -> Result<Network> {
         let now = Utc::now();
         sqlx::query_as::<_, Network>(
             "INSERT INTO networks
-                (id, name, vlan, cidr_v4, gateway_v4, cidr_v6, gateway_v6, dns,
+                (id, name, vlan, vni, cidr_v4, gateway_v4, cidr_v6, gateway_v6, dns,
                  pool_v4_start, pool_v4_end, pool_v6_start, pool_v6_end,
                  created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
         .bind(name)
         .bind(vlan)
+        .bind(vni)
         .bind(&ipam.cidr_v4)
         .bind(&ipam.gateway_v4)
         .bind(&ipam.cidr_v6)
@@ -681,6 +693,15 @@ impl Store {
         .bind(now)
         .fetch_one(&self.pool)
         .await
+    }
+
+    /// Lowest free VNI at or above 4096 (design M13b).
+    pub async fn next_free_vni(&self) -> Result<i32> {
+        let max: Option<i32> =
+            sqlx::query_scalar("SELECT max(vni) FROM networks WHERE vni IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(max.map(|m| m + 1).unwrap_or(4096).max(4096))
     }
 
     pub async fn get_network(&self, id: Uuid) -> Result<Option<Network>> {
@@ -704,22 +725,25 @@ impl Store {
         Ok(res.rows_affected() > 0)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_network(
         &self,
         id: Uuid,
         name: &str,
         vlan: Option<i32>,
+        vni: Option<i32>,
         ipam: &NetworkIpam,
     ) -> Result<Option<Network>> {
         sqlx::query_as::<_, Network>(
-            "UPDATE networks SET name=$2, vlan=$3, cidr_v4=$4, gateway_v4=$5,
-                cidr_v6=$6, gateway_v6=$7, dns=$8, pool_v4_start=$9, pool_v4_end=$10,
-                pool_v6_start=$11, pool_v6_end=$12, updated_at=$13
+            "UPDATE networks SET name=$2, vlan=$3, vni=$4, cidr_v4=$5, gateway_v4=$6,
+                cidr_v6=$7, gateway_v6=$8, dns=$9, pool_v4_start=$10, pool_v4_end=$11,
+                pool_v6_start=$12, pool_v6_end=$13, updated_at=$14
              WHERE id=$1 RETURNING *",
         )
         .bind(id)
         .bind(name)
         .bind(vlan)
+        .bind(vni)
         .bind(&ipam.cidr_v4)
         .bind(&ipam.gateway_v4)
         .bind(&ipam.cidr_v6)

@@ -473,6 +473,8 @@ async fn build_network_config(store: &Store, vm: &Vm) -> anyhow::Result<String> 
             gateway4: network.gateway_v4.clone(),
             gateway6: network.gateway_v6.clone(),
             dns: network.dns.clone(),
+            // Overlay NICs shrink the MTU to absorb VXLAN encap (design M13b).
+            mtu: network.is_overlay().then_some(1450),
         });
     }
 
@@ -482,10 +484,39 @@ async fn build_network_config(store: &Store, vm: &Vm) -> anyhow::Result<String> 
     Ok(crate::ipam::render_network_config(&nics))
 }
 
-/// Resolve a VM's NICs into agent dataplane bindings (MAC + VLAN), allocating
+/// Extract a host's underlay IP/host from its agent endpoint for VXLAN
+/// `remote_ip` (design M13b): strip any scheme and the port. e.g.
+/// `https://172.16.56.81:9500` → `172.16.56.81`.
+fn underlay_ip(endpoint: &str) -> Option<String> {
+    let host = endpoint
+        .rsplit_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(endpoint);
+    // Strip a trailing :port. IPv6 literals would be bracketed ([::1]:9500);
+    // handle the common host:port case and leave bare hosts untouched.
+    let host = host.split('/').next().unwrap_or(host);
+    let trimmed = match host.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !h.is_empty() => h,
+        _ => host,
+    };
+    let trimmed = trimmed.trim_matches(['[', ']']);
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Resolve a VM's NICs into agent dataplane bindings (MAC + VLAN/VNI), allocating
 /// MACs deterministically. Returns `None` if a referenced network is missing.
 async fn resolve_bindings(store: &Store, vm: &Vm) -> anyhow::Result<Option<Vec<NetworkBinding>>> {
     let mut bindings = Vec::with_capacity(vm.spec.network_interfaces.len());
+
+    // Underlay IPs of the *other* hosts, for any VXLAN tunnel mesh (design M13b).
+    let overlay_peers: Vec<String> = store
+        .list_hosts()
+        .await?
+        .into_iter()
+        .filter(|h| Some(h.id) != vm.host_id)
+        .filter_map(|h| underlay_ip(&h.endpoint))
+        .collect();
+
     for (index, nic) in vm.spec.network_interfaces.iter().enumerate() {
         let Some(network) = store.get_network(nic.network_id.as_uuid()).await? else {
             return Ok(None);
@@ -494,9 +525,15 @@ async fn resolve_bindings(store: &Store, vm: &Vm) -> anyhow::Result<Option<Vec<N
             .mac
             .clone()
             .unwrap_or_else(|| allocate_mac(vm.id, index));
+        let (vni, peers) = match network.vni {
+            Some(v) => (v as u32, overlay_peers.clone()),
+            None => (0, Vec::new()),
+        };
         bindings.push(NetworkBinding {
             mac,
             vlan: network.vlan.unwrap_or(0) as u32,
+            vni,
+            overlay_peers: peers,
         });
     }
     Ok(Some(bindings))
@@ -529,5 +566,21 @@ fn none_if_empty(s: String) -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::underlay_ip;
+
+    #[test]
+    fn underlay_ip_strips_scheme_and_port() {
+        assert_eq!(underlay_ip("https://172.16.56.81:9500").as_deref(), Some("172.16.56.81"));
+        assert_eq!(underlay_ip("http://10.0.0.5:9500").as_deref(), Some("10.0.0.5"));
+        assert_eq!(underlay_ip("172.16.56.81:9500").as_deref(), Some("172.16.56.81"));
+        assert_eq!(underlay_ip("172.16.56.81").as_deref(), Some("172.16.56.81"));
+        assert_eq!(underlay_ip("chnode1.lab").as_deref(), Some("chnode1.lab"));
+        assert_eq!(underlay_ip("[fd00::1]:9500").as_deref(), Some("fd00::1"));
+        assert_eq!(underlay_ip("").as_deref(), None);
     }
 }

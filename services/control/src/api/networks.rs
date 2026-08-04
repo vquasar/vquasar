@@ -17,9 +17,38 @@ pub struct CreateNetwork {
     /// Optional 802.1Q VLAN tag (1–4094); omit for a flat provider network.
     #[serde(default)]
     pub vlan: Option<i32>,
+    /// Make this a VXLAN overlay (design M13b): a VNI is auto-allocated. Mutually
+    /// exclusive with `vlan`.
+    #[serde(default)]
+    pub overlay: bool,
+    /// Explicit VNI override (otherwise auto-allocated when `overlay`).
+    #[serde(default)]
+    pub vni: Option<i32>,
     /// IPAM config (design M13a). Absent/empty families ⇒ external DHCP.
     #[serde(flatten, default)]
     pub ipam: NetworkIpam,
+}
+
+/// Resolve the VNI for a create/update: explicit override, else auto-allocate
+/// when overlay is requested (reusing an existing network's VNI), else none.
+async fn resolve_vni(
+    store: &Store,
+    body: &CreateNetwork,
+    existing: Option<&Network>,
+) -> ApiResult<Option<i32>> {
+    if let Some(v) = body.vni {
+        if !(1..=16_777_215).contains(&v) {
+            return Err(ApiError::invalid("vni must be between 1 and 16777215"));
+        }
+        return Ok(Some(v));
+    }
+    if !body.overlay {
+        return Ok(None);
+    }
+    if let Some(v) = existing.and_then(|n| n.vni) {
+        return Ok(Some(v));
+    }
+    Ok(Some(store.next_free_vni().await?))
 }
 
 fn validate_vlan(vlan: Option<i32>) -> ApiResult<()> {
@@ -79,10 +108,27 @@ pub async fn create(
     }
     validate_vlan(body.vlan)?;
     validate_ipam(&body.ipam)?;
+    let vni = resolve_vni(&store, &body, None).await?;
+    if vni.is_some() && body.vlan.is_some() {
+        return Err(ApiError::invalid(
+            "a VXLAN overlay network cannot also carry an 802.1Q VLAN",
+        ));
+    }
     let net = store
-        .insert_network(&body.name, body.vlan, &body.ipam)
-        .await?;
+        .insert_network(&body.name, body.vlan, vni, &body.ipam)
+        .await
+        .map_err(unique_vni)?;
     Ok((StatusCode::CREATED, Json(net)))
+}
+
+/// Map a duplicate-VNI unique violation to a friendly 400.
+fn unique_vni(e: sqlx::Error) -> ApiError {
+    match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            ApiError::invalid("that VNI is already in use")
+        }
+        _ => e.into(),
+    }
 }
 
 pub async fn update(
@@ -96,9 +142,17 @@ pub async fn update(
     }
     validate_vlan(body.vlan)?;
     validate_ipam(&body.ipam)?;
+    let existing = store.get_network(id).await?;
+    let vni = resolve_vni(&store, &body, existing.as_ref()).await?;
+    if vni.is_some() && body.vlan.is_some() {
+        return Err(ApiError::invalid(
+            "a VXLAN overlay network cannot also carry an 802.1Q VLAN",
+        ));
+    }
     store
-        .update_network(id, &body.name, body.vlan, &body.ipam)
-        .await?
+        .update_network(id, &body.name, body.vlan, vni, &body.ipam)
+        .await
+        .map_err(unique_vni)?
         .map(Json)
         .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
 }

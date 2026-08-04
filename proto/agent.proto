@@ -119,6 +119,13 @@ message NetworkBinding {
   string mac = 1;
   // 802.1Q VLAN tag on the integration bridge; 0 means untagged/flat.
   uint32 vlan = 2;
+  // VXLAN VNI (design M13b); 0 ⇒ not an overlay (use vlan on br-int). When set,
+  // the agent places the TAP on a per-VNI overlay bridge instead.
+  uint32 vni = 3;
+  // Underlay IPs of the *other* hosts, for the full-mesh of VXLAN tunnel ports
+  // (only meaningful when vni != 0). The control plane derives these from the
+  // peer hosts' endpoints.
+  repeated string overlay_peers = 4;
 }
 
 message EnsureVmResponse { VmObservedState state = 1; }

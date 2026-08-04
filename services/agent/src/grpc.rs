@@ -112,6 +112,8 @@ impl HostAgent for AgentService {
             .map(|n| NicBinding {
                 mac: n.mac,
                 vlan: n.vlan as u16,
+                vni: n.vni,
+                overlay_peers: n.overlay_peers,
             })
             .collect();
         let network_config = Some(req.network_config).filter(|s| !s.is_empty());
