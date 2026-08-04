@@ -4,23 +4,66 @@
 //! stream:  browser  <—WS—>  ch-control  <—gRPC—>  ch-agent  <—>  VM serial.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use ch_proto::agent::ConsoleClientMessage;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::authz::AuthState;
 use crate::store::Store;
+
+#[derive(Debug, Deserialize)]
+pub struct ConsoleAuth {
+    /// Browsers can't set WS auth headers, so the console token rides a query
+    /// param and is validated here (design M12b), gated on `vm:console`.
+    #[serde(default)]
+    access_token: Option<String>,
+}
 
 /// `GET /api/v1/vms/{id}/console` — upgrade to a WebSocket console session.
 pub async fn console_ws(
     State(store): State<Store>,
+    Extension(auth): Extension<AuthState>,
     Path(id): Path<Uuid>,
+    Query(q): Query<ConsoleAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // Authenticate + authorize before upgrading, unless auth is disabled (dev).
+    if let Some(authenticator) = auth.authenticator {
+        let Some(token) = q.access_token else {
+            return (StatusCode::UNAUTHORIZED, "missing access_token").into_response();
+        };
+        let claims = match authenticator.validate(&token).await {
+            Ok(c) => c,
+            Err(e) => return (StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
+        };
+        let allowed = match store
+            .upsert_user(
+                &claims.subject,
+                &claims.username,
+                claims.email.as_deref(),
+                claims.display_name.as_deref(),
+            )
+            .await
+        {
+            Ok(user) => store
+                .effective_permissions(user.id, &claims.groups)
+                .await
+                .map(|p| p.contains("vm:console"))
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        if !allowed {
+            return (StatusCode::FORBIDDEN, "missing permission: vm:console").into_response();
+        }
+    }
     ws.on_upgrade(move |socket| handle(store, id, socket))
 }
 

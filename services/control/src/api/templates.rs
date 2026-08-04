@@ -9,6 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
+use crate::authz::AuthUser;
 use crate::store::{Store, Template};
 
 #[derive(Debug, Deserialize)]
@@ -38,8 +39,10 @@ fn default_disk_format() -> String {
 
 pub async fn create(
     State(store): State<Store>,
+    user: AuthUser,
     Json(body): Json<CreateTemplate>,
 ) -> ApiResult<(StatusCode, Json<Template>)> {
+    user.require("template:create")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -78,9 +81,11 @@ pub async fn create(
 
 pub async fn update(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateTemplate>,
 ) -> ApiResult<Json<Template>> {
+    user.require("template:update")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -114,11 +119,17 @@ pub async fn update(
         .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
 }
 
-pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Template>>> {
+pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Template>>> {
+    user.require("template:read")?;
     Ok(Json(store.list_templates().await?))
 }
 
-pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<Json<Template>> {
+pub async fn get(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Template>> {
+    user.require("template:read")?;
     store
         .get_template(id)
         .await?
@@ -126,7 +137,12 @@ pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<
         .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
 }
 
-pub async fn delete(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+pub async fn delete(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    user.require("template:delete")?;
     if store.delete_template(id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {

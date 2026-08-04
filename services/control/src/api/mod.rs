@@ -5,6 +5,7 @@
 pub mod error;
 mod events;
 mod hosts;
+mod iam;
 mod images;
 mod networks;
 mod tasks;
@@ -12,13 +13,34 @@ mod templates;
 mod vms;
 
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Extension, Router};
 
+use crate::authz::AuthState;
 use crate::store::Store;
 
-/// Build the `/api/v1` router bound to `store`.
-pub fn router(store: Store) -> Router {
+/// Build the `/api/v1` router bound to `store`, with auth wiring attached.
+pub fn router(store: Store, auth: AuthState) -> Router {
     let v1 = Router::new()
+        .route("/auth-config", get(iam::auth_config))
+        .route("/me", get(iam::me))
+        .route("/permissions", get(iam::permissions))
+        .route("/users", get(iam::list_users))
+        .route("/users/:id/roles", axum::routing::put(iam::set_user_roles))
+        .route("/roles", get(iam::list_roles).post(iam::create_role))
+        .route(
+            "/roles/:id",
+            get(iam::get_role)
+                .patch(iam::update_role)
+                .delete(iam::delete_role),
+        )
+        .route(
+            "/group-mappings",
+            get(iam::list_group_roles).post(iam::add_group_role),
+        )
+        .route(
+            "/group-mappings/:group/:role_id",
+            axum::routing::delete(iam::remove_group_role),
+        )
         .route("/hosts", get(hosts::list).post(hosts::register))
         .route("/hosts/:id", get(hosts::get))
         .route("/vms", get(vms::list).post(vms::create))
@@ -55,6 +77,7 @@ pub fn router(store: Store) -> Router {
         .route("/tasks", get(tasks::list))
         .route("/tasks/:id", get(tasks::get))
         .route("/events", get(events::list))
+        .layer(Extension(auth))
         .with_state(store);
 
     Router::new()

@@ -92,6 +92,31 @@ pub struct Template {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A user row (identity mirrored from OIDC; roles hang off it — design M12b).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct User {
+    pub id: Uuid,
+    pub subject: String,
+    pub username: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub is_active: bool,
+    pub last_login: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A role row.
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Role {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub builtin: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// An asynchronous task row.
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct Task {
@@ -612,6 +637,270 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    // ---- IAM: users, roles, permissions (design M12b) --------------------
+
+    /// Create or refresh a user from a validated token identity (JIT), stamping
+    /// last_login.
+    pub async fn upsert_user(
+        &self,
+        subject: &str,
+        username: &str,
+        email: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<User> {
+        let now = Utc::now();
+        sqlx::query_as::<_, User>(
+            "INSERT INTO users (id, subject, username, email, display_name, last_login, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
+             ON CONFLICT (subject) DO UPDATE
+               SET username=$3, email=$4, display_name=$5, last_login=$6, updated_at=$6
+             RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(subject)
+        .bind(username)
+        .bind(email)
+        .bind(display_name)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<User>> {
+        sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY username")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_user(&self, id: Uuid) -> Result<Option<User>> {
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    /// Roles directly assigned to a user (not counting group-derived roles).
+    pub async fn roles_for_user(&self, user_id: Uuid) -> Result<Vec<Role>> {
+        sqlx::query_as::<_, Role>(
+            "SELECT r.* FROM roles r
+             JOIN user_roles ur ON ur.role_id = r.id
+             WHERE ur.user_id = $1 ORDER BY r.name",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Replace a user's direct role assignments.
+    pub async fn set_user_roles(&self, user_id: Uuid, role_ids: &[Uuid]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM user_roles WHERE user_id=$1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        for rid in role_ids {
+            sqlx::query(
+                "INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+            )
+            .bind(user_id)
+            .bind(rid)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Grant a role by name (used for the first-admin bootstrap).
+    pub async fn grant_role_by_name(&self, user_id: Uuid, role: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO user_roles (user_id, role_id)
+             SELECT $1, id FROM roles WHERE name=$2
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(role)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// The effective permission set for a user: the union over their directly
+    /// assigned roles and any roles mapped from the token's `groups`.
+    pub async fn effective_permissions(
+        &self,
+        user_id: Uuid,
+        groups: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT DISTINCT rp.permission FROM role_permissions rp
+               WHERE rp.role_id IN (
+                   SELECT role_id FROM user_roles WHERE user_id = $1
+                   UNION
+                   SELECT role_id FROM group_roles WHERE "group" = ANY($2)
+               )"#,
+        )
+        .bind(user_id)
+        .bind(groups)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(p,)| p).collect())
+    }
+
+    pub async fn list_roles(&self) -> Result<Vec<Role>> {
+        sqlx::query_as::<_, Role>("SELECT * FROM roles ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_role(&self, id: Uuid) -> Result<Option<Role>> {
+        sqlx::query_as::<_, Role>("SELECT * FROM roles WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn role_permissions(&self, role_id: Uuid) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT permission FROM role_permissions WHERE role_id=$1 ORDER BY permission",
+        )
+        .bind(role_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(p,)| p).collect())
+    }
+
+    /// Create a custom role with a permission set.
+    pub async fn create_role(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        permissions: &[String],
+    ) -> Result<Role> {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let mut tx = self.pool.begin().await?;
+        let role = sqlx::query_as::<_, Role>(
+            "INSERT INTO roles (id, name, description, builtin, created_at, updated_at)
+             VALUES ($1,$2,$3,false,$4,$4) RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(description)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+        for p in permissions {
+            sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1,$2)")
+                .bind(id)
+                .bind(p)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(role)
+    }
+
+    /// Update a custom role's description + permissions (name kept).
+    pub async fn update_role_permissions(
+        &self,
+        id: Uuid,
+        description: Option<&str>,
+        permissions: &[String],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE roles SET description=$2, updated_at=$3 WHERE id=$1")
+            .bind(id)
+            .bind(description)
+            .bind(Utc::now())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM role_permissions WHERE role_id=$1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        for p in permissions {
+            sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1,$2)")
+                .bind(id)
+                .bind(p)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Delete a non-builtin role. Returns false if it was builtin or absent.
+    pub async fn delete_role(&self, id: Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM roles WHERE id=$1 AND builtin=false")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// group -> role name mappings (for display/management).
+    pub async fn list_group_roles(&self) -> Result<Vec<(String, String)>> {
+        sqlx::query_as(
+            r#"SELECT gr."group", r.name FROM group_roles gr
+               JOIN roles r ON r.id = gr.role_id ORDER BY gr."group""#,
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn add_group_role(&self, group: &str, role_id: Uuid) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO group_roles ("group", role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING"#,
+        )
+        .bind(group)
+        .bind(role_id)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn remove_group_role(&self, group: &str, role_id: Uuid) -> Result<bool> {
+        let res = sqlx::query(r#"DELETE FROM group_roles WHERE "group"=$1 AND role_id=$2"#)
+            .bind(group)
+            .bind(role_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Re-sync built-in roles from code: ensure each exists (builtin=true) and
+    /// its permission set matches the catalog. Runs at startup.
+    pub async fn sync_builtin_roles(&self, roles: &[crate::rbac::BuiltinRole]) -> Result<()> {
+        let now = Utc::now();
+        for r in roles {
+            let mut tx = self.pool.begin().await?;
+            let id: Uuid = sqlx::query_scalar(
+                "INSERT INTO roles (id, name, description, builtin, created_at, updated_at)
+                 VALUES ($1,$2,$3,true,$4,$4)
+                 ON CONFLICT (name) DO UPDATE SET description=$3, builtin=true, updated_at=$4
+                 RETURNING id",
+            )
+            .bind(Uuid::new_v4())
+            .bind(r.name)
+            .bind(r.description)
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM role_permissions WHERE role_id=$1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            for p in &r.permissions {
+                sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1,$2)")
+                    .bind(id)
+                    .bind(*p)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

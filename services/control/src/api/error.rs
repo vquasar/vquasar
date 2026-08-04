@@ -52,6 +52,22 @@ impl ApiError {
         }
     }
 
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ErrorCode::Unauthorized,
+            message: message.into(),
+        }
+    }
+
+    pub fn forbidden(permission: &str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: ErrorCode::Forbidden,
+            message: format!("missing permission: {permission}"),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,

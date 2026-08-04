@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
+use crate::authz::AuthUser;
 use crate::store::{Image, Store, Template, Vm};
 
 #[derive(Debug, Deserialize)]
@@ -34,8 +35,10 @@ pub struct Accepted {
 
 pub async fn create(
     State(store): State<Store>,
+    user: AuthUser,
     Json(body): Json<CreateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:create")?;
     body.spec
         .validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -89,8 +92,10 @@ pub struct CreateVmFromTemplate {
 /// and cloud-init seed), then reconciliation provisions and launches it.
 pub async fn create_from_template(
     State(store): State<Store>,
+    user: AuthUser,
     Json(body): Json<CreateVmFromTemplate>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:create")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -262,9 +267,11 @@ pub struct AddNic {
 
 pub async fn update(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:update")?;
     let vm = store
         .get_vm(id)
         .await?
@@ -334,11 +341,17 @@ pub async fn update(
     ))
 }
 
-pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Vm>>> {
+pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Vm>>> {
+    user.require("vm:read")?;
     Ok(Json(store.list_vms().await?))
 }
 
-pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<Json<Vm>> {
+pub async fn get(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vm>> {
+    user.require("vm:read")?;
     store
         .get_vm(id)
         .await?
@@ -348,8 +361,10 @@ pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<
 
 pub async fn delete(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:delete")?;
     let vm = store
         .get_vm(id)
         .await?
@@ -368,15 +383,19 @@ pub async fn delete(
 
 pub async fn start(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:power")?;
     set_power(&store, id, DesiredPowerState::Running, "vm.start").await
 }
 
 pub async fn stop(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:power")?;
     set_power(&store, id, DesiredPowerState::Stopped, "vm.stop").await
 }
 
@@ -389,9 +408,11 @@ pub struct MigrateRequest {
 /// migration controller drives it asynchronously.
 pub async fn migrate(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<MigrateRequest>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
+    user.require("vm:migrate")?;
     let vm = store
         .get_vm(id)
         .await?

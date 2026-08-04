@@ -54,6 +54,10 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 
+# AuthN/RBAC (design M12b): OIDC JWT validation + JWKS/discovery fetch
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # gRPC (agent <-> control plane); `tls` enables rustls mTLS (design M12a)
 tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"

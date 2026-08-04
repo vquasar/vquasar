@@ -6,9 +6,12 @@
 
 mod agent;
 mod api;
+mod authn;
+mod authz;
 mod config;
 mod console;
 mod netalloc;
+mod rbac;
 mod reconcile;
 mod scheduler;
 mod store;
@@ -59,6 +62,24 @@ async fn main() -> anyhow::Result<()> {
     let store = Store::new(pool, config.storage.shared_volumes_dir.clone());
     store.migrate().await?;
     info!("migrations applied");
+    store
+        .sync_builtin_roles(&crate::rbac::builtin_roles())
+        .await?;
+
+    // Authentication / RBAC wiring (design M12b). Disabled -> dev superuser.
+    let auth_state = if config.auth.enabled() {
+        info!(issuer = %config.auth.issuer, "authentication enabled (OIDC)");
+        let authn = crate::authn::Authenticator::discover(config.auth.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("OIDC discovery failed: {e}"))?;
+        crate::authz::AuthState {
+            authenticator: Some(std::sync::Arc::new(authn)),
+            bootstrap_admin: config.auth.bootstrap_admin.clone(),
+        }
+    } else {
+        info!("authentication DISABLED (dev mode) — set [auth] issuer to enforce");
+        crate::authz::AuthState::disabled()
+    };
 
     // Reconcile loop (host polling + VM reconciliation).
     let interval = Duration::from_secs(config.reconcile.interval_secs);
@@ -74,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     // Public REST API, optionally serving the built web UI. Static assets are
     // served from `/assets`; every other non-API path falls back to
     // `index.html` (200) so the single-page router handles deep links.
-    let mut app = api::router(store);
+    let mut app = api::router(store, auth_state);
     if let Some(ui_dir) = &config.server.ui_dir {
         let dir = std::path::PathBuf::from(ui_dir);
         let index = dir.join("index.html");

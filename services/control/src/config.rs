@@ -22,7 +22,54 @@ pub struct ControlConfig {
     #[serde(default)]
     pub tls: TlsConfig,
     #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// OIDC authentication + RBAC bootstrap (design M12b). Auth is enforced only
+/// when an `issuer` is set and `disabled` is false — the dev escape hatch that
+/// keeps a fresh install open until an identity provider is wired up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub audience: String,
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
+    /// Identity (email or OIDC subject) granted `admin` on first login.
+    #[serde(default)]
+    pub bootstrap_admin: Option<String>,
+    /// Explicitly disable auth (dev only). Production installs must not set this.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+fn default_groups_claim() -> String {
+    "groups".to_string()
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            issuer: String::new(),
+            client_id: String::new(),
+            audience: String::new(),
+            groups_claim: default_groups_claim(),
+            bootstrap_admin: None,
+            disabled: false,
+        }
+    }
+}
+
+impl AuthConfig {
+    /// Whether requests must carry a valid token.
+    pub fn enabled(&self) -> bool {
+        !self.disabled && !self.issuer.is_empty()
+    }
 }
 
 /// TLS material (design M12a). When all set, the control plane serves its API

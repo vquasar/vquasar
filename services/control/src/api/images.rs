@@ -9,6 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
+use crate::authz::AuthUser;
 use crate::store::{Image, Store};
 
 #[derive(Debug, Deserialize)]
@@ -37,8 +38,10 @@ fn default_true() -> bool {
 
 pub async fn create(
     State(store): State<Store>,
+    user: AuthUser,
     Json(body): Json<CreateImage>,
 ) -> ApiResult<(StatusCode, Json<Image>)> {
+    user.require("image:create")?;
     if body.name.is_empty() || body.source_path.is_empty() {
         return Err(ApiError::invalid("name and source_path are required"));
     }
@@ -61,9 +64,11 @@ pub async fn create(
 
 pub async fn update(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateImage>,
 ) -> ApiResult<Json<Image>> {
+    user.require("image:update")?;
     if body.name.is_empty() || body.source_path.is_empty() {
         return Err(ApiError::invalid("name and source_path are required"));
     }
@@ -86,11 +91,17 @@ pub async fn update(
         .ok_or_else(|| ApiError::invalid(format!("image not found: {id}")))
 }
 
-pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Image>>> {
+pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Image>>> {
+    user.require("image:read")?;
     Ok(Json(store.list_images().await?))
 }
 
-pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<Json<Image>> {
+pub async fn get(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Image>> {
+    user.require("image:read")?;
     store
         .get_image(id)
         .await?
@@ -98,7 +109,12 @@ pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<
         .ok_or_else(|| ApiError::invalid(format!("image not found: {id}")))
 }
 
-pub async fn delete(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+pub async fn delete(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    user.require("image:delete")?;
     if store.delete_image(id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {

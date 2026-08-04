@@ -30,6 +30,11 @@
 #   --db-url URL         Postgres URL              (default: postgres://ch:ch@127.0.0.1:5432/ch_orchestrator)
 #   --listen ADDR        REST/UI listen            (default: 0.0.0.0:8080)
 #   --ui-dir PATH        UI dist to serve          (default: install ./ui/dist to /usr/local/share/ch-orchestrator/ui)
+#   --oidc-issuer URL    OIDC issuer (enables auth; design M12b)
+#   --oidc-client-id ID  OIDC client id (for the UI login)
+#   --oidc-audience AUD  Expected token audience
+#   --bootstrap-admin ID Email/subject granted admin on first login
+#   --allow-no-auth      Dev/lab only: install control without authentication
 set -euo pipefail
 
 BIN_DIR=/usr/local/bin
@@ -46,6 +51,7 @@ NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
+OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -63,12 +69,25 @@ while [[ $# -gt 0 ]]; do
     --tls-ca) TLS_CA="$2"; shift 2 ;;
     --tls-cert) TLS_CERT="$2"; shift 2 ;;
     --tls-key) TLS_KEY="$2"; shift 2 ;;
+    --oidc-issuer) OIDC_ISSUER="$2"; shift 2 ;;
+    --oidc-client-id) OIDC_CLIENT_ID="$2"; shift 2 ;;
+    --oidc-audience) OIDC_AUDIENCE="$2"; shift 2 ;;
+    --bootstrap-admin) BOOTSTRAP_ADMIN="$2"; shift 2 ;;
+    --allow-no-auth) ALLOW_NO_AUTH=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ $EUID -eq 0 ]] || { echo "error: must run as root" >&2; exit 1; }
+
+# Authentication is mandatory for the control plane (design M12b). The dev/lab
+# escape hatch is an explicit --allow-no-auth.
+if [[ "$ROLE" == "control" && -z "$OIDC_ISSUER" && $ALLOW_NO_AUTH -eq 0 ]]; then
+  echo "error: authentication is required. Pass --oidc-issuer/--oidc-client-id/--oidc-audience" >&2
+  echo "       and --bootstrap-admin, or --allow-no-auth for a dev/lab install." >&2
+  exit 1
+fi
 
 SVC="ch-$ROLE"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -95,6 +114,14 @@ tls_env() {
   [[ -n "$TLS_CA" ]] && echo "CH_${prefix}_TLS__CA=$TLS_CA"
   [[ -n "$TLS_CERT" ]] && echo "CH_${prefix}_TLS__CERT=$TLS_CERT"
   [[ -n "$TLS_KEY" ]] && echo "CH_${prefix}_TLS__KEY=$TLS_KEY"
+}
+
+# Emit the OIDC/RBAC env vars (design M12b) for the control plane.
+auth_env() {
+  [[ -n "$OIDC_ISSUER" ]] && echo "CH_CONTROL_AUTH__ISSUER=$OIDC_ISSUER"
+  [[ -n "$OIDC_CLIENT_ID" ]] && echo "CH_CONTROL_AUTH__CLIENT_ID=$OIDC_CLIENT_ID"
+  [[ -n "$OIDC_AUDIENCE" ]] && echo "CH_CONTROL_AUTH__AUDIENCE=$OIDC_AUDIENCE"
+  [[ -n "$BOOTSTRAP_ADMIN" ]] && echo "CH_CONTROL_AUTH__BOOTSTRAP_ADMIN=$BOOTSTRAP_ADMIN"
 }
 
 write_env() {
@@ -167,6 +194,7 @@ CH_CONTROL_RECONCILE__INTERVAL_SECS=3
 CH_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
 ${UI_DIR:+CH_CONTROL_SERVER__UI_DIR=$UI_DIR}
 $(tls_env CONTROL)
+$(auth_env)
 EOF
 
   cat > "$UNIT_DIR/$SVC.service" <<EOF

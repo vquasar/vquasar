@@ -7,6 +7,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
+use crate::authz::AuthUser;
 use crate::store::{Network, Store};
 
 #[derive(Debug, Deserialize)]
@@ -19,8 +20,10 @@ pub struct CreateNetwork {
 
 pub async fn create(
     State(store): State<Store>,
+    user: AuthUser,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<(StatusCode, Json<Network>)> {
+    user.require("network:create")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -35,9 +38,11 @@ pub async fn create(
 
 pub async fn update(
     State(store): State<Store>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<Json<Network>> {
+    user.require("network:update")?;
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
@@ -53,11 +58,17 @@ pub async fn update(
         .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
 }
 
-pub async fn list(State(store): State<Store>) -> ApiResult<Json<Vec<Network>>> {
+pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Network>>> {
+    user.require("network:read")?;
     Ok(Json(store.list_networks().await?))
 }
 
-pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<Json<Network>> {
+pub async fn get(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Network>> {
+    user.require("network:read")?;
     store
         .get_network(id)
         .await?
@@ -65,7 +76,12 @@ pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<
         .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
 }
 
-pub async fn delete(State(store): State<Store>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+pub async fn delete(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    user.require("network:delete")?;
     if store.delete_network(id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {

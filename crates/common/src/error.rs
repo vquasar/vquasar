@@ -80,6 +80,8 @@ pub enum ErrorCode {
     HypervisorError,
     AgentUnavailable,
     InvalidConfiguration,
+    Unauthorized,
+    Forbidden,
     Internal,
 }
 
@@ -96,6 +98,8 @@ impl ErrorCode {
             ErrorCode::HypervisorError => "HYPERVISOR_ERROR",
             ErrorCode::AgentUnavailable => "AGENT_UNAVAILABLE",
             ErrorCode::InvalidConfiguration => "INVALID_CONFIGURATION",
+            ErrorCode::Unauthorized => "UNAUTHORIZED",
+            ErrorCode::Forbidden => "FORBIDDEN",
             ErrorCode::Internal => "INTERNAL",
         }
     }
