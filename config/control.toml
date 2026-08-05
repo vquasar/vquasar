@@ -16,6 +16,12 @@ url = "postgres://ch:ch@localhost/vquasar"
 # cert = "/etc/vquasar/certs/pg-client.crt"   # optional client-cert auth
 # key  = "/etc/vquasar/certs/pg-client.key"
 
+[storage]
+# Roots a caller-supplied disk/kernel/firmware/image path must sit under. The
+# agent opens these files with privilege, so without confinement `vm:create` is
+# a read primitive over the host filesystem (design §30).
+allowed_paths = ["/var/lib/vquasar"]
+
 [grpc]
 listen = "0.0.0.0:9443"
 

@@ -298,6 +298,8 @@ pub struct Store {
     shared_volumes_dir: std::sync::Arc<str>,
     /// Field-encryption keyring (design M12c); `None` = plaintext at rest.
     crypto: Option<std::sync::Arc<crate::crypto::Cryptor>>,
+    /// Roots a caller-supplied host path must sit under (design §30).
+    allowed_paths: std::sync::Arc<[String]>,
 }
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
@@ -327,7 +329,19 @@ impl Store {
             pool,
             shared_volumes_dir: shared_volumes_dir.into().into(),
             crypto: None,
+            allowed_paths: vec!["/var/lib/vquasar".to_string()].into(),
         }
+    }
+
+    /// Restrict caller-supplied host paths to these roots (design §30).
+    pub fn with_allowed_paths(mut self, roots: Vec<String>) -> Self {
+        self.allowed_paths = roots.into();
+        self
+    }
+
+    /// The roots a caller-supplied host path must sit under.
+    pub fn allowed_paths(&self) -> &[String] {
+        &self.allowed_paths
     }
 
     /// Attach a field-encryption keyring (design M12c).

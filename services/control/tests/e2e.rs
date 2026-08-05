@@ -320,6 +320,9 @@ impl Harness {
                 format!("127.0.0.1:{port}"),
             )
             .env("VQUASAR_CONTROL_AUTH__DISABLED", "true")
+            // The harness's specs use synthetic paths, so declare the root they
+            // live under; a real install keeps the default (/var/lib/vquasar).
+            .env("VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS", "[\"/x\"]")
             .env("VQUASAR_CONTROL_RECONCILE__INTERVAL_SECS", "1")
             .env("RUST_LOG", "warn")
             .spawn()
@@ -630,4 +633,64 @@ async fn scheduling_migration_and_drain() {
         h.get(&format!("/hosts/{b}")).await["schedulable"],
         json!(false)
     );
+}
+
+/// Two API-level security invariants, end to end against the real binary.
+///
+/// Both were live defects: `vm:read` returned decrypted cloud-init secrets, and
+/// a VM spec could name any host path — including the agent's own key — which
+/// the agent would then open with privilege (design §30).
+#[tokio::test]
+async fn secrets_are_not_returned_and_host_paths_are_confined() {
+    let h = Harness::start().await;
+
+    // --- cloud-init secrets never reach a caller -------------------------
+    let mut spec = vm_spec();
+    spec["cloud_init"] = json!({
+        "password": "hunter2",
+        "user_data": "#cloud-config\nruncmd:\n - echo TOP-SECRET",
+        "ssh_authorized_keys": ["ssh-ed25519 AAAASECRETKEY"],
+    });
+    let (st, created) = h
+        .post("/vms", json!({"name": "secrets", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "create vm: {st} {created}");
+    let vm = created["vm_id"].as_str().unwrap().to_string();
+
+    for path in [format!("/vms/{vm}"), "/vms".to_string()] {
+        let body = h.get(&path).await.to_string();
+        assert!(
+            !body.contains("hunter2"),
+            "password leaked via {path}: {body}"
+        );
+        assert!(
+            !body.contains("TOP-SECRET"),
+            "user-data leaked via {path}: {body}"
+        );
+        assert!(
+            !body.contains("AAAASECRETKEY"),
+            "ssh key leaked via {path}: {body}"
+        );
+    }
+
+    // --- host paths stay inside the permitted roots ----------------------
+    // The harness permits "/x"; the agent's key material is not under it.
+    let mut escaping = vm_spec();
+    escaping["boot"] = json!({"type": "direct_kernel", "kernel": "/x/vmlinuz"});
+    escaping["disks"] = json!([{"path": "/etc/vquasar/tls/agent.key"}]);
+    let (st, body) = h
+        .post("/vms", json!({"name": "escape", "spec": escaping}))
+        .await;
+    assert_eq!(
+        st.as_u16(),
+        400,
+        "reading the agent key must be refused: {body}"
+    );
+
+    let mut traversal = vm_spec();
+    traversal["boot"] = json!({"type": "direct_kernel", "kernel": "/x/../etc/shadow"});
+    let (st, body) = h
+        .post("/vms", json!({"name": "traversal", "spec": traversal}))
+        .await;
+    assert_eq!(st.as_u16(), 400, "traversal must be refused: {body}");
 }

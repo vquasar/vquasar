@@ -412,6 +412,9 @@ pub async fn create(
     body.spec
         .validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
+    // The agent opens these paths with privilege and trusts us to have vetted
+    // them (design §30) — confine them before they reach desired state.
+    crate::api::pathsafe::ensure_spec_within(&body.spec, store.allowed_paths())?;
 
     // Persist desired state first (section 7), then let reconciliation act.
     let vm = store
@@ -741,7 +744,9 @@ pub async fn update(
 
 pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Vm>>> {
     user.require("vm:read")?;
-    Ok(Json(store.list_vms().await?))
+    // Secrets are unsealed at the store boundary for the agent's benefit, not
+    // the caller's (design M12c) — redact before serializing.
+    Ok(Json(crate::api::redact::vms(store.list_vms().await?)))
 }
 
 pub async fn get(
@@ -753,6 +758,7 @@ pub async fn get(
     store
         .get_vm(id)
         .await?
+        .map(crate::api::redact::vm)
         .map(Json)
         .ok_or_else(|| ApiError::vm_not_found(id))
 }

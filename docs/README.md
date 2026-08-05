@@ -17,6 +17,10 @@ Guides for running and developing vquasar. Start at the
 * [**Authentication and RBAC**](oidc-keycloak.md) — wiring an OIDC provider
   (Keycloak as the reference), mapping its groups to vquasar roles, the first-
   admin bootstrap, and how to verify the result.
+* [**Security hardening**](security-hardening.md) — three defects found in
+  review (an agent certificate that was also a control credential, cloud-init
+  secrets returned to any reader, unconfined host paths in a VM spec), what
+  changed, and what to check when upgrading.
 * [**Encrypting the connection to PostgreSQL**](postgres-tls.md) — why the
   driver's default silently accepts plaintext, and how to make TLS mandatory
   and verified.

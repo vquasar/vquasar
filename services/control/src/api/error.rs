@@ -79,7 +79,13 @@ impl ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
-        ApiError::internal(format!("database error: {e}"))
+        // sqlx errors carry table, column and constraint names, and sometimes
+        // the offending value — a unique-violation message is an existence
+        // oracle for a row the caller may not be allowed to know about. Log the
+        // detail for operators and return a constant message, as the module
+        // doc promises (design §37).
+        tracing::error!(error = %e, "database error");
+        ApiError::internal("database error")
     }
 }
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Generate an internal CA and mTLS certificates for vquasar (design
 # M12a). One CA signs the control-plane certificate and one certificate per
-# host agent. Certs carry both serverAuth and clientAuth EKUs so the control
-# cert can act as the gRPC client to agents (mutual TLS) and as the REST/TLS
-# server, while each agent cert serves its gRPC endpoint.
+# host agent. The control certificate carries serverAuth + clientAuth — it is
+# the REST/TLS server and the gRPC client to every agent. Agent certificates
+# carry serverAuth only: they serve their own gRPC endpoint and must not be
+# usable as a credential into another agent (design §30).
 #
 # Usage:
 #   scripts/gen-certs.sh --out DIR --control-host HOST[,HOST...] \
@@ -77,13 +78,20 @@ san_from() {
   echo "${out%,}"
 }
 
+# gen_cert NAME SANS [EKU]
+#
+# EKU defaults to serverAuth only. Only the control plane needs clientAuth: it
+# dials the agents. An agent certificate with clientAuth would also be a valid
+# credential *into* every other agent, so one compromised host could drive the
+# whole fleet — design §30 says a host compromise must not become a
+# control-plane (or fleet) compromise.
 gen_cert() {
-  local name="$1" sans="$2"
+  local name="$1" sans="$2" eku="${3:-serverAuth}"
   openssl genrsa -out "$name.key" 2048 2>/dev/null
   openssl req -new -key "$name.key" -out "$name.csr" -subj "/CN=$name" 2>/dev/null
   cat > "$name.ext" <<EOF
 subjectAltName = $sans
-extendedKeyUsage = serverAuth, clientAuth
+extendedKeyUsage = $eku
 keyUsage = digitalSignature, keyEncipherment
 EOF
   openssl x509 -req -in "$name.csr" -CA ca.crt -CAkey ca.key -CAcreateserial \
@@ -94,7 +102,8 @@ EOF
 }
 
 # Control plane: reachable names + always localhost for local API calls.
-gen_cert control "$(san_from "localhost,127.0.0.1,$CONTROL_HOSTS")"
+# The control plane is both a TLS server (REST/UI) and a client (agent gRPC).
+gen_cert control "$(san_from "localhost,127.0.0.1,$CONTROL_HOSTS")" "serverAuth, clientAuth"
 
 # One cert per agent, named agent-<fqdn>. Accept "fqdn" or "fqdn:ip".
 for a in "${AGENTS[@]}"; do

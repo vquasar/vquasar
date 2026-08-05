@@ -15,6 +15,7 @@ mod ipdiscovery;
 mod manager;
 mod metrics;
 mod network;
+mod peerid;
 mod runtime;
 mod storage;
 
@@ -149,8 +150,16 @@ async fn main() -> anyhow::Result<()> {
         info!(%addr, "serving HostAgent gRPC API (plaintext — configure [tls] for mTLS)");
     }
 
+    // Chaining to the CA is not identity — see peerid (design §30).
+    let identity = crate::peerid::RequireControlIdentity::new(
+        config.tls.enabled().then(|| config.tls.control_cn.clone()),
+    );
+    if config.tls.enabled() {
+        info!(control_cn = %config.tls.control_cn, "requiring control-plane certificate identity");
+    }
+
     server
-        .add_service(HostAgentServer::new(service))
+        .add_service(HostAgentServer::with_interceptor(service, identity))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 

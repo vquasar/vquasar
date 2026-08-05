@@ -329,7 +329,7 @@ fn to_status(err: ManagerError) -> Status {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use vquasar_model::{
         BootSpec, CpuSpec, DesiredPowerState, MemorySpec, PlacementSpec, VirtualMachineSpec,
     };
@@ -339,7 +339,7 @@ mod tests {
 
     use super::*;
 
-    fn service(dir: &std::path::Path) -> AgentService {
+    pub(crate) fn service(dir: &std::path::Path) -> AgentService {
         let backend = Arc::new(FakeBackend::new());
         let network = Arc::new(crate::network::NoopNetworkBackend);
         let migration = crate::manager::MigrationSettings {
