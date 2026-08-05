@@ -527,6 +527,40 @@ impl Store {
         .map(|_| ())
     }
 
+    /// Store a one-time enrollment token (SHA-256 hash) for a host (design M16).
+    pub async fn insert_enrollment_token(
+        &self,
+        host_id: Uuid,
+        token_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO enrollment_tokens (id, host_id, token_hash, expires_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(host_id)
+        .bind(token_hash)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Atomically consume a valid (unused, unexpired) enrollment token, marking
+    /// it used and returning the host it enrolls. `None` if invalid (design M16).
+    pub async fn consume_enrollment_token(&self, token_hash: &str) -> Result<Option<Uuid>> {
+        let row: Option<(Uuid,)> = sqlx::query_as(
+            "UPDATE enrollment_tokens SET used_at = now()
+             WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+             RETURNING host_id",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(h,)| h))
+    }
+
     /// Set a host's admin `schedulable` flag (design M15, host lifecycle:
     /// cordon/uncordon). `false` = maintenance mode — the scheduler places no
     /// new VMs here, but running VMs keep running until drained. Preserved

@@ -14,11 +14,17 @@ import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid
 import BlockIcon from "@mui/icons-material/Block";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CleaningServicesIcon from "@mui/icons-material/CleaningServices";
-import { useDrainHost, useHosts, useRegisterHost, useSetHostSchedulable } from "../api/hooks";
+import {
+  useDrainHost,
+  useEnrollHost,
+  useHosts,
+  useRegisterHost,
+  useSetHostSchedulable,
+} from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatBytes } from "../format";
-import type { DrainResult, Host } from "../api/types";
+import type { DrainResult, EnrollResponse, Host } from "../api/types";
 
 function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
@@ -57,6 +63,76 @@ function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void 
         <Button variant="contained" onClick={submit} disabled={!name || !endpoint || register.isPending}>
           Register
         </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function EnrollDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("http://:9500");
+  const enroll = useEnrollHost();
+  const [result, setResult] = useState<EnrollResponse | null>(null);
+
+  const close = () => {
+    setResult(null);
+    setName("");
+    enroll.reset();
+    onClose();
+  };
+
+  const cmd = result
+    ? `sudo ./install.sh agent --name ${name} \\\n` +
+      `  --bootstrap-token ${result.token} \\\n` +
+      `  --bootstrap-url ${result.bootstrap_url ?? "https://<control>:8080/api/v1/enroll/sign"} \\\n` +
+      `  --bootstrap-ca /path/to/ca.crt`
+    : "";
+
+  return (
+    <Dialog open={open} onClose={close} maxWidth="sm" fullWidth>
+      <DialogTitle>Enroll host</DialogTitle>
+      <DialogContent>
+        {!result ? (
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            <TextField
+              label="Agent gRPC endpoint"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              helperText="Control dials this; the issued cert's SAN is derived from it. e.g. http://10.0.0.11:9500"
+            />
+            {enroll.isError && <Alert severity="error">{(enroll.error as Error).message}</Alert>}
+          </Stack>
+        ) : (
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Alert severity="success">
+              Host registered. Run this on the new host to auto-provision its mTLS cert (the token is
+              one-time and expires in {Math.round(result.expires_in_secs / 60)} min):
+            </Alert>
+            <TextField
+              value={cmd}
+              multiline
+              minRows={4}
+              InputProps={{ readOnly: true, sx: { fontFamily: "monospace", fontSize: 12 } }}
+            />
+            <Alert severity="info">
+              Copy this now — the token is shown only once. The host will appear Ready once its agent
+              is up.
+            </Alert>
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={close}>Close</Button>
+        {!result && (
+          <Button
+            variant="contained"
+            disabled={!name || !endpoint || enroll.isPending}
+            onClick={() => enroll.mutate({ name, endpoint }, { onSuccess: (r) => setResult(r) })}
+          >
+            Enroll
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );
@@ -106,6 +182,7 @@ function DrainResultDialog({ result, onClose }: { result: DrainResult | null; on
 export function Hosts() {
   const hosts = useHosts();
   const [dialog, setDialog] = useState(false);
+  const [enrollOpen, setEnrollOpen] = useState(false);
   const { can } = usePermissions();
   const setSchedulable = useSetHostSchedulable();
   const drain = useDrainHost();
@@ -209,9 +286,14 @@ export function Hosts() {
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Hosts</Typography>
         {manage && (
-          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
-            Register host
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setEnrollOpen(true)}>
+              Enroll host
+            </Button>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
+              Register host
+            </Button>
+          </Stack>
         )}
       </Stack>
       {hosts.isError && <Alert severity="error">{(hosts.error as Error).message}</Alert>}
@@ -231,6 +313,7 @@ export function Hosts() {
         />
       </div>
       <RegisterDialog open={dialog} onClose={() => setDialog(false)} />
+      <EnrollDialog open={enrollOpen} onClose={() => setEnrollOpen(false)} />
       <DrainResultDialog result={drainResult} onClose={() => setDrainResult(null)} />
     </Stack>
   );

@@ -22,6 +22,8 @@ pub struct ControlConfig {
     #[serde(default)]
     pub tls: TlsConfig,
     #[serde(default)]
+    pub enrollment: EnrollmentConfig,
+    #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
     pub encryption: EncryptionConfig,
@@ -108,11 +110,52 @@ pub struct TlsConfig {
     pub cert: Option<String>,
     #[serde(default)]
     pub key: Option<String>,
+    /// Intermediate issuing-CA certificate (PEM) used to sign agent certs at
+    /// enrollment (design M16). Signed by the offline root (`ca`); presented in
+    /// the agent's chain. Only the intermediate lives on control, never the root
+    /// key.
+    #[serde(default)]
+    pub issuer_cert: Option<String>,
+    /// Intermediate issuing-CA private key (PEM). Enables in-process agent-cert
+    /// signing; keep it 0600. Absent ⇒ auto-enrollment is disabled.
+    #[serde(default)]
+    pub issuer_key: Option<String>,
 }
 
 impl TlsConfig {
     pub fn enabled(&self) -> bool {
         self.ca.is_some() && self.cert.is_some() && self.key.is_some()
+    }
+
+    /// Whether the control plane can sign agent certificates (auto-enrollment).
+    pub fn can_issue(&self) -> bool {
+        self.enabled() && self.issuer_cert.is_some() && self.issuer_key.is_some()
+    }
+}
+
+/// Token-based agent auto-enrollment (design M16). Only active when the TLS
+/// issuing CA is configured (`tls.can_issue()`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollmentConfig {
+    /// HTTPS URL agents use to reach this control plane's enrollment endpoint,
+    /// e.g. `https://control.lab:8080`. Returned to operators at enroll time.
+    #[serde(default)]
+    pub control_url: Option<String>,
+    /// One-time enrollment-token lifetime in seconds (default 1h).
+    #[serde(default = "default_token_ttl")]
+    pub token_ttl_secs: u64,
+}
+
+fn default_token_ttl() -> u64 {
+    3600
+}
+
+impl Default for EnrollmentConfig {
+    fn default() -> Self {
+        Self {
+            control_url: None,
+            token_ttl_secs: default_token_ttl(),
+        }
     }
 }
 

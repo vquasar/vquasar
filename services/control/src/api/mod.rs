@@ -3,6 +3,7 @@
 //! return typed errors — no infrastructure logic here (ADR-015).
 
 pub mod error;
+pub mod enroll;
 mod events;
 mod hosts;
 mod iam;
@@ -20,9 +21,13 @@ use axum::{Extension, Router};
 use crate::authz::AuthState;
 use crate::store::Store;
 
+pub use enroll::EnrollmentState;
+
 /// Build the `/api/v1` router bound to `store`, with auth wiring attached.
-pub fn router(store: Store, auth: AuthState) -> Router {
-    let v1 = Router::new()
+/// When `enrollment` is set (the issuing CA is configured), the token-based
+/// agent auto-enrollment endpoints are mounted (design M16).
+pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>) -> Router {
+    let mut v1 = Router::new()
         .route("/auth-config", get(iam::auth_config))
         .route("/me", get(iam::me))
         .route("/permissions", get(iam::permissions))
@@ -125,9 +130,19 @@ pub fn router(store: Store, auth: AuthState) -> Router {
         )
         .route("/tasks", get(tasks::list))
         .route("/tasks/:id", get(tasks::get))
-        .route("/events", get(events::list))
-        .layer(Extension(auth))
-        .with_state(store);
+        .route("/events", get(events::list));
+
+    // Agent auto-enrollment (design M16), only when the issuing CA is present.
+    // `/hosts/enroll` is RBAC-guarded; `/enroll/sign` is token-gated (no OIDC —
+    // it runs before the agent has a client cert).
+    if let Some(en) = enrollment {
+        v1 = v1
+            .route("/hosts/enroll", post(enroll::enroll))
+            .route("/enroll/sign", post(enroll::bootstrap_sign))
+            .layer(Extension(en));
+    }
+
+    let v1 = v1.layer(Extension(auth)).with_state(store);
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))

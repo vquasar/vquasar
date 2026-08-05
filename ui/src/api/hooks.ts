@@ -11,6 +11,7 @@ import type {
   CreateVmFromTemplateRequest,
   CreateVmRequest,
   DrainResult,
+  EnrollResponse,
   Event,
   Host,
   Image,
@@ -236,6 +237,16 @@ export function useRegisterHost() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { name: string; endpoint: string }) => api.post<Host>("/hosts", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["hosts"] }),
+  });
+}
+
+// Agent auto-enrollment (M16): mint a one-time join token.
+export function useEnrollHost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; endpoint: string }) =>
+      api.post<EnrollResponse>("/hosts/enroll", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["hosts"] }),
   });
 }

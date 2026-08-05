@@ -17,6 +17,9 @@
 #   --tls-ca PATH        CA cert for mutual TLS (design M12a)
 #   --tls-cert PATH      This component's certificate (agent: server; control: server + gRPC client)
 #   --tls-key PATH       This component's private key
+#   --tls-issuer-cert P  (control) Intermediate issuing-CA cert for enrollment (M16)
+#   --tls-issuer-key P   (control) Intermediate issuing-CA key (0600); enables signing
+#   --enrollment-url URL (control) HTTPS URL agents reach for enrollment
 #   -h, --help           Show this help
 #
 # agent options:
@@ -26,6 +29,9 @@
 #   --grpc-listen ADDR   gRPC listen               (default: 0.0.0.0:9500)
 #   --seccomp MODE       CH seccomp                (default: log)
 #   --phone-home-url URL Control base URL for cloud-init phone_home IP discovery
+#   --bootstrap-token T  Auto-enroll: one-time token from `POST /hosts/enroll` (M16)
+#   --bootstrap-url URL  Auto-enroll: control's sign endpoint (…/api/v1/enroll/sign)
+#   --bootstrap-ca PATH  Auto-enroll: root CA to trust control during bootstrap
 #                        (design M13e), e.g. https://172.16.56.8:8080
 #
 # control options:
@@ -58,6 +64,8 @@ NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
+TLS_ISSUER_CERT=""; TLS_ISSUER_KEY=""; ENROLLMENT_URL=""
+BOOTSTRAP_TOKEN=""; BOOTSTRAP_URL=""; BOOTSTRAP_CA=""
 OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; OIDC_CA=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
 ENC_KEY=""; ENC_KEY_ID=""; ENC_OLD_KEYS=""
 
@@ -78,6 +86,12 @@ while [[ $# -gt 0 ]]; do
     --tls-ca) TLS_CA="$2"; shift 2 ;;
     --tls-cert) TLS_CERT="$2"; shift 2 ;;
     --tls-key) TLS_KEY="$2"; shift 2 ;;
+    --tls-issuer-cert) TLS_ISSUER_CERT="$2"; shift 2 ;;
+    --tls-issuer-key) TLS_ISSUER_KEY="$2"; shift 2 ;;
+    --enrollment-url) ENROLLMENT_URL="$2"; shift 2 ;;
+    --bootstrap-token) BOOTSTRAP_TOKEN="$2"; shift 2 ;;
+    --bootstrap-url) BOOTSTRAP_URL="$2"; shift 2 ;;
+    --bootstrap-ca) BOOTSTRAP_CA="$2"; shift 2 ;;
     --oidc-issuer) OIDC_ISSUER="$2"; shift 2 ;;
     --oidc-client-id) OIDC_CLIENT_ID="$2"; shift 2 ;;
     --oidc-audience) OIDC_AUDIENCE="$2"; shift 2 ;;
@@ -131,6 +145,12 @@ tls_env() {
   [[ -n "$TLS_CA" ]] && echo "CH_${prefix}_TLS__CA=$TLS_CA"
   [[ -n "$TLS_CERT" ]] && echo "CH_${prefix}_TLS__CERT=$TLS_CERT"
   [[ -n "$TLS_KEY" ]] && echo "CH_${prefix}_TLS__KEY=$TLS_KEY"
+  if [[ "$prefix" == "CONTROL" ]]; then
+    # Intermediate issuing CA + enrollment URL enable agent auto-enrollment (M16).
+    [[ -n "$TLS_ISSUER_CERT" ]] && echo "CH_CONTROL_TLS__ISSUER_CERT=$TLS_ISSUER_CERT"
+    [[ -n "$TLS_ISSUER_KEY" ]] && echo "CH_CONTROL_TLS__ISSUER_KEY=$TLS_ISSUER_KEY"
+    [[ -n "$ENROLLMENT_URL" ]] && echo "CH_CONTROL_ENROLLMENT__CONTROL_URL=$ENROLLMENT_URL"
+  fi
 }
 
 # Emit the OIDC/RBAC env vars (design M12b) for the control plane.
@@ -161,6 +181,29 @@ write_env() {
 }
 
 if [[ "$ROLE" == "agent" ]]; then
+  # Auto-enrollment (design M16): with a one-time token, self-provision the mTLS
+  # cert — generate a keypair + CSR locally and have control sign it. No hand-
+  # copied agent certs. The private key never leaves this host.
+  if [[ -n "$BOOTSTRAP_TOKEN" ]]; then
+    [[ -n "$BOOTSTRAP_URL" && -n "$BOOTSTRAP_CA" ]] || {
+      echo "error: --bootstrap-token requires --bootstrap-url and --bootstrap-ca" >&2; exit 1; }
+    TLSDIR="$CONF_DIR/tls"; install -d -m 0755 "$TLSDIR"
+    bkey="$TLSDIR/agent.key"; bcsr="$TLSDIR/agent.csr"; bcert="$TLSDIR/agent.crt"; bca="$TLSDIR/ca.crt"
+    install -m 0644 "$BOOTSTRAP_CA" "$bca"
+    echo "==> enrolling (CN=$NAME): generating key + CSR"
+    openssl genrsa -out "$bkey" 2048 2>/dev/null; chmod 600 "$bkey"
+    openssl req -new -key "$bkey" -out "$bcsr" -subj "/CN=$NAME" 2>/dev/null
+    echo "==> requesting certificate from $BOOTSTRAP_URL"
+    code=$(curl -sS --cacert "$bca" -H "X-Enrollment-Token: $BOOTSTRAP_TOKEN" \
+      -H "Content-Type: application/x-pem-file" --data-binary @"$bcsr" \
+      -o "$bcert" -w '%{http_code}' "$BOOTSTRAP_URL" || echo 000)
+    if [[ "$code" != "200" ]] || ! openssl x509 -in "$bcert" -noout 2>/dev/null; then
+      echo "error: enrollment failed (HTTP $code): $(cat "$bcert" 2>/dev/null)" >&2; exit 1
+    fi
+    rm -f "$bcsr"
+    echo "==> enrolled: wrote $bcert (signed by the control-plane issuing CA)"
+    TLS_CA="$bca"; TLS_CERT="$bcert"; TLS_KEY="$bkey"
+  fi
   if [[ -z "$ADVERTISE_HOST" ]]; then
     ADVERTISE_HOST="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
     ADVERTISE_HOST="${ADVERTISE_HOST:-127.0.0.1}"

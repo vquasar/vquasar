@@ -15,8 +15,11 @@
 #   --agent FQDN[:IP]   A host agent's FQDN and optional IP (repeatable)
 #   -h, --help          Show this help
 #
-# Distribute: ca.crt to everyone; control.{crt,key} to the control host;
-# agent-<fqdn>.{crt,key} + ca.crt to that agent.
+# Distribute: ca.crt to everyone; control.{crt,key} + int.{crt,key} to the
+# control host (int.* is the intermediate issuing CA for auto-enrollment — keep
+# int.key offline-safe/0600); agent-<fqdn>.{crt,key} + ca.crt to that agent
+# (only needed for the legacy manual path; auto-enrolled agents get their cert
+# signed by the intermediate at join time).
 set -euo pipefail
 
 OUT=""; CONTROL_HOSTS=""; AGENTS=()
@@ -33,12 +36,30 @@ done
 
 mkdir -p "$OUT"; cd "$OUT"
 
-# --- CA (reused if it already exists) ---
+# --- Root CA (reused if it already exists) ---
 if [[ ! -f ca.crt ]]; then
   openssl genrsa -out ca.key 4096 2>/dev/null
   openssl req -x509 -new -key ca.key -sha256 -days 3650 -out ca.crt \
     -subj "/CN=ch-orchestrator-ca" 2>/dev/null
-  echo "==> created CA (ca.crt)"
+  echo "==> created root CA (ca.crt)"
+fi
+
+# --- Intermediate issuing CA (design M16) ---
+# Signs agent certificates at auto-enrollment; only the intermediate key goes on
+# the control host, so the root key can stay offline. Agents present the chain
+# leaf->intermediate->root; everyone trusts the root (ca.crt) as anchor.
+if [[ ! -f int.crt ]]; then
+  openssl genrsa -out int.key 4096 2>/dev/null
+  openssl req -new -key int.key -out int.csr -subj "/CN=ch-orchestrator-intermediate" 2>/dev/null
+  cat > int.ext <<EOF
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+EOF
+  openssl x509 -req -in int.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -sha256 -days 1825 -out int.crt -extfile int.ext 2>/dev/null
+  rm -f int.csr int.ext
+  chmod 600 int.key
+  echo "==> created intermediate CA (int.crt) — put int.crt + int.key on control"
 fi
 
 # san_from "a,b,1.2.3.4" -> "DNS:a,DNS:b,IP:1.2.3.4"

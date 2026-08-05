@@ -86,6 +86,15 @@ export interface Vm {
 
 export type HostState = "Ready" | "NotReady" | "Maintenance" | "Disabled";
 
+// Agent auto-enrollment (M16).
+export interface EnrollResponse {
+  host_id: string;
+  token: string;
+  bootstrap_url: string | null;
+  ca_cert: string;
+  expires_in_secs: number;
+}
+
 // Host drain result (M15, host lifecycle).
 export interface DrainMove {
   vm_id: string;

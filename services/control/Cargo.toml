@@ -36,6 +36,9 @@ chrono.workspace = true
 
 aes-gcm.workspace = true
 base64.workspace = true
+# Already built transitively via rustls; used directly for enrollment-token
+# CSPRNG + SHA-256 hashing (design M16).
+ring = "0.17"
 ipnet.workspace = true
 
 clap.workspace = true

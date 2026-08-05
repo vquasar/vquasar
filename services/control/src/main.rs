@@ -114,7 +114,22 @@ async fn main() -> anyhow::Result<()> {
     // Public REST API, optionally serving the built web UI. Static assets are
     // served from `/assets`; every other non-API path falls back to
     // `index.html` (200) so the single-page router handles deep links.
-    let mut app = api::router(store, auth_state);
+    // Agent auto-enrollment (design M16): active only when the intermediate
+    // issuing CA is configured.
+    let enrollment = if config.tls.can_issue() {
+        info!("agent auto-enrollment enabled (intermediate CA present)");
+        Some(api::EnrollmentState {
+            root_ca: config.tls.ca.clone().unwrap(),
+            issuer_cert: config.tls.issuer_cert.clone().unwrap(),
+            issuer_key: config.tls.issuer_key.clone().unwrap(),
+            control_url: config.enrollment.control_url.clone(),
+            token_ttl_secs: config.enrollment.token_ttl_secs,
+        })
+    } else {
+        None
+    };
+
+    let mut app = api::router(store, auth_state, enrollment);
     if let Some(ui_dir) = &config.server.ui_dir {
         let dir = std::path::PathBuf::from(ui_dir);
         let index = dir.join("index.html");
