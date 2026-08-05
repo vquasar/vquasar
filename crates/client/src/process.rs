@@ -2,7 +2,7 @@
 //!
 //! One process backs one VM. Crucially, dropping a [`ChProcess`] does **not**
 //! kill the VMM: `tokio`'s `Child` only kills on drop when `kill_on_drop` is
-//! set, and we deliberately leave it unset so that VMs survive `ch-agent`
+//! set, and we deliberately leave it unset so that VMs survive `vquasar-agent`
 //! restarts (design document, section 11, ADR-002). The process is only
 //! terminated through the explicit [`ChProcess::kill`] call.
 

@@ -144,8 +144,7 @@ cargo run -p vquasar-agent --example agent_client -- delete <vm-id>
 [`../scripts/agent-restart-demo.sh`](../scripts/agent-restart-demo.sh) scripts
 the restart-survival scenario end to end — start a VM, kill the agent, confirm
 the VM keeps running, restart the agent, confirm it re-attaches to the same
-process, then delete. (It still refers to the pre-rename `ch-agent` crate and
-needs updating before it will run.)
+process, then delete.
 
 ## Conventions
 

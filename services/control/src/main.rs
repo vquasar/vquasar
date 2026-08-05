@@ -1,4 +1,4 @@
-//! `ch-control` — the control-plane binary (design document, section 8).
+//! `vquasar-control` — the control-plane binary (design document, section 8).
 //!
 //! Milestone 3: persists desired state in PostgreSQL, serves the public REST
 //! API, and runs the reconcile loop that polls host agents and drives VMs to
@@ -33,7 +33,7 @@ use crate::store::Store;
 
 /// vquasar control plane.
 #[derive(Debug, Parser)]
-#[command(name = "ch-control", version, about)]
+#[command(name = "vquasar-control", version, about)]
 struct Cli {
     /// Path to a TOML configuration file.
     #[arg(short, long, env = "VQUASAR_CONTROL_CONFIG")]
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         &config.logging.level,
         config.logging.format == "json",
         config.logging.otlp_endpoint.as_deref(),
-        "ch-control",
+        "vquasar-control",
     );
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
@@ -220,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     }
 
-    info!("ch-control stopped");
+    info!("vquasar-control stopped");
     Ok(())
 }
 

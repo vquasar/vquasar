@@ -4,7 +4,7 @@
 //! The field names and shapes here match the Cloud Hypervisor OpenAPI schema
 //! verbatim (`VmConfig`, `CpusConfig`, `MemoryConfig`, `PayloadConfig`,
 //! `DiskConfig`, `NetConfig`, `ConsoleConfig`, `VmInfo`). Per ADR-013 these
-//! types are private to `ch-client` and must not leak into the domain model —
+//! types are private to `vquasar-client` and must not leak into the domain model —
 //! [`to_vm_config`] is the one-way bridge.
 
 use serde::{Deserialize, Serialize};

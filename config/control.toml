@@ -1,4 +1,4 @@
-# Example ch-control configuration.
+# Example vquasar-control configuration.
 # Override any value with an environment variable, e.g.
 #   VQUASAR_CONTROL_SERVER__LISTEN=127.0.0.1:9000
 
