@@ -280,6 +280,7 @@ impl ControlConfig {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::result_large_err)]
     use super::*;
 
     #[test]

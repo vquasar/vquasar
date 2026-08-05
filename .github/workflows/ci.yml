@@ -32,8 +32,11 @@ jobs:
       - name: Install protoc (tonic-build needs it)
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned so CI matches local dev (lint sets drift between Rust releases);
+      # bump deliberately.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.93.1"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
