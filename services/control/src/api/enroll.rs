@@ -135,12 +135,20 @@ pub async fn bootstrap_sign(
 
     // Control chooses the identity from the enrolled endpoint — never from the
     // CSR — so a token can only ever yield a cert for the host it enrolled.
-    let san = san_for_endpoint(&host.endpoint)
+    let endpoint_san = san_for_endpoint(&host.endpoint)
         .ok_or_else(|| ApiError::invalid("cannot derive SAN from host endpoint"))?;
+
+    // Record the certificate identity so overlay IPsec can pin this peer, and
+    // reject a subject OVS would not be able to parse (M18b).
+    let cn = csr_common_name(&csr_pem).map_err(|e| ApiError::invalid(e.to_string()))?;
+    let san = format!("{endpoint_san},DNS:{cn}");
 
     let chain = sign_csr(csr_pem, en.issuer_cert.clone(), en.issuer_key.clone(), san)
         .await
         .map_err(|e| ApiError::internal(format!("sign CSR: {e}")))?;
+    if let Err(e) = store.set_host_cert_cn(host.id, &cn).await {
+        tracing::warn!(error = %e, host = %host.id, "could not record host certificate CN");
+    }
 
     store
         .insert_event(
@@ -180,6 +188,50 @@ fn san_for_endpoint(endpoint: &str) -> Option<String> {
     })
 }
 
+/// The Common Name in a CSR subject, as `ovs-monitor-ipsec` would read it.
+///
+/// It parses the subject with `-nameopt RFC2253` and a regex requiring a comma
+/// after the CN, so a subject whose *only* RDN is the CN never matches and
+/// every IPsec tunnel then reports a misleading "certificate not set". We
+/// therefore require a second RDN (`/O=vquasar/CN=…`) and say why when it is
+/// missing, rather than issuing a certificate that silently cannot be used.
+pub fn csr_common_name(csr_pem: &str) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vquasar-csr-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir)?;
+    let path = dir.join("csr.pem");
+    std::fs::write(&path, csr_pem)?;
+    let out = Command::new("openssl")
+        .args(["req", "-noout", "-subject", "-nameopt", "RFC2253", "-in"])
+        .arg(&path)
+        .output();
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = out?;
+    if !out.status.success() {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "cannot read CSR subject",
+        ));
+    }
+    let subject = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let rdns = subject.trim_start_matches("subject=").trim();
+    let cn = rdns
+        .split(',')
+        .find_map(|p| p.trim().strip_prefix("CN="))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "CSR subject has no CN"))?
+        .to_string();
+    if rdns.split(',').count() < 2 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "CSR subject must carry a second RDN after the CN (e.g. /O=vquasar/CN=agent-host1): \
+             OVS reads the CN with a regex that requires a trailing comma, so a single-RDN \
+             subject cannot be used for overlay IPsec",
+        ));
+    }
+    Ok(cn)
+}
+
 /// Sign a CSR with the intermediate CA via openssl (consistent with
 /// `gen-certs.sh`), returning the leaf+intermediate PEM chain.
 async fn sign_csr(
@@ -216,6 +268,10 @@ async fn sign_csr(
                 // never a client credential. With clientAuth it would also be a
                 // valid ticket into every *other* agent's gRPC API, so one
                 // compromised host could drive the fleet (design §30).
+                //
+                // `san` includes the CN as a DNS name: IKE presents the peer id
+                // as a bare string, which strongSwan treats as ID_FQDN and can
+                // only match against a dNSName SAN (M18b).
                 "subjectAltName = {san}\n\
                  extendedKeyUsage = serverAuth\n\
                  keyUsage = digitalSignature, keyEncipherment\n"

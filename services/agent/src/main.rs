@@ -12,6 +12,7 @@ mod firewall;
 mod grpc;
 mod inventory;
 mod ipdiscovery;
+mod ipsec;
 mod manager;
 mod metrics;
 mod network;
@@ -79,7 +80,21 @@ async fn main() -> anyhow::Result<()> {
     ));
     let network = Arc::new(
         network::OvsNetworkBackend::new(config.network.bridge.clone())
-            .with_port_security(config.network.port_security),
+            .with_port_security(config.network.port_security)
+            .with_ipsec_credentials(
+                match (
+                    config.tls.cert.as_ref(),
+                    config.tls.key.as_ref(),
+                    config.tls.ca.as_ref(),
+                ) {
+                    (Some(c), Some(k), Some(a)) => Some((
+                        c.to_string_lossy().into_owned(),
+                        k.to_string_lossy().into_owned(),
+                        a.to_string_lossy().into_owned(),
+                    )),
+                    _ => None,
+                },
+            ),
     );
     if !config.network.port_security {
         tracing::warn!(
