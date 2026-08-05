@@ -20,6 +20,12 @@ socket_dir = "/var/lib/vquasar/migrations"
 backend = "ovs"
 bridge = "br-int"
 
+# Bind each TAP's egress to the MAC the control plane allocated, dropping
+# spoofed frames and ARP whose sender hardware address is not the guest's own
+# (design §30). Turn off only for a guest that must legitimately source frames
+# from other MACs (nested virtualisation, in-guest bridging).
+# port_security = true
+
 [storage]
 backend = "local"
 path = "/var/lib/vquasar"

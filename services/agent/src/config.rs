@@ -204,6 +204,19 @@ pub struct NetworkSection {
     pub backend: String,
     /// Integration bridge name (section 18).
     pub bridge: String,
+    /// Bind each TAP's egress to the MAC the control plane allocated, dropping
+    /// spoofed frames and ARP whose sender hardware address is not the guest's
+    /// own (design §30). Without it, any guest can impersonate any other VM on
+    /// the shared bridge — no control-plane scoping can undo that.
+    ///
+    /// Turn off only for a guest that must legitimately source frames from
+    /// other MACs (nested virtualisation, in-guest bridging).
+    #[serde(default = "default_port_security")]
+    pub port_security: bool,
+}
+
+fn default_port_security() -> bool {
+    true
 }
 
 impl Default for NetworkSection {
@@ -211,6 +224,7 @@ impl Default for NetworkSection {
         Self {
             backend: "ovs".to_string(),
             bridge: "br-int".to_string(),
+            port_security: default_port_security(),
         }
     }
 }
