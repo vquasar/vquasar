@@ -17,6 +17,10 @@ config/local.toml
 .idea/
 .vscode/
 
+# Local AI/agent tooling (never published)
+/CLAUDE.md
+/.claude/
+
 # UI (added in Milestone 5)
 /ui/node_modules
 /ui/dist

@@ -208,15 +208,106 @@ impl Default for ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
-    /// PostgreSQL connection URL (unused until Milestone 3).
+    /// PostgreSQL connection URL.
     pub url: String,
+    /// TLS mode for the database connection: `disable`, `allow`, `prefer`,
+    /// `require`, `verify-ca` or `verify-full`. Unset ⇒ whatever the URL says,
+    /// which in turn defaults to libpq's `prefer` — TLS if the server offers it,
+    /// **silent plaintext otherwise**. Set `verify-full` for a real deployment.
+    #[serde(default)]
+    pub ssl_mode: Option<String>,
+    /// CA certificate (PEM) that signed the PostgreSQL server certificate.
+    /// Required for `verify-ca`/`verify-full` against a private CA; without it
+    /// verification falls back to the system trust roots.
+    #[serde(default)]
+    pub ca: Option<String>,
+    /// Client certificate (PEM) for PostgreSQL certificate authentication.
+    #[serde(default)]
+    pub cert: Option<String>,
+    /// Client private key (PEM) matching `cert`. Keep it 0600.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: "postgres://localhost/vquasar".to_string(),
+            ssl_mode: None,
+            ca: None,
+            cert: None,
+            key: None,
         }
+    }
+}
+
+/// Database TLS modes that permit an unencrypted connection.
+const PLAINTEXT_CAPABLE_SSL_MODES: &[&str] = &["disable", "allow", "prefer"];
+
+impl DatabaseConfig {
+    /// Build the sqlx connection options: the URL first (so `sslmode=` and
+    /// friends in the URL keep working), then the explicit `[database]` TLS
+    /// settings on top, which win where both are given.
+    pub fn connect_options(&self) -> anyhow::Result<sqlx::postgres::PgConnectOptions> {
+        use std::str::FromStr;
+
+        let mut opts = sqlx::postgres::PgConnectOptions::from_str(&self.url)
+            .map_err(|e| anyhow::anyhow!("invalid [database] url: {e}"))?;
+
+        if let Some(mode) = &self.ssl_mode {
+            let parsed = sqlx::postgres::PgSslMode::from_str(mode).map_err(|_| {
+                anyhow::anyhow!(
+                    "invalid [database] ssl_mode {mode:?} — expected one of \
+                     disable, allow, prefer, require, verify-ca, verify-full"
+                )
+            })?;
+            opts = opts.ssl_mode(parsed);
+        }
+        // Read the files here rather than handing sqlx a path, so a missing or
+        // unreadable certificate is a startup error naming the file instead of
+        // a connection error much later.
+        if let Some(ca) = &self.ca {
+            let pem = std::fs::read(ca)
+                .map_err(|e| anyhow::anyhow!("reading [database] ca {ca}: {e}"))?;
+            opts = opts.ssl_root_cert_from_pem(pem);
+        }
+        match (&self.cert, &self.key) {
+            (Some(cert), Some(key)) => {
+                let cert_pem = std::fs::read(cert)
+                    .map_err(|e| anyhow::anyhow!("reading [database] cert {cert}: {e}"))?;
+                let key_pem = std::fs::read(key)
+                    .map_err(|e| anyhow::anyhow!("reading [database] key {key}: {e}"))?;
+                opts = opts
+                    .ssl_client_cert_from_pem(cert_pem)
+                    .ssl_client_key_from_pem(key_pem);
+            }
+            (None, None) => {}
+            _ => anyhow::bail!("[database] cert and key must be set together"),
+        }
+        Ok(opts)
+    }
+
+    /// The TLS mode that will actually be used, for logging: the explicit
+    /// setting, else the URL's `sslmode`, else sqlx's `prefer` default.
+    pub fn effective_ssl_mode(&self) -> String {
+        if let Some(mode) = &self.ssl_mode {
+            return mode.to_ascii_lowercase();
+        }
+        self.url
+            .split_once('?')
+            .map(|(_, q)| q)
+            .and_then(|q| {
+                q.split('&').find_map(|kv| {
+                    let (k, v) = kv.split_once('=')?;
+                    matches!(k, "sslmode" | "ssl-mode").then(|| v.to_ascii_lowercase())
+                })
+            })
+            .unwrap_or_else(|| "prefer".to_string())
+    }
+
+    /// Whether the effective mode allows the connection to end up unencrypted.
+    pub fn tls_is_optional(&self) -> bool {
+        PLAINTEXT_CAPABLE_SSL_MODES.contains(&self.effective_ssl_mode().as_str())
     }
 }
 
@@ -289,6 +380,90 @@ mod tests {
         assert_eq!(cfg.server.listen, "0.0.0.0:8080");
         assert_eq!(cfg.grpc.listen, "0.0.0.0:9443");
         assert_eq!(cfg.logging.level, "info");
+    }
+
+    /// Absent config must not change how we connect — the default stays
+    /// whatever the URL/libpq says, so existing deployments are unaffected.
+    #[test]
+    fn database_tls_defaults_to_prefer_and_is_optional() {
+        let cfg = DatabaseConfig::default();
+        assert_eq!(cfg.effective_ssl_mode(), "prefer");
+        assert!(cfg.tls_is_optional());
+        assert!(cfg.connect_options().is_ok());
+    }
+
+    #[test]
+    fn database_url_sslmode_is_honoured() {
+        let cfg = DatabaseConfig {
+            url: "postgres://u:p@db/vquasar?sslmode=verify-full".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_ssl_mode(), "verify-full");
+        assert!(!cfg.tls_is_optional());
+    }
+
+    #[test]
+    fn explicit_ssl_mode_wins_over_the_url() {
+        let cfg = DatabaseConfig {
+            url: "postgres://u:p@db/vquasar?sslmode=disable".to_string(),
+            ssl_mode: Some("verify-full".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_ssl_mode(), "verify-full");
+        assert!(!cfg.tls_is_optional());
+        // And it reaches the connection options, not just the log line.
+        let url = sqlx::ConnectOptions::to_url_lossy(&cfg.connect_options().unwrap()).to_string();
+        assert!(url.contains("sslmode=verify-full"), "got {url}");
+    }
+
+    #[test]
+    fn require_and_verify_modes_are_not_optional() {
+        for mode in ["require", "verify-ca", "verify-full", "VERIFY-FULL"] {
+            let cfg = DatabaseConfig {
+                ssl_mode: Some(mode.to_string()),
+                ..Default::default()
+            };
+            assert!(!cfg.tls_is_optional(), "{mode} should require TLS");
+            assert!(cfg.connect_options().is_ok(), "{mode} should parse");
+        }
+        for mode in ["disable", "allow", "prefer"] {
+            let cfg = DatabaseConfig {
+                ssl_mode: Some(mode.to_string()),
+                ..Default::default()
+            };
+            assert!(cfg.tls_is_optional(), "{mode} permits plaintext");
+        }
+    }
+
+    #[test]
+    fn bad_ssl_mode_is_a_startup_error() {
+        let cfg = DatabaseConfig {
+            ssl_mode: Some("verify".to_string()),
+            ..Default::default()
+        };
+        let err = cfg.connect_options().unwrap_err().to_string();
+        assert!(err.contains("invalid [database] ssl_mode"), "got {err}");
+    }
+
+    #[test]
+    fn missing_ca_file_is_a_startup_error_naming_the_file() {
+        let cfg = DatabaseConfig {
+            ssl_mode: Some("verify-full".to_string()),
+            ca: Some("/nonexistent/pg-ca.pem".to_string()),
+            ..Default::default()
+        };
+        let err = cfg.connect_options().unwrap_err().to_string();
+        assert!(err.contains("/nonexistent/pg-ca.pem"), "got {err}");
+    }
+
+    #[test]
+    fn client_cert_without_key_is_rejected() {
+        let cfg = DatabaseConfig {
+            cert: Some("/tmp/client.crt".to_string()),
+            ..Default::default()
+        };
+        let err = cfg.connect_options().unwrap_err().to_string();
+        assert!(err.contains("must be set together"), "got {err}");
     }
 
     #[test]

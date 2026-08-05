@@ -58,8 +58,14 @@ Split into three shippable slices.
   query-param token, and the SPA hides actions the caller lacks. A **mandatory
   first-admin bootstrap is set at install time** (solves air-gap and the
   first-admin chicken-and-egg). Config-gated: disabled by default (dev
-  superuser) so it ships without breaking the running cluster. Remaining:
-  stand up a Keycloak instance for end-to-end verification.
+  superuser) so it ships without breaking the running cluster. **Verified
+  end-to-end against Keycloak 26**: `scripts/keycloak-setup.sh` builds the realm,
+  PKCE client, audience + groups mappers and role groups idempotently; the
+  verification matrix (no/malformed/foreign-realm token ⇒ 401; unmapped or
+  ungrouped user ⇒ 403; group→role mapping grants exactly the role's
+  permissions; console WS rejects a missing or invalid `access_token`) passes.
+  See [`docs/oidc-keycloak.md`](docs/oidc-keycloak.md). Remaining: the browser
+  Authorization Code + PKCE redirect is exercised only by hand, not in CI.
 - **M12c — Encryption of sensitive data at rest.** ✅ **Done.** Application-level
   field encryption of the secret-bearing cloud-init fields (password, user-data,
   SSH keys) in VM specs and templates: **AES-256-GCM** with a fresh nonce per
@@ -72,7 +78,20 @@ Split into three shippable slices.
   compatible). Enabling it seals new writes and runs a one-time startup sweep
   over existing rows (idempotent, no generation bump). Key material lives in the
   0600 systemd env file. Follow-ups: KMS-backed KEK/DEK envelope + key
-  auto-rotation; TLS to PostgreSQL; DB host-disk encryption (ops).
+  auto-rotation; DB host-disk encryption (ops).
+- **M12d — TLS to PostgreSQL.** ✅ **Done.** The driver's default (`prefer`)
+  silently falls back to plaintext, so `[database]` gained `ssl_mode` / `ca` /
+  `cert` / `key` (env + `install.sh --db-ssl-mode/--db-ca/--db-cert/--db-key`).
+  Set `verify-full` and an unencrypted or unverified connection becomes a
+  startup failure instead of a silent downgrade; certificate files are read at
+  startup so a bad path fails immediately. Absent ⇒ previous behaviour, and the
+  startup log always states the effective mode, warning when it permits
+  plaintext. Verified against a TLS-enabled PostgreSQL 16: `verify-full` + CA
+  connects (TLSv1.3 confirmed in `pg_stat_ssl`), without the CA it is refused
+  (`UnknownIssuer`), and against a non-TLS server it refuses rather than falling
+  back. See [`docs/postgres-tls.md`](docs/postgres-tls.md). Follow-up: client-
+  certificate auth is configurable but has not been exercised against a
+  `pg_hba.conf` set to `cert`.
 
 ### Networking
 - **M13a — IPAM: control-plane-managed / static IP assignment.** ✅ **Done.**
