@@ -42,8 +42,9 @@ pub struct PhoneHomeSection {
 }
 
 /// Mutual-TLS material for the agent's gRPC server (design M12a). When all three
-/// paths are set, the agent requires a client certificate signed by `ca`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// paths are set, the agent requires a client certificate signed by `ca` whose
+/// Common Name is `control_cn`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsSection {
     #[serde(default)]
     pub ca: Option<PathBuf>,
@@ -51,6 +52,30 @@ pub struct TlsSection {
     pub cert: Option<PathBuf>,
     #[serde(default)]
     pub key: Option<PathBuf>,
+    /// Common Name the control plane's client certificate must carry.
+    ///
+    /// Chaining to the CA is not identity: every agent's certificate also
+    /// chains to it, so without this check any host that can read its own key
+    /// can drive every other agent's gRPC API — a host compromise would become
+    /// a fleet compromise, which design §30 forbids. `scripts/gen-certs.sh`
+    /// issues the control certificate as `CN=control`.
+    #[serde(default = "default_control_cn")]
+    pub control_cn: String,
+}
+
+fn default_control_cn() -> String {
+    "control".to_string()
+}
+
+impl Default for TlsSection {
+    fn default() -> Self {
+        Self {
+            ca: None,
+            cert: None,
+            key: None,
+            control_cn: default_control_cn(),
+        }
+    }
 }
 
 impl TlsSection {

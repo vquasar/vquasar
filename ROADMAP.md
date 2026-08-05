@@ -93,6 +93,24 @@ Split into three shippable slices.
   certificate auth is configurable but has not been exercised against a
   `pg_hba.conf` set to `cert`.
 
+- **M12e — hardening from the pre-tenancy security review.** ✅ **Done.** Three
+  findings that were exploitable in a single-tenant install, each with a
+  regression test: (1) agent certificates carried `clientAuth` and the agent
+  accepted any CA-signed peer, so one compromised host could drive every other
+  agent's gRPC — agents are now `serverAuth` only and the agent pins the control
+  plane's Common Name (`[tls] control_cn`, default `control`); (2) `GET /vms`
+  and `GET /templates` returned *decrypted* cloud-init password/user-data/SSH
+  keys to any `vm:read` holder — the built-in `viewer` role — now redacted, with
+  template updates resolving the marker against the stored value; (3) a VM spec
+  could name any host path, making `vm:create` a read primitive over the host
+  filesystem (`/etc/vquasar/tls/agent.key` as a raw disk) — paths are now
+  confined to `[storage] allowed_paths` (default `/var/lib/vquasar`). Raw sqlx
+  errors are no longer returned to callers. See
+  [`docs/security-hardening.md`](docs/security-hardening.md). Still open from
+  the same review: console-WS ownership, unauthenticated `phone-home`, TAP
+  anti-spoofing and default-deny NICs, tenant-selectable VLAN/VNI, global
+  task/event streams, and resource upper bounds.
+
 ### Networking
 - **M13a — IPAM: control-plane-managed / static IP assignment.** ✅ **Done.**
   Networks carry optional IPv4 and/or IPv6 subnets (cidr + gateway + dns + pool);

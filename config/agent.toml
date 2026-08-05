@@ -26,3 +26,14 @@ path = "/var/lib/vquasar"
 
 [logging]
 level = "info"
+
+# Mutual TLS to the control plane (design M12a). Absent => plaintext gRPC,
+# which is only safe on a trusted lab network.
+# [tls]
+# ca   = "/etc/vquasar/tls/ca.crt"
+# cert = "/etc/vquasar/tls/agent.crt"
+# key  = "/etc/vquasar/tls/agent.key"
+# Common Name the control plane's client certificate must carry. Chaining to
+# the CA is not identity — every agent's certificate does too — so without this
+# a compromised host could drive every other agent (design §30).
+# control_cn = "control"

@@ -212,8 +212,12 @@ async fn sign_csr(
         std::fs::write(
             &ext_path,
             format!(
+                // serverAuth only: an agent certificate is a server identity,
+                // never a client credential. With clientAuth it would also be a
+                // valid ticket into every *other* agent's gRPC API, so one
+                // compromised host could drive the fleet (design §30).
                 "subjectAltName = {san}\n\
-                 extendedKeyUsage = serverAuth, clientAuth\n\
+                 extendedKeyUsage = serverAuth\n\
                  keyUsage = digitalSignature, keyEncipherment\n"
             ),
         )?;

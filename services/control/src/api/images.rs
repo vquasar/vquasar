@@ -47,6 +47,12 @@ pub async fn create(
     if body.format != "raw" && body.format != "qcow2" {
         return Err(ApiError::invalid("format must be 'raw' or 'qcow2'"));
     }
+    // A registered image is opened by the agent with privilege (design §30).
+    crate::api::pathsafe::ensure_within(
+        std::path::Path::new(&body.source_path),
+        store.allowed_paths(),
+        "source_path",
+    )?;
     let image = store
         .insert_image(
             &body.name,
@@ -73,6 +79,11 @@ pub async fn update(
     if body.format != "raw" && body.format != "qcow2" {
         return Err(ApiError::invalid("format must be 'raw' or 'qcow2'"));
     }
+    crate::api::pathsafe::ensure_within(
+        std::path::Path::new(&body.source_path),
+        store.allowed_paths(),
+        "source_path",
+    )?;
     store
         .update_image(
             id,

@@ -165,12 +165,23 @@ impl Default for EnrollmentConfig {
 pub struct StorageConfig {
     /// Directory for per-VM provisioned volumes.
     pub shared_volumes_dir: String,
+    /// Roots that a caller-supplied host path (disk, kernel, firmware, image
+    /// source) must sit under. The agent opens these files with privilege, so
+    /// without confinement `vm:create` is a read primitive over the host
+    /// filesystem — including the agent's own key material (design §30).
+    #[serde(default = "default_allowed_paths")]
+    pub allowed_paths: Vec<String>,
+}
+
+fn default_allowed_paths() -> Vec<String> {
+    vec!["/var/lib/vquasar".to_string()]
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             shared_volumes_dir: "/var/lib/vquasar/shared/volumes".to_string(),
+            allowed_paths: default_allowed_paths(),
         }
     }
 }

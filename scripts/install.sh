@@ -17,6 +17,9 @@
 #   --tls-ca PATH        CA cert for mutual TLS (design M12a)
 #   --tls-cert PATH      This component's certificate (agent: server; control: server + gRPC client)
 #   --tls-key PATH       This component's private key
+#   --tls-control-cn CN  (agent) Common Name the control plane's client cert must
+#                        carry (default: control). Chaining to the CA is not
+#                        identity — see design §30.
 #   --log-format FMT     Log output: text (default) or json (design M17)
 #   --otlp-endpoint URL  OpenTelemetry collector for OTLP/gRPC span export (M17)
 #   --tls-issuer-cert P  (control) Intermediate issuing-CA cert for enrollment (M16)
@@ -41,6 +44,8 @@
 #   --db-ssl-mode MODE   TLS to Postgres: disable|allow|prefer|require|verify-ca|
 #                        verify-full. Unset ⇒ prefer, which silently accepts an
 #                        unencrypted connection. Use verify-full in production.
+#   --allowed-path DIR   (control) Root a caller-supplied disk/kernel/firmware
+#                        path must sit under; repeatable (default: /var/lib/vquasar)
 #   --db-ca PATH         CA that signed the Postgres server certificate
 #   --db-cert PATH       Client certificate for Postgres cert authentication
 #   --db-key PATH        Client key matching --db-cert (0600)
@@ -71,8 +76,8 @@ BINARY=""; NO_START=0; FORCE_CONFIG=0
 NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
 DB_URL="postgres://ch:ch@127.0.0.1:5432/vquasar"; LISTEN="0.0.0.0:8080"; UI_DIR=""
-DB_SSL_MODE=""; DB_CA=""; DB_CERT=""; DB_KEY=""
-TLS_CA=""; TLS_CERT=""; TLS_KEY=""
+DB_SSL_MODE=""; DB_CA=""; DB_CERT=""; DB_KEY=""; ALLOWED_PATHS=()
+TLS_CA=""; TLS_CERT=""; TLS_KEY=""; TLS_CONTROL_CN=""
 LOG_FORMAT=""; OTLP_ENDPOINT=""
 TLS_ISSUER_CERT=""; TLS_ISSUER_KEY=""; ENROLLMENT_URL=""
 BOOTSTRAP_TOKEN=""; BOOTSTRAP_URL=""; BOOTSTRAP_CA=""
@@ -91,6 +96,7 @@ while [[ $# -gt 0 ]]; do
     --seccomp) SECCOMP="$2"; shift 2 ;;
     --phone-home-url) PHONE_HOME_URL="$2"; shift 2 ;;
     --db-url) DB_URL="$2"; shift 2 ;;
+    --allowed-path) ALLOWED_PATHS+=("$2"); shift 2 ;;
     --db-ssl-mode) DB_SSL_MODE="$2"; shift 2 ;;
     --db-ca) DB_CA="$2"; shift 2 ;;
     --db-cert) DB_CERT="$2"; shift 2 ;;
@@ -98,6 +104,7 @@ while [[ $# -gt 0 ]]; do
     --listen) LISTEN="$2"; shift 2 ;;
     --ui-dir) UI_DIR="$2"; shift 2 ;;
     --tls-ca) TLS_CA="$2"; shift 2 ;;
+    --tls-control-cn) TLS_CONTROL_CN="$2"; shift 2 ;;
     --tls-cert) TLS_CERT="$2"; shift 2 ;;
     --tls-key) TLS_KEY="$2"; shift 2 ;;
     --log-format) LOG_FORMAT="$2"; shift 2 ;;
@@ -159,6 +166,7 @@ ENV_FILE="$CONF_DIR/$ROLE.env"
 tls_env() {
   local prefix="$1"
   [[ -n "$TLS_CA" ]] && echo "VQUASAR_${prefix}_TLS__CA=$TLS_CA"
+  [[ "$prefix" == "AGENT" && -n "$TLS_CONTROL_CN" ]] && echo "VQUASAR_AGENT_TLS__CONTROL_CN=$TLS_CONTROL_CN"
   [[ -n "$TLS_CERT" ]] && echo "VQUASAR_${prefix}_TLS__CERT=$TLS_CERT"
   [[ -n "$TLS_KEY" ]] && echo "VQUASAR_${prefix}_TLS__KEY=$TLS_KEY"
   if [[ "$prefix" == "CONTROL" ]]; then
@@ -180,6 +188,14 @@ auth_env() {
 
 # Emit the database TLS env vars for the control plane. Absent ⇒ the driver's
 # `prefer`, which falls back to plaintext without complaining.
+storage_env() {
+  if [[ ${#ALLOWED_PATHS[@]} -gt 0 ]]; then
+    local joined="" p
+    for p in "${ALLOWED_PATHS[@]}"; do joined+="\"$p\","; done
+    echo "VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS=[${joined%,}]"
+  fi
+}
+
 db_tls_env() {
   [[ -n "$DB_SSL_MODE" ]] && echo "VQUASAR_CONTROL_DATABASE__SSL_MODE=$DB_SSL_MODE"
   [[ -n "$DB_CA" ]] && echo "VQUASAR_CONTROL_DATABASE__CA=$DB_CA"
@@ -321,6 +337,7 @@ VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
 ${UI_DIR:+VQUASAR_CONTROL_SERVER__UI_DIR=$UI_DIR}
 ${LOG_FORMAT:+VQUASAR_CONTROL_LOGGING__FORMAT=$LOG_FORMAT}
 ${OTLP_ENDPOINT:+VQUASAR_CONTROL_LOGGING__OTLP_ENDPOINT=$OTLP_ENDPOINT}
+$(storage_env)
 $(db_tls_env)
 $(tls_env CONTROL)
 $(auth_env)

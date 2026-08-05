@@ -21,6 +21,7 @@ vquasar-proto.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic.workspace = true
+x509-parser.workspace = true
 rustls.workspace = true
 prost.workspace = true
 async-trait.workspace = true
@@ -35,6 +36,8 @@ tracing.workspace = true
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 tempfile = "3"
+# TcpListenerStream, so the peer-identity test can serve on an ephemeral port.
+tokio-stream = { version = "0.1", features = ["net"] }
 
 # Milestone 2 gRPC client harness for driving a running agent end-to-end.
 [[example]]

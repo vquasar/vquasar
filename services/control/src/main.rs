@@ -93,8 +93,13 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!("field encryption DISABLED — set [encryption] key to enable");
     }
-    let store =
-        Store::new(pool, config.storage.shared_volumes_dir.clone()).with_crypto(cryptor.clone());
+    let store = Store::new(pool, config.storage.shared_volumes_dir.clone())
+        .with_crypto(cryptor.clone())
+        .with_allowed_paths(config.storage.allowed_paths.clone());
+    info!(
+        roots = ?config.storage.allowed_paths,
+        "caller-supplied disk/kernel/firmware paths confined to these roots"
+    );
     store.migrate().await?;
     info!("migrations applied");
     store

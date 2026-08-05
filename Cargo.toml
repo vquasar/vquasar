@@ -65,6 +65,10 @@ bytes = "1"
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# X.509 parsing: the agent checks the control plane's client-certificate
+# identity, not merely that it chains to the CA (design §30).
+x509-parser = "0.16"
+
 # gRPC (agent <-> control plane); `tls` enables rustls mTLS (design M12a)
 tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
