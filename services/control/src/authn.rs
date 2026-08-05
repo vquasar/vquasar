@@ -1,6 +1,6 @@
 //! OIDC token validation (design M12b).
 //!
-//! ch-control acts as an OAuth2 resource server: it trusts an external OIDC
+//! vquasar-control acts as an OAuth2 resource server: it trusts an external OIDC
 //! provider (Keycloak as the reference) and validates the bearer access token on
 //! each request — signature via the provider's JWKS (discovered and cached),
 //! plus issuer / audience / expiry. Authentication only; authorization is RBAC

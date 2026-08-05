@@ -1,4 +1,4 @@
-// Types mirroring the ch-control REST API (design sections 6, 14).
+// Types mirroring the vquasar-control REST API (design sections 6, 14).
 
 export type DesiredPowerState = "Running" | "Stopped";
 

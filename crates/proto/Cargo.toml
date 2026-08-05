@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Generated gRPC types for the ch-agent protocol (design document, section 12)."
+description = "Generated gRPC types for the vquasar-agent protocol (design document, section 12)."
 
 [dependencies]
 tonic.workspace = true

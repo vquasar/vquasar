@@ -1,4 +1,4 @@
-# Example ch-agent configuration.
+# Example vquasar-agent configuration.
 # Override any value with an environment variable, e.g.
 #   VQUASAR_AGENT_AGENT__NAME=host-02
 

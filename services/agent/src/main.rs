@@ -1,4 +1,4 @@
-//! `ch-agent` — the host-agent binary (design document, section 9).
+//! `vquasar-agent` — the host-agent binary (design document, section 9).
 //!
 //! Milestone 2: the agent is the local authority for one host. It collects host
 //! inventory, recovers any VMs already running (so a restart never kills them —
@@ -34,7 +34,7 @@ use crate::runtime::RuntimeLayout;
 
 /// vquasar host agent.
 #[derive(Debug, Parser)]
-#[command(name = "ch-agent", version, about)]
+#[command(name = "vquasar-agent", version, about)]
 struct Cli {
     /// Path to a TOML configuration file.
     #[arg(short, long, env = "VQUASAR_AGENT_CONFIG")]
@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         &config.logging.level,
         config.logging.format == "json",
         config.logging.otlp_endpoint.as_deref(),
-        "ch-agent",
+        "vquasar-agent",
     );
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         logical_cpus = ?host.logical_cpus,
         total_memory_bytes = ?host.total_memory_bytes,
         cloud_hypervisor = ?ch_version,
-        "ch-agent starting"
+        "vquasar-agent starting"
     );
 
     // Build the VM manager over a real Cloud Hypervisor backend and the OVS
@@ -154,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 
-    info!("ch-agent stopped");
+    info!("vquasar-agent stopped");
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 //! Milestone 2 gRPC client harness (design document, section 12).
 //!
-//! Drives a running `ch-agent` over its `HostAgent` gRPC API, so the agent's
+//! Drives a running `vquasar-agent` over its `HostAgent` gRPC API, so the agent's
 //! VM lifecycle can be exercised exactly as the control plane will. Used both
 //! interactively and by the restart-survival scenario in
 //! `scripts/agent-restart-demo.sh`.
@@ -18,7 +18,7 @@ use vquasar_proto::agent::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "agent_client", about = "Drive a ch-agent over gRPC")]
+#[command(name = "agent_client", about = "Drive a vquasar-agent over gRPC")]
 struct Cli {
     /// Agent gRPC endpoint.
     #[arg(long, default_value = "http://127.0.0.1:9500")]

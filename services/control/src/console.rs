@@ -1,7 +1,7 @@
 //! Serial-console WebSocket proxy (design document, section 25).
 //!
 //! Bridges a browser WebSocket to the owning host agent's `VmConsole` gRPC
-//! stream:  browser  <—WS—>  ch-control  <—gRPC—>  ch-agent  <—>  VM serial.
+//! stream:  browser  <—WS—>  vquasar-control  <—gRPC—>  vquasar-agent  <—>  VM serial.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};

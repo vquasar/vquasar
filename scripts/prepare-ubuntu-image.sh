@@ -111,7 +111,7 @@ password: $PASSWORD
 chpasswd:
   expire: false
 ssh_pwauth: true
-final_message: "CH-ORCHESTRATOR-BOOT-OK cloud-init finished after \$UPTIME seconds"
+final_message: "VQUASAR-BOOT-OK cloud-init finished after \$UPTIME seconds"
 EOF
 genisoimage -quiet -output "$SEED/seed.iso" -volid cidata -joliet -rock \
   "$SEED/user-data" "$SEED/meta-data"
@@ -125,7 +125,7 @@ Done. Artifacts in $BASE_DIR:
   seed ISO : $SEED/seed.iso
 
 Boot a VM through the Hypervisor trait with:
-  cargo run -p ch-client --example boot_vm -- \\
+  cargo run -p vquasar-client --example boot_vm -- \\
     --binary        $BASE_DIR/bin/cloud-hypervisor \\
     --kernel        $IMAGES/vmlinuz-$KVER \\
     --initramfs     $IMAGES/initrd.img-$KVER \\

@@ -1,4 +1,4 @@
-//! Structured-tracing initialisation shared by the `ch-control` and `ch-agent`
+//! Structured-tracing initialisation shared by the `vquasar-control` and `vquasar-agent`
 //! binaries.
 //!
 //! Every service emits structured logs via `tracing`. Log verbosity is taken
