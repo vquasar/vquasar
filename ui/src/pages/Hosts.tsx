@@ -8,46 +8,17 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import Alert from "@mui/material/Alert";
+import Chip from "@mui/material/Chip";
 import AddIcon from "@mui/icons-material/Add";
-import { DataGrid, type GridColDef } from "@mui/x-data-grid";
-import { useHosts, useRegisterHost } from "../api/hooks";
+import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
+import BlockIcon from "@mui/icons-material/Block";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import CleaningServicesIcon from "@mui/icons-material/CleaningServices";
+import { useDrainHost, useHosts, useRegisterHost, useSetHostSchedulable } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { StatusChip } from "../components/StatusChip";
 import { formatBytes } from "../format";
-import type { Host } from "../api/types";
-
-const columns: GridColDef<Host>[] = [
-  { field: "name", headerName: "Name", flex: 1, minWidth: 120 },
-  {
-    field: "state",
-    headerName: "Status",
-    width: 120,
-    renderCell: (p) => <StatusChip value={p.value as string} />,
-  },
-  {
-    field: "logical_cpus",
-    headerName: "vCPUs",
-    width: 90,
-    valueGetter: (_v, row) => row.logical_cpus ?? "—",
-  },
-  {
-    field: "memory",
-    headerName: "Memory (used / total)",
-    width: 200,
-    valueGetter: (_v, row) =>
-      row.total_memory_bytes != null && row.available_memory_bytes != null
-        ? `${formatBytes(row.total_memory_bytes - row.available_memory_bytes)} / ${formatBytes(row.total_memory_bytes)}`
-        : "—",
-  },
-  { field: "vm_count", headerName: "VMs", width: 80 },
-  {
-    field: "cloud_hypervisor_version",
-    headerName: "CH version",
-    width: 120,
-    valueGetter: (_v, row) => row.cloud_hypervisor_version ?? "—",
-  },
-  { field: "endpoint", headerName: "Agent endpoint", flex: 1, minWidth: 180 },
-];
+import type { DrainResult, Host } from "../api/types";
 
 function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
@@ -91,22 +62,163 @@ function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
+function DrainResultDialog({ result, onClose }: { result: DrainResult | null; onClose: () => void }) {
+  if (!result) return null;
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Drain started</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <Typography>
+            Host cordoned. {result.migrating.length} VM(s) migrating, {result.skipped.length}{" "}
+            left in place.
+          </Typography>
+          {result.migrating.length > 0 && (
+            <div>
+              <Typography variant="subtitle2">Migrating</Typography>
+              {result.migrating.map((m) => (
+                <Typography key={m.vm_id} variant="body2" color="text.secondary">
+                  {m.vm_name} → {m.target_host_name}
+                </Typography>
+              ))}
+            </div>
+          )}
+          {result.skipped.length > 0 && (
+            <Alert severity="warning">
+              {result.skipped.map((s) => (
+                <div key={s.vm_id}>
+                  {s.vm_name}: {s.reason}
+                </div>
+              ))}
+            </Alert>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button variant="contained" onClick={onClose}>
+          Close
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 export function Hosts() {
   const hosts = useHosts();
   const [dialog, setDialog] = useState(false);
   const { can } = usePermissions();
+  const setSchedulable = useSetHostSchedulable();
+  const drain = useDrainHost();
+  const [drainResult, setDrainResult] = useState<DrainResult | null>(null);
+  const manage = can("host:manage");
+
+  const columns: GridColDef<Host>[] = [
+    { field: "name", headerName: "Name", flex: 1, minWidth: 120 },
+    {
+      field: "state",
+      headerName: "Status",
+      width: 110,
+      renderCell: (p) => <StatusChip value={p.value as string} />,
+    },
+    {
+      field: "schedulable",
+      headerName: "Scheduling",
+      width: 130,
+      renderCell: (p) =>
+        p.value ? (
+          <Chip size="small" color="success" variant="outlined" label="Schedulable" />
+        ) : (
+          <Chip size="small" color="warning" variant="outlined" label="Cordoned" />
+        ),
+    },
+    {
+      field: "logical_cpus",
+      headerName: "vCPUs",
+      width: 80,
+      valueGetter: (_v, row) => row.logical_cpus ?? "—",
+    },
+    {
+      field: "memory",
+      headerName: "Memory (used / total)",
+      width: 190,
+      valueGetter: (_v, row) =>
+        row.total_memory_bytes != null && row.available_memory_bytes != null
+          ? `${formatBytes(row.total_memory_bytes - row.available_memory_bytes)} / ${formatBytes(row.total_memory_bytes)}`
+          : "—",
+    },
+    { field: "vm_count", headerName: "VMs", width: 70 },
+    {
+      field: "cloud_hypervisor_version",
+      headerName: "CH version",
+      width: 110,
+      valueGetter: (_v, row) => row.cloud_hypervisor_version ?? "—",
+    },
+    { field: "endpoint", headerName: "Agent endpoint", flex: 1, minWidth: 160 },
+    ...(manage
+      ? [
+          {
+            field: "actions",
+            type: "actions",
+            headerName: "",
+            width: 60,
+            getActions: (p) =>
+              p.row.schedulable
+                ? [
+                    <GridActionsCellItem
+                      key="cordon"
+                      icon={<BlockIcon />}
+                      label="Cordon (maintenance)"
+                      onClick={() => setSchedulable.mutate({ id: p.row.id, schedulable: false })}
+                      showInMenu
+                    />,
+                    <GridActionsCellItem
+                      key="drain"
+                      icon={<CleaningServicesIcon />}
+                      label="Drain (evacuate VMs)"
+                      onClick={() =>
+                        drain.mutate(p.row.id, { onSuccess: (r) => setDrainResult(r) })
+                      }
+                      showInMenu
+                    />,
+                  ]
+                : [
+                    <GridActionsCellItem
+                      key="uncordon"
+                      icon={<CheckCircleIcon />}
+                      label="Uncordon"
+                      onClick={() => setSchedulable.mutate({ id: p.row.id, schedulable: true })}
+                      showInMenu
+                    />,
+                    <GridActionsCellItem
+                      key="drain"
+                      icon={<CleaningServicesIcon />}
+                      label="Drain (evacuate VMs)"
+                      onClick={() =>
+                        drain.mutate(p.row.id, { onSuccess: (r) => setDrainResult(r) })
+                      }
+                      showInMenu
+                    />,
+                  ],
+          } as GridColDef<Host>,
+        ]
+      : []),
+  ];
 
   return (
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5">Hosts</Typography>
-        {can("host:manage") && (
+        {manage && (
           <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
             Register host
           </Button>
         )}
       </Stack>
       {hosts.isError && <Alert severity="error">{(hosts.error as Error).message}</Alert>}
+      {drain.isError && <Alert severity="error">{(drain.error as Error).message}</Alert>}
+      {setSchedulable.isError && (
+        <Alert severity="error">{(setSchedulable.error as Error).message}</Alert>
+      )}
       <div style={{ height: 520, width: "100%" }}>
         <DataGrid
           rows={hosts.data ?? []}
@@ -119,6 +231,7 @@ export function Hosts() {
         />
       </div>
       <RegisterDialog open={dialog} onClose={() => setDialog(false)} />
+      <DrainResultDialog result={drainResult} onClose={() => setDrainResult(null)} />
     </Stack>
   );
 }

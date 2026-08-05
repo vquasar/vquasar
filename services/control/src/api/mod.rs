@@ -44,7 +44,8 @@ pub fn router(store: Store, auth: AuthState) -> Router {
             axum::routing::delete(iam::remove_group_role),
         )
         .route("/hosts", get(hosts::list).post(hosts::register))
-        .route("/hosts/:id", get(hosts::get))
+        .route("/hosts/:id", get(hosts::get).patch(hosts::update))
+        .route("/hosts/:id/drain", post(hosts::drain))
         .route("/vms", get(vms::list).post(vms::create))
         .route("/vms/from-template", post(vms::create_from_template))
         .route("/vms/from-volume", post(vms::create_from_volume))

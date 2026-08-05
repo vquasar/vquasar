@@ -162,12 +162,28 @@ Split into three shippable slices.
   picker on the Images page. Completes the upload/download/register lifecycle.
 - Additional storage backends and per-VM storage policy.
 
-### Compute & lifecycle
-- Cross-CPU live migration (common CPU-model masking to bridge heterogeneous
-  hosts; CH offers no masking today).
-- microVMs.
-- Windows guest support (spike exists, not integrated).
-- Per-VM metrics/stats (CPU / memory / disk / network).
+### Compute & lifecycle ✅ **Done** (M15)
+- **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
+  over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH
+  `/vm.counters`) via a new `GetVmMetrics` gRPC; control proxies at
+  `GET /vms/:id/metrics`; UI shows a live-metrics card.
+- **Cross-CPU live migration (compatibility gating).** ✅ **Done.** CH can't mask
+  CPUID (only AMX), so instead the agent reports vendor + a curated guest-ISA
+  feature set, and the migrate path refuses a destination whose CPU isn't a
+  superset (same vendor) unless forced — enabling safe cross-CPU migration and
+  blocking the unsafe direction with a precise error. Verified against the
+  heterogeneous lab (Skylake-SP vs Cascade Lake). Follow-up: CH itself also
+  runs a CPUID BitwiseSubset check on receive, so a forced-incompatible move is
+  aborted by CH with the source VM preserved.
+- **microVMs.** ✅ **Done.** A first-class minimal machine profile
+  (`machine_type=microvm`): enforced direct-kernel/initramfs boot, no cloud-init
+  seed, pvpanic device, single PCI segment; may be diskless or carry one rootfs.
+- **Windows guest support.** ✅ **Done (enablement).** UEFI firmware boot
+  (EDK II `CLOUDHV.fd`, verified to the UEFI shell), read-only ISO/CD attach
+  (`GET /isos`), auto-pathed blank system disks, a UI "Windows guest preset",
+  the staged virtio-win driver ISO, and `docs/windows-guests.md`. A full
+  interactive install isn't possible (CH is headless + virtio-only) — the
+  documented paths are a pre-built virtio image or an unattended serial setup.
 
 ### Platform & resilience
 - Control-plane HA (multiple control nodes; PostgreSQL HA).
@@ -177,8 +193,9 @@ Split into three shippable slices.
 - Quotas, projects, multi-tenancy.
 
 ### Quality & delivery
-- Automated integration/e2e tests against a cluster; fix the known flaky
-  parallel tempdir-teardown unit test.
+- Automated integration/e2e tests against a cluster. (The flaky parallel
+  tempdir-teardown unit test is fixed — `RuntimeLayout::remove_vm_dir` retries
+  on `DirectoryNotEmpty`, a real serial-console-vs-delete TOCTOU.)
 - Metrics/tracing export (the events table is basic).
 - `curl | sh` bootstrap installer (the install scripts are structured for it).
 - Keep DESIGN.md and API reference docs current with M9–M12.

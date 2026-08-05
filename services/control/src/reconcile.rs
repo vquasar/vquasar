@@ -404,7 +404,7 @@ where
 
 /// Sum the CPU + memory already committed to VMs on each host, so the scheduler
 /// can spread new VMs by remaining logical capacity (section 17).
-async fn committed_by_host(store: &Store) -> anyhow::Result<HashMap<Uuid, HostCommit>> {
+pub(crate) async fn committed_by_host(store: &Store) -> anyhow::Result<HashMap<Uuid, HostCommit>> {
     let mut committed: HashMap<Uuid, HostCommit> = HashMap::new();
     for vm in store.list_vms().await? {
         // A VM being torn down no longer holds its host's capacity.

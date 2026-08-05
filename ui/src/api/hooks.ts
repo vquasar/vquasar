@@ -10,6 +10,7 @@ import type {
   CreateTemplateRequest,
   CreateVmFromTemplateRequest,
   CreateVmRequest,
+  DrainResult,
   Event,
   Host,
   Image,
@@ -235,6 +236,24 @@ export function useRegisterHost() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { name: string; endpoint: string }) => api.post<Host>("/hosts", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["hosts"] }),
+  });
+}
+
+// Host lifecycle (M15): cordon/uncordon + drain.
+export function useSetHostSchedulable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, schedulable }: { id: string; schedulable: boolean }) =>
+      api.patch<Host>(`/hosts/${id}`, { schedulable }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["hosts"] }),
+  });
+}
+
+export function useDrainHost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<DrainResult>(`/hosts/${id}/drain`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["hosts"] }),
   });
 }

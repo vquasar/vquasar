@@ -86,6 +86,24 @@ export interface Vm {
 
 export type HostState = "Ready" | "NotReady" | "Maintenance" | "Disabled";
 
+// Host drain result (M15, host lifecycle).
+export interface DrainMove {
+  vm_id: string;
+  vm_name: string;
+  target_host_id: string;
+  target_host_name: string;
+}
+export interface DrainSkip {
+  vm_id: string;
+  vm_name: string;
+  reason: string;
+}
+export interface DrainResult {
+  cordoned: boolean;
+  migrating: DrainMove[];
+  skipped: DrainSkip[];
+}
+
 export interface Host {
   id: string;
   name: string;

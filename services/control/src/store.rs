@@ -527,6 +527,20 @@ impl Store {
         .map(|_| ())
     }
 
+    /// Set a host's admin `schedulable` flag (design M15, host lifecycle:
+    /// cordon/uncordon). `false` = maintenance mode — the scheduler places no
+    /// new VMs here, but running VMs keep running until drained. Preserved
+    /// across heartbeats (`update_host_ready` never touches this column).
+    pub async fn set_host_schedulable(&self, id: Uuid, schedulable: bool) -> Result<bool> {
+        let res = sqlx::query("UPDATE hosts SET schedulable=$2, updated_at=$3 WHERE id=$1")
+            .bind(id)
+            .bind(schedulable)
+            .bind(Utc::now())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Mark a host unreachable. VMs are **not** relocated (ADR-014, section 27).
     pub async fn mark_host_not_ready(&self, id: Uuid) -> Result<()> {
         sqlx::query("UPDATE hosts SET state='NotReady', updated_at=$2 WHERE id=$1")
