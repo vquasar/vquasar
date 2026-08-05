@@ -127,13 +127,25 @@ Split into three shippable slices.
   "unfiltered" — gated on `[network] policy_mode`, default `legacy`. Existing
   networks are grandfathered (`legacy_segment`, NULL segment key, permissive
   seeded default) so a running cluster is unchanged. ADR-016/ADR-017.
-- **M18b — VXLAN underlay encryption.** Not started, and a **blocker for any
-  production use of tenant networks**: tunnels are cleartext and unauthenticated
-  today. Plan is OVS-native IPsec (portable across libreswan and strongSwan,
-  unlike a swanctl-specific integration), one anchor tunnel port per host pair
-  rather than per VNI, CA-signed mode reusing the internal PKI. Requires a
-  derived guest MTU (1416, not 1450) rolled out and verified *before* IPsec is
-  enabled, or every existing overlay VM blackholes large packets.
+- **M18b — VXLAN underlay encryption.** In progress; a **blocker for any
+  production use of tenant networks** — tunnels are cleartext and
+  unauthenticated today.
+  - **MTU derivation** ✅ **Done.** The guest MTU was hardcoded 1450; it is now
+    derived from `[network] underlay_mtu` (so a jumbo underlay is no longer
+    wasted) minus VXLAN encapsulation, minus ESP headroom when encryption is
+    reserved or enabled. `overlay_encryption` has a deliberate intermediate
+    state — `reserve` shrinks the MTU *without* enabling encryption — because
+    MTU is rendered into cloud-init at seed time and a running VM never picks up
+    a new value: enabling IPsec first leaves every existing overlay VM 34 bytes
+    over, and the resulting blackhole is silent (ARP, ping and the TCP handshake
+    all succeed). Control warns at every start while tunnels are cleartext.
+  - **Remaining:** OVS-native IPsec (portable across libreswan and strongSwan,
+    unlike a swanctl-specific integration), one anchor tunnel port per host pair
+    rather than per VNI — the IPsec selector is `(peer_ip, udp/4789)` and has no
+    VNI in it — and CA-signed mode reusing the internal PKI. Note the certificate
+    subject must have a second RDN after the CN (`/O=vquasar/CN=…`), because
+    `ovs-monitor-ipsec` extracts the CN with a regex that requires a trailing
+    comma, and the CN must also appear as a `DNS:` SAN.
 - **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
   VXLAN packet from an unconfigured source IP matches no policy and is still
   delivered. Needs a host firewall rule accepting only ESP-protected traffic —
