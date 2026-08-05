@@ -36,6 +36,17 @@ pub struct NicBinding {
     /// firewall on the TAP with `ingress_rules` as the allow-list.
     pub filtered: bool,
     pub ingress_rules: Vec<crate::firewall::SecRule>,
+    /// Protect the underlay to these peers with IPsec (design §18, M18b).
+    pub encrypt_underlay: bool,
+    /// Peers and their certificate identities, for IPsec pinning.
+    pub overlay_peer_identities: Vec<OverlayPeerId>,
+}
+
+/// A peer host and the certificate identity to pin for it (M18b).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OverlayPeerId {
+    pub underlay_ip: String,
+    pub cert_cn: String,
 }
 
 /// The per-VNI overlay bridge name (design M13b). `vxbr` + ≤8 digits ≤ IFNAMSIZ.
@@ -77,6 +88,8 @@ pub fn tap_name(vm: VmId, index: usize) -> String {
 /// Open vSwitch backend: TAPs on the configured integration bridge (`br-int`).
 pub struct OvsNetworkBackend {
     bridge: String,
+    /// (certificate, key, CA) paths for underlay IPsec (M18b).
+    ipsec_credentials: Option<(String, String, String)>,
     /// Bind each TAP's egress to its allocated MAC (design §30).
     port_security: bool,
 }
@@ -86,7 +99,14 @@ impl OvsNetworkBackend {
         Self {
             bridge: bridge.into(),
             port_security: true,
+            ipsec_credentials: None,
         }
+    }
+
+    /// TLS material the agent may reuse for underlay IPsec (M18b).
+    pub fn with_ipsec_credentials(mut self, creds: Option<(String, String, String)>) -> Self {
+        self.ipsec_credentials = creds;
+        self
     }
 
     /// Disable MAC anti-spoofing (escape hatch for guests that legitimately
@@ -113,6 +133,32 @@ impl OvsNetworkBackend {
             // Neither: make sure no stale flows linger from a prior config.
             (false, false) => crate::firewall::clear(bridge, tap).await,
         }
+    }
+
+    /// Configure (or tear down) IPsec anchors for the overlay peers (M18b).
+    ///
+    /// Driven from the binding rather than agent config so the fleet converges
+    /// on one decision made in the control plane, instead of drifting per host.
+    async fn apply_underlay_ipsec(&self, binding: &NicBinding) -> Result<()> {
+        if !binding.encrypt_underlay {
+            return Ok(());
+        }
+        let Some((cert, key, ca)) = self.ipsec_credentials.as_ref() else {
+            tracing::warn!(
+                "control asked for an encrypted underlay but this agent has no TLS \
+                 material configured — tunnels stay CLEARTEXT"
+            );
+            return Ok(());
+        };
+        let peers: Vec<crate::ipsec::Peer> = binding
+            .overlay_peer_identities
+            .iter()
+            .map(|p| crate::ipsec::Peer {
+                underlay_ip: p.underlay_ip.clone(),
+                cert_cn: p.cert_cn.clone(),
+            })
+            .collect();
+        crate::ipsec::apply(cert, key, ca, &peers).await
     }
 
     /// Ensure a per-VNI overlay bridge and its full-mesh of VXLAN tunnel ports
@@ -153,6 +199,10 @@ impl OvsNetworkBackend {
     /// integration bridge for flat/VLAN.
     async fn desired_bridge(&self, binding: &NicBinding) -> Result<String> {
         if binding.vni != 0 {
+            // Protect the underlay before the overlay carries anything. The
+            // anchors are per peer, not per VNI, so this converges to the same
+            // configuration however many overlays a host runs (M18b).
+            self.apply_underlay_ipsec(binding).await?;
             self.ensure_overlay(binding.vni, &binding.overlay_peers)
                 .await
         } else {
@@ -259,7 +309,7 @@ impl NetworkBackend for OvsNetworkBackend {
     }
 }
 
-async fn run(cmd: &str, args: &[&str]) -> Result<()> {
+pub(crate) async fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let output = Command::new(cmd).args(args).output().await?;
     if output.status.success() {
         Ok(())
@@ -325,6 +375,8 @@ mod tests {
                 vm,
                 0,
                 &NicBinding {
+                    encrypt_underlay: false,
+                    overlay_peer_identities: Vec::new(),
                     mac: "02:00:00:00:00:01".into(),
                     vlan: 0,
                     vni: 0,

@@ -79,6 +79,7 @@ mod tests {
     fn host(name: &str, cpus: i32, total_gib: i64) -> Host {
         let now = Utc::now();
         Host {
+            cert_cn: None,
             id: Uuid::new_v4(),
             name: name.into(),
             endpoint: "http://x:9500".into(),
