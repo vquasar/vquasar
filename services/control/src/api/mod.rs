@@ -9,6 +9,8 @@ mod hosts;
 mod iam;
 mod images;
 mod networks;
+pub mod pathsafe;
+pub mod redact;
 mod security_groups;
 mod tasks;
 mod templates;

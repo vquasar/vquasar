@@ -114,7 +114,7 @@ pub async fn create(
             &body.machine_type,
         )
         .await?;
-    Ok((StatusCode::CREATED, Json(tpl)))
+    Ok((StatusCode::CREATED, Json(crate::api::redact::template(tpl))))
 }
 
 pub async fn update(
@@ -165,6 +165,17 @@ pub async fn update(
             ));
         }
     }
+    // A caller that read this template back saw the secrets redacted; echoing
+    // those markers must leave the stored values alone rather than overwrite
+    // them with the marker itself.
+    let stored = store.get_template(id).await?;
+    let cloud_init = crate::api::redact::merge_cloud_init(
+        body.cloud_init,
+        stored
+            .as_ref()
+            .and_then(|t| t.cloud_init.as_ref())
+            .map(|c| &c.0),
+    );
     store
         .update_template(
             id,
@@ -176,17 +187,20 @@ pub async fn update(
             body.disk_size_bytes,
             &body.disk_format,
             body.network_id,
-            body.cloud_init.as_ref(),
+            cloud_init.as_ref(),
             &body.machine_type,
         )
         .await?
+        .map(crate::api::redact::template)
         .map(Json)
         .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
 }
 
 pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Template>>> {
     user.require("template:read")?;
-    Ok(Json(store.list_templates().await?))
+    Ok(Json(crate::api::redact::templates(
+        store.list_templates().await?,
+    )))
 }
 
 pub async fn get(
@@ -198,6 +212,7 @@ pub async fn get(
     store
         .get_template(id)
         .await?
+        .map(crate::api::redact::template)
         .map(Json)
         .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
 }
