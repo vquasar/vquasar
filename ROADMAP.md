@@ -201,9 +201,14 @@ Split into three shippable slices.
 - Quotas, projects, multi-tenancy.
 
 ### Quality & delivery
+- **Metrics & structured-log export.** ✅ **Done (M17).** A Prometheus
+  `/metrics` endpoint (inventory gauges for VMs/hosts/tasks/migrations +
+  reconcile/migration/recovery counters + HTTP request/latency), and
+  config-gated JSON logging (`logging.format=json`, `install.sh --log-format`)
+  for log/trace aggregation. Full OTLP span export is a follow-up (needs a
+  collector to verify).
 - Automated integration/e2e tests against a cluster. (The flaky parallel
   tempdir-teardown unit test is fixed — `RuntimeLayout::remove_vm_dir` retries
   on `DirectoryNotEmpty`, a real serial-console-vs-delete TOCTOU.)
-- Metrics/tracing export (the events table is basic).
 - `curl | sh` bootstrap installer (the install scripts are structured for it).
-- Keep DESIGN.md and API reference docs current with M9–M12.
+- Keep DESIGN.md and API reference docs current with M9–M17.

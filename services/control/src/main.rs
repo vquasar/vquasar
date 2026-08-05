@@ -44,7 +44,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = ControlConfig::load(cli.config.as_deref())?;
-    ch_common::telemetry::init(&config.logging.level, config.logging.format == "json");
+    ch_common::telemetry::init(&config.logging.level, config.logging.format == "json", config.logging.otlp_endpoint.as_deref(), "ch-control");
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();

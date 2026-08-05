@@ -56,6 +56,7 @@ pub async fn run(store: Store, interval: Duration) {
 /// Refresh each VM's agentlessly-discovered IP from its host, independent of the
 /// reconcile generation so settled (Running) VMs still get an up-to-date address
 /// (design M11).
+#[tracing::instrument(skip_all)]
 pub async fn refresh_vm_ips(store: &Store) -> anyhow::Result<()> {
     for host in store.list_hosts().await? {
         if host.state != "Ready" {
@@ -83,6 +84,7 @@ pub async fn refresh_vm_ips(store: &Store) -> anyhow::Result<()> {
 /// reconcile (its idempotent storage/network rebuild + relaunch recreates them
 /// from the persisted spec). We act only once the host is Ready again (agent
 /// reachable) — ADR-014 still forbids relocating VMs while a host is NotReady.
+#[tracing::instrument(skip_all)]
 pub async fn recover_running_vms(store: &Store) -> anyhow::Result<()> {
     let all_vms = store.list_vms().await?;
     for host in store.list_hosts().await? {
@@ -141,6 +143,7 @@ fn is_live_phase(proto_phase: i32) -> bool {
 }
 
 /// Poll every host's agent and refresh its availability + inventory.
+#[tracing::instrument(skip_all)]
 pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
     for host in store.list_hosts().await? {
         let agent = Agent::new(host.endpoint.clone());
@@ -187,6 +190,7 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
 }
 
 /// Reconcile every VM whose observed state trails its desired state.
+#[tracing::instrument(skip_all)]
 pub async fn reconcile_vms(store: &Store) -> anyhow::Result<()> {
     for vm in store.list_vms_to_reconcile().await? {
         // Migrating VMs are driven by the migration controller, not here.
@@ -209,6 +213,7 @@ pub async fn reconcile_vms(store: &Store) -> anyhow::Result<()> {
 /// migration is a persisted state machine, so it resumes after a control-plane
 /// restart. One step runs per tick; failures move it to `Failed` and leave the
 /// VM on its source host.
+#[tracing::instrument(skip_all)]
 pub async fn reconcile_migrations(store: &Store) -> anyhow::Result<()> {
     for m in store.list_active_migrations().await? {
         if let Err(e) = advance_migration(store, &m).await {

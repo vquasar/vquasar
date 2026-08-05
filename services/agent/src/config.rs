@@ -223,6 +223,10 @@ pub struct LoggingSection {
     /// (design M17).
     #[serde(default = "default_log_format")]
     pub format: String,
+    /// OpenTelemetry collector endpoint for OTLP/gRPC span export, e.g.
+    /// `http://collector:4317`. Unset ⇒ no span export (design M17).
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
 }
 
 fn default_log_format() -> String {
@@ -234,6 +238,7 @@ impl Default for LoggingSection {
         Self {
             level: "info".to_string(),
             format: default_log_format(),
+            otlp_endpoint: None,
         }
     }
 }
