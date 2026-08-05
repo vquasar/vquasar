@@ -1,4 +1,4 @@
-//! The [`Host`] resource: a virtualization host running `ch-agent` and Cloud
+//! The [`Host`] resource: a virtualization host running `vquasar-agent` and Cloud
 //! Hypervisor (design document, section 9).
 //!
 //! Most host fields are *observed* inventory reported by the agent. The model
