@@ -231,8 +231,12 @@ EOF
 Description=ch-orchestrator host agent (Cloud Hypervisor)
 Documentation=https://github.com/wrkode/ch-orchestrator
 Wants=network-online.target
-After=network-online.target openvswitch.service
+After=network-online.target openvswitch.service remote-fs.target
 After=openvswitch.service
+# Host-reboot recovery (design M16): don't start until the shared storage the
+# VMs' disks/kernels live on is mounted, so recovery can actually see them.
+# Make the NFS mount reboot-persistent in /etc/fstab (_netdev,nofail).
+RequiresMountsFor=$STATE_DIR/shared
 
 [Service]
 Type=exec
@@ -246,6 +250,31 @@ KillMode=process
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  # Host-reboot recovery (design M16): the agent uses KillMode=process so VMs
+  # survive an *agent* restart — but that orphans the cloud-hypervisor processes,
+  # and on a full reboot systemd-shutdown hangs forever "Waiting for process:
+  # cloud-hypervisor" (worse, it can wedge in NFS I/O as storage tears down).
+  # This oneshot's ExecStop runs at shutdown *before* remote-fs is unmounted
+  # (it is ordered After=remote-fs.target, so it stops before it), terminating
+  # the VMs while their storage is still mounted. It never fires on an agent
+  # restart (separate unit), so VM survival across agent restarts is preserved.
+  cat > "$UNIT_DIR/ch-vm-shutdown.service" <<EOF
+[Unit]
+Description=Terminate Cloud Hypervisor VMs before host shutdown (ch-orchestrator)
+After=ch-agent.service remote-fs.target network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=-/usr/bin/pkill -TERM -f $CH_BINARY
+ExecStop=-/bin/sleep 3
+ExecStop=-/usr/bin/pkill -KILL -f $CH_BINARY
+TimeoutStopSec=30
+[Install]
+WantedBy=multi-user.target
+EOF
+  echo "==> wrote unit $UNIT_DIR/ch-vm-shutdown.service"
 
 else # control
   if [[ -z "$UI_DIR" ]]; then
@@ -290,6 +319,9 @@ fi
 echo "==> wrote unit $UNIT_DIR/$SVC.service"
 systemctl daemon-reload
 systemctl enable "$SVC" >/dev/null 2>&1 || true
+# The shutdown-hook unit must be enabled so it's active at runtime and its
+# ExecStop fires on host shutdown (design M16).
+[[ "$ROLE" == "agent" ]] && systemctl enable ch-vm-shutdown.service >/dev/null 2>&1 && systemctl start ch-vm-shutdown.service >/dev/null 2>&1 || true
 if [[ $NO_START -eq 0 ]]; then
   systemctl restart "$SVC"
   sleep 1

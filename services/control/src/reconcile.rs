@@ -12,7 +12,7 @@ use ch_proto::agent::NetworkBinding;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
@@ -32,6 +32,9 @@ pub async fn run(store: Store, interval: Duration) {
         }
         if let Err(e) = reconcile_vms(&store).await {
             warn!(error = %e, "vm reconcile pass failed");
+        }
+        if let Err(e) = recover_running_vms(&store).await {
+            warn!(error = %e, "vm recovery pass failed");
         }
         if let Err(e) = refresh_vm_ips(&store).await {
             warn!(error = %e, "vm ip refresh pass failed");
@@ -61,6 +64,69 @@ pub async fn refresh_vm_ips(store: &Store) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Bring back `Running` VMs whose backing process died with their host — the
+/// host-reboot recovery path (design M16). For each Ready host we compare the
+/// VMs the control plane believes are Running there against what the agent
+/// actually reports live; any that are missing or not live are re-driven through
+/// reconcile (its idempotent storage/network rebuild + relaunch recreates them
+/// from the persisted spec). We act only once the host is Ready again (agent
+/// reachable) — ADR-014 still forbids relocating VMs while a host is NotReady.
+pub async fn recover_running_vms(store: &Store) -> anyhow::Result<()> {
+    let all_vms = store.list_vms().await?;
+    for host in store.list_hosts().await? {
+        if host.state != "Ready" {
+            continue;
+        }
+        // Authoritative because the agent runs recovery before it serves gRPC;
+        // an unreachable agent means the host isn't really Ready — skip it.
+        let Ok(observed) = Agent::new(host.endpoint.clone()).list_vms().await else {
+            continue;
+        };
+        let live: HashSet<Uuid> = observed
+            .iter()
+            .filter(|st| is_live_phase(st.phase))
+            .filter_map(|st| Uuid::parse_str(&st.vm_id).ok())
+            .collect();
+
+        for vm in all_vms.iter().filter(|v| v.host_id == Some(host.id)) {
+            // Only settled VMs we intend to keep Running.
+            if vm.phase != "Running"
+                || !matches!(
+                    vm.spec.desired_power_state,
+                    ch_model::DesiredPowerState::Running
+                )
+            {
+                continue;
+            }
+            if !live.contains(&vm.id) {
+                // Re-drive: a non-settled phase puts it back on the reconcile
+                // work-list, which recreates + boots it on its (Ready) host.
+                store.set_vm_phase(vm.id, "Scheduling").await?;
+                store
+                    .insert_event(
+                        "vm",
+                        Some(vm.id),
+                        "vm.recovering",
+                        "warning",
+                        &format!("not running on {} — relaunching after host recovery", host.name),
+                    )
+                    .await?;
+                warn!(vm = %vm.id, host = %host.name, "VM down on its host; re-launching");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether an agent-observed phase means the VM is actually up (so it doesn't
+/// need recovery).
+fn is_live_phase(proto_phase: i32) -> bool {
+    matches!(
+        phase_string(proto_phase),
+        "Running" | "Starting" | "Creating" | "Stopping"
+    )
 }
 
 /// Poll every host's agent and refresh its availability + inventory.
