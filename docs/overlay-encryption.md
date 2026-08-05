@@ -105,6 +105,12 @@ are easy to get wrong:
   as a bare string that strongSwan treats as `ID_FQDN`, and an `ID_FQDN` can only
   match a `dNSName` SAN.
 
+This failure has been reproduced against `openvswitch-ipsec` 3.3.4: the daemon
+logs `No CN in the certificate subject`, marks the whole credential
+configuration invalid, and then reports every tunnel as
+`must set 'certificate' as local certificate` — pointing at a setting that is
+in fact correct.
+
 `gen-certs.sh` and the enrollment endpoint both do this. Enrollment additionally
 records the CN on the host record and **rejects a CSR with a single-RDN subject**
 rather than issuing a certificate that silently cannot be used for IPsec.

@@ -1,0 +1,1332 @@
+/* vQuasar console — the design system, expressed once.
+ *
+ * Every value here resolves from src/styles/tokens.css. No hex literals below
+ * this line: both themes must come out of the same token names (handoff,
+ * "Theming — do this first").
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--vq-bg);
+  color: var(--vq-text);
+  font-family: var(--vq-font-ui);
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--vq-blue);
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--vq-blue-soft);
+}
+
+/* Focus is visible everywhere, but only for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--vq-blue);
+  outline-offset: 1px;
+}
+
+/* The one animation in the console. A pulsing thing is a promise that bytes
+   are in flight. */
+@keyframes vq-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.vq-pulse {
+  animation: vq-pulse 2.4s ease-in-out infinite;
+}
+.vq-pulse-fast {
+  animation: vq-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vq-pulse,
+  .vq-pulse-fast {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------- shell -- */
+
+.vq-app {
+  display: flex;
+  min-height: 100vh;
+}
+
+.vq-sidebar {
+  width: var(--vq-sidebar-w);
+  flex: 0 0 var(--vq-sidebar-w);
+  background: var(--vq-surface-2);
+  border-right: 1px solid var(--vq-line);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.vq-brand {
+  height: var(--vq-topbar-h);
+  flex: 0 0 var(--vq-topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--vq-line);
+  color: var(--vq-blue);
+}
+
+/* Wordmark: live text, never an image. The `v` is smaller, lighter, joined. */
+.vq-wordmark {
+  color: var(--vq-text);
+  letter-spacing: -0.012em;
+  white-space: nowrap;
+}
+.vq-wordmark i {
+  font-style: normal;
+  font-size: 12.5px;
+  font-weight: 400;
+  opacity: 0.65;
+}
+.vq-wordmark b {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.vq-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 10px;
+}
+
+.vq-navgroup + .vq-navgroup {
+  margin-top: 16px;
+}
+
+.vq-navlabel {
+  font-family: var(--vq-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vq-text-4);
+  padding: 0 9px 7px;
+}
+
+.vq-navitem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: var(--vq-radius-control);
+  font-size: 13px;
+  color: var(--vq-text-2);
+  cursor: pointer;
+}
+.vq-navitem::before {
+  content: "";
+  width: 2px;
+  height: 13px;
+  border-radius: 1px;
+  background: transparent;
+  flex: 0 0 2px;
+}
+.vq-navitem:hover {
+  background: var(--vq-surface-3);
+}
+.vq-navitem.active {
+  background: var(--vq-blue-soft);
+  color: var(--vq-blue);
+  font-weight: 500;
+}
+.vq-navitem.active:hover {
+  background: var(--vq-blue-soft);
+}
+.vq-navitem.active::before {
+  background: var(--vq-blue);
+}
+.vq-navitem span {
+  flex: 1;
+}
+.vq-navcount {
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  color: var(--vq-text-4);
+  flex: 0 0 auto !important;
+}
+
+.vq-sidefoot {
+  border-top: 1px solid var(--vq-line);
+  padding: 11px 14px;
+}
+.vq-sidefoot-agents {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  color: var(--vq-cyan);
+}
+.vq-sidefoot-meta {
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  color: var(--vq-text-4);
+  margin-top: 4px;
+}
+
+.vq-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vq-topbar {
+  height: var(--vq-topbar-h);
+  flex: 0 0 var(--vq-topbar-h);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--vq-surface);
+  border-bottom: 1px solid var(--vq-line);
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  gap: 10px;
+}
+
+.vq-crumb {
+  font-family: var(--vq-font-mono);
+  font-size: 12.5px;
+  color: var(--vq-text-3);
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.vq-crumb .sep {
+  color: var(--vq-text-4);
+}
+.vq-crumb .cur {
+  color: var(--vq-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vq-cmdk {
+  height: 28px;
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--vq-line-2);
+  border-radius: var(--vq-radius-control);
+  background: var(--vq-surface-2);
+  color: var(--vq-text-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.vq-cmdk kbd {
+  font-family: var(--vq-font-mono);
+  font-size: 11px;
+  color: var(--vq-text-3);
+}
+
+.vq-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--vq-line);
+  background: none;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--vq-text-2);
+}
+.vq-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--vq-blue-soft);
+  border: 1px solid var(--vq-blue-line);
+  color: var(--vq-blue);
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vq-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vq-gap-block);
+  padding: var(--vq-page-pad) var(--vq-page-pad) 60px;
+}
+.vq-main.wide-gap {
+  gap: 20px;
+}
+
+/* ---------------------------------------------------------- page header -- */
+
+.vq-pagehead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.vq-title {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vq-sub {
+  font-family: var(--vq-font-body);
+  font-size: 13px;
+  color: var(--vq-text-3);
+  margin-top: 3px;
+}
+.vq-subline {
+  font-family: var(--vq-font-mono);
+  font-size: 11px;
+  color: var(--vq-text-3);
+  margin-top: 5px;
+}
+.vq-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.vq-backlink {
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  color: var(--vq-blue);
+  display: inline-block;
+  margin-bottom: 8px;
+}
+
+/* ----------------------------------------------------------------- card -- */
+
+.vq-card {
+  background: var(--vq-surface);
+  border: 1px solid var(--vq-line);
+  border-radius: var(--vq-radius-card);
+  overflow: hidden;
+  min-width: 0;
+}
+.vq-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--vq-line);
+}
+.vq-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.vq-card-note {
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  color: var(--vq-text-3);
+}
+.vq-card-body {
+  padding: 16px 18px;
+}
+.vq-card-desc {
+  font-family: var(--vq-font-body);
+  font-size: 12px;
+  color: var(--vq-text-3);
+  font-weight: 400;
+}
+
+.vq-grid {
+  display: grid;
+  gap: var(--vq-gap-card);
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- table -- */
+
+.vq-table {
+  background: var(--vq-surface);
+  border: 1px solid var(--vq-line);
+  border-radius: var(--vq-radius-card);
+  overflow: hidden;
+}
+/* A table living inside a card supplies no chrome of its own. */
+.vq-card .vq-table {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.vq-th {
+  display: grid;
+  gap: 12px;
+  padding: 9px 16px;
+  background: var(--vq-surface-2);
+  border-bottom: 1px solid var(--vq-line);
+  font-family: var(--vq-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--vq-text-3);
+}
+.vq-card .vq-th {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
+.vq-tr {
+  display: grid;
+  gap: 12px;
+  padding: 11px 16px;
+  align-items: center;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--vq-line);
+  min-width: 0;
+}
+.vq-card .vq-tr {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+.vq-tr:last-child {
+  border-bottom: 0;
+}
+.vq-tr:hover {
+  background: var(--vq-surface-2);
+}
+/* Row-level emphasis: the row itself is the subject. */
+.vq-tr.tint-amber,
+.vq-tr.tint-amber:hover {
+  background: var(--vq-amber-soft);
+}
+.vq-tr.tint-cyan,
+.vq-tr.tint-cyan:hover {
+  background: var(--vq-cyan-soft);
+}
+.vq-tr.tint-red,
+.vq-tr.tint-red:hover {
+  background: var(--vq-red-soft);
+}
+
+.vq-tfoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-top: 1px solid var(--vq-line);
+  background: var(--vq-surface-2);
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  color: var(--vq-text-3);
+}
+
+/* An error that belongs to the row above it — never dismissible, never
+   detached (handoff §11). */
+.vq-errorrow {
+  padding: 11px 16px;
+  background: var(--vq-red-soft);
+  border-bottom: 1px solid var(--vq-line);
+  font-family: var(--vq-font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--vq-red);
+  word-break: break-word;
+}
+
+.vq-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vq-name {
+  color: var(--vq-blue);
+  font-weight: 500;
+}
+.vq-mono {
+  font-family: var(--vq-font-mono);
+  font-size: 11.5px;
+  color: var(--vq-text-2);
+}
+.vq-mono-sm {
+  font-family: var(--vq-font-mono);
+  font-size: 11px;
+  color: var(--vq-text-3);
+}
+.vq-dash {
+  color: var(--vq-text-4);
+}
+.vq-rowmenu {
+  color: var(--vq-text-4);
+  justify-self: center;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0 4px;
+  letter-spacing: 0.12em;
+}
+.vq-rowmenu:hover {
+  color: var(--vq-text-2);
+}
+
+.vq-selectbox {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--vq-line-3);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  display: block;
+}
+.vq-selectbox.on {
+  background: var(--vq-blue);
+  border-color: var(--vq-blue);
+}
+
+/* ---------------------------------------------------------- state chips -- */
+
+.vq-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: var(--vq-radius-chip);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.vq-chip.dense {
+  padding: 2px 7px;
+}
+.vq-chip .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: 0 0 5px;
+}
+
+.vq-chip.green {
+  color: var(--vq-green);
+  background: var(--vq-green-soft);
+  border-color: var(--vq-green-line);
+}
+.vq-chip.green .dot {
+  background: var(--vq-green);
+}
+.vq-chip.cyan {
+  color: var(--vq-cyan);
+  background: var(--vq-cyan-soft);
+  border-color: var(--vq-cyan-line);
+}
+.vq-chip.cyan .dot {
+  background: var(--vq-cyan);
+}
+.vq-chip.amber {
+  color: var(--vq-amber);
+  background: var(--vq-amber-soft);
+  border-color: var(--vq-amber-line);
+}
+.vq-chip.amber .dot {
+  background: var(--vq-amber);
+}
+.vq-chip.red {
+  color: var(--vq-red);
+  background: var(--vq-red-soft);
+  border-color: var(--vq-red-line);
+}
+.vq-chip.red .dot {
+  background: var(--vq-red);
+}
+.vq-chip.blue {
+  color: var(--vq-blue);
+  background: var(--vq-blue-soft);
+  border-color: var(--vq-blue-line);
+}
+.vq-chip.blue .dot {
+  background: var(--vq-blue);
+}
+.vq-chip.inert {
+  color: var(--vq-text-3);
+  background: var(--vq-surface-3);
+  border-color: var(--vq-line-2);
+}
+.vq-chip.inert .dot {
+  background: var(--vq-text-4);
+}
+
+/* A mono pill for a flag, a permission, an ISA feature. */
+.vq-pill {
+  display: inline-block;
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  padding: 2px 7px;
+  border: 1px solid var(--vq-line-2);
+  border-radius: var(--vq-radius-chip);
+  color: var(--vq-text-2);
+}
+.vq-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* ------------------------------------------------------------- progress -- */
+
+.vq-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--vq-surface-3);
+  overflow: hidden;
+  display: flex;
+  min-width: 0;
+}
+.vq-bar.thick {
+  height: 4px;
+}
+.vq-bar.fat {
+  height: 8px;
+  border-radius: 4px;
+}
+.vq-bar > span {
+  display: block;
+  height: 100%;
+}
+.vq-bar-blue {
+  background: var(--vq-blue);
+}
+.vq-bar-cyan {
+  background: var(--vq-cyan);
+}
+.vq-bar-amber {
+  background: var(--vq-amber);
+}
+.vq-bar-green {
+  background: var(--vq-green);
+}
+.vq-bar-inert {
+  background: var(--vq-text-4);
+}
+
+.vq-barcell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ----------------------------------------------------------- metric card -- */
+
+.vq-metric {
+  background: var(--vq-surface);
+  border: 1px solid var(--vq-line);
+  border-radius: var(--vq-radius-card);
+  padding: 16px 18px;
+  min-width: 0;
+}
+.vq-metric-label {
+  font-family: var(--vq-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--vq-text-3);
+  margin-bottom: 11px;
+}
+.vq-metric-value {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.vq-metric-unit {
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--vq-text-3);
+}
+.vq-metric .vq-bar {
+  margin-top: 12px;
+}
+.vq-metric-cap {
+  font-family: var(--vq-font-body);
+  font-size: 11.5px;
+  color: var(--vq-text-3);
+  margin-top: 8px;
+}
+
+.t-cyan {
+  color: var(--vq-cyan);
+}
+.t-amber {
+  color: var(--vq-amber);
+}
+.t-green {
+  color: var(--vq-green);
+}
+.t-red {
+  color: var(--vq-red);
+}
+.t-blue {
+  color: var(--vq-blue);
+}
+.t-2 {
+  color: var(--vq-text-2);
+}
+.t-3 {
+  color: var(--vq-text-3);
+}
+.t-4 {
+  color: var(--vq-text-4);
+}
+
+/* -------------------------------------------------------------- buttons -- */
+
+.vq-btn {
+  height: var(--vq-control-h);
+  padding: 0 12px;
+  border-radius: var(--vq-radius-control);
+  border: 1px solid var(--vq-line-2);
+  background: var(--vq-btn);
+  color: var(--vq-text-2);
+  font-size: 12.5px;
+  font-weight: 400;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vq-btn:hover:not(:disabled) {
+  background: var(--vq-btn-hover);
+}
+.vq-btn.primary {
+  padding: 0 13px;
+  border-color: var(--vq-blue);
+  background: var(--vq-blue);
+  color: #fff;
+  font-weight: 500;
+}
+.vq-btn.primary:hover:not(:disabled) {
+  background: var(--vq-blue);
+  filter: brightness(1.07);
+}
+.vq-btn.destructive {
+  border-color: var(--vq-red-line);
+  background: var(--vq-red-soft);
+  color: var(--vq-red);
+}
+.vq-btn.caution {
+  border-color: var(--vq-amber-line);
+  background: var(--vq-amber-soft);
+  color: var(--vq-amber);
+}
+.vq-btn.live {
+  height: 28px;
+  border-color: var(--vq-cyan-line);
+  background: transparent;
+  color: var(--vq-cyan);
+}
+.vq-btn.tall {
+  height: var(--vq-input-h);
+}
+.vq-btn:disabled {
+  border-color: var(--vq-line);
+  background: var(--vq-surface-2);
+  color: var(--vq-text-4);
+  cursor: not-allowed;
+}
+.vq-btn.link {
+  height: auto;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--vq-blue);
+}
+
+/* -------------------------------------------------------------- controls -- */
+
+.vq-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.vq-label {
+  font-family: var(--vq-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--vq-text-3);
+  margin-bottom: 6px;
+}
+.vq-help {
+  font-family: var(--vq-font-body);
+  font-size: 11.5px;
+  color: var(--vq-text-4);
+  margin-top: 6px;
+}
+.vq-help.err {
+  color: var(--vq-red);
+}
+.vq-help.override {
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  color: var(--vq-amber);
+}
+
+.vq-input,
+.vq-select {
+  height: var(--vq-input-h);
+  width: 100%;
+  border: 1px solid var(--vq-line-2);
+  border-radius: var(--vq-radius-control);
+  background: var(--vq-inset);
+  color: var(--vq-text);
+  padding: 0 11px;
+  font-family: var(--vq-font-mono);
+  font-size: 12.5px;
+}
+textarea.vq-input {
+  height: auto;
+  padding: 9px 11px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.vq-input::placeholder {
+  color: var(--vq-text-4);
+}
+.vq-input:focus,
+.vq-select:focus {
+  outline: none;
+  border-color: var(--vq-blue);
+  box-shadow: 0 0 0 3px var(--vq-blue-soft);
+}
+.vq-input.invalid {
+  border-color: var(--vq-red);
+  color: var(--vq-red);
+}
+.vq-input.overridden,
+.vq-select.overridden {
+  border-color: var(--vq-amber-line);
+}
+.vq-input.inherited,
+.vq-select.inherited {
+  color: var(--vq-text-3);
+}
+.vq-input:disabled,
+.vq-select:disabled {
+  color: var(--vq-text-3);
+  cursor: not-allowed;
+}
+.vq-select {
+  appearance: none;
+  background-image: none;
+  cursor: pointer;
+}
+.vq-selectwrap {
+  position: relative;
+}
+.vq-selectwrap::after {
+  content: "▾";
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: var(--vq-text-4);
+  pointer-events: none;
+}
+
+/* Segmented control — also the filter-bar and theme-switch primitive. */
+.vq-seg {
+  display: inline-flex;
+  height: var(--vq-control-h);
+  border: 1px solid var(--vq-line-2);
+  border-radius: var(--vq-radius-control);
+  overflow: hidden;
+}
+.vq-seg.tall {
+  height: var(--vq-input-h);
+}
+.vq-seg.mini {
+  height: 28px;
+}
+.vq-seg > button {
+  border: 0;
+  border-left: 1px solid var(--vq-line-2);
+  background: transparent;
+  color: var(--vq-text-3);
+  padding: 0 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vq-seg > button:first-child {
+  border-left: 0;
+}
+.vq-seg > button.on {
+  background: var(--vq-blue-soft);
+  color: var(--vq-blue);
+  font-weight: 500;
+}
+.vq-seg.grow > button {
+  flex: 1;
+}
+.vq-seg.mono > button {
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.vq-toggle {
+  width: 34px;
+  height: 19px;
+  border-radius: 10px;
+  border: 1px solid var(--vq-line-2);
+  background: var(--vq-surface-3);
+  padding: 1px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  flex: 0 0 34px;
+}
+.vq-toggle > span {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--vq-text-4);
+  transition: none;
+}
+.vq-toggle.on {
+  background: var(--vq-blue);
+  border-color: var(--vq-blue);
+  justify-content: flex-end;
+}
+.vq-toggle.on > span {
+  background: #fff;
+}
+
+.vq-check {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1px solid var(--vq-line-3);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  font-size: 9px;
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 13px;
+}
+.vq-check.on {
+  background: var(--vq-blue);
+  border-color: var(--vq-blue);
+  color: #fff;
+}
+.vq-checkrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+/* -------------------------------------------------------------- filters -- */
+
+.vq-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vq-search {
+  height: var(--vq-control-h);
+  flex: 1;
+  max-width: 300px;
+  border: 1px solid var(--vq-line-2);
+  border-radius: var(--vq-radius-control);
+  background: var(--vq-surface);
+  color: var(--vq-text);
+  padding: 0 11px;
+  font-size: 12.5px;
+  font-family: var(--vq-font-ui);
+}
+.vq-search::placeholder {
+  color: var(--vq-text-3);
+}
+.vq-search:focus {
+  outline: none;
+  border-color: var(--vq-blue);
+  box-shadow: 0 0 0 3px var(--vq-blue-soft);
+}
+.vq-spacer {
+  margin-left: auto;
+}
+
+/* ----------------------------------------------------------------- tabs -- */
+
+.vq-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--vq-line);
+}
+.vq-tab {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--vq-text-3);
+  border: 0;
+  background: none;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.vq-tab.on {
+  color: var(--vq-blue);
+  border-bottom-color: var(--vq-blue);
+}
+
+/* ------------------------------------------------------- label/value rows -- */
+
+.vq-kv {
+  display: grid;
+  align-items: center;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--vq-line);
+  gap: 12px;
+  font-size: 12.5px;
+}
+.vq-kv:last-child {
+  border-bottom: 0;
+}
+.vq-kv > .k {
+  color: var(--vq-text-3);
+}
+.vq-kv > .v {
+  font-family: var(--vq-font-mono);
+  font-size: 11.5px;
+  color: var(--vq-text-2);
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* A settings row: explanation on the left, control on the right. */
+.vq-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 18px;
+  border-top: 1px solid var(--vq-line);
+}
+.vq-setting:first-child {
+  border-top: 0;
+}
+.vq-setting .lbl {
+  font-size: 12.5px;
+}
+.vq-setting .exp {
+  font-family: var(--vq-font-body);
+  font-size: 11.5px;
+  color: var(--vq-text-3);
+  margin-top: 3px;
+}
+
+/* ------------------------------------------------- empty / error / skeleton -- */
+
+.vq-empty {
+  border: 1px dashed var(--vq-line-2);
+  border-radius: var(--vq-radius-tile);
+  padding: 26px;
+  text-align: center;
+  color: var(--vq-text-3);
+}
+.vq-empty svg {
+  color: var(--vq-line-3);
+  margin-bottom: 10px;
+}
+.vq-empty .headline {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--vq-text);
+}
+.vq-empty .hint {
+  font-family: var(--vq-font-body);
+  font-size: 11.5px;
+  color: var(--vq-text-3);
+  margin-top: 4px;
+}
+
+.vq-errorpanel {
+  background: var(--vq-red-soft);
+  border: 1px solid var(--vq-red-line);
+  border-radius: var(--vq-radius-tile);
+  padding: 13px 15px;
+}
+.vq-errorpanel .summary {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--vq-red);
+}
+.vq-errorpanel .raw {
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  color: var(--vq-text-2);
+  margin-top: 5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.vq-warnpanel {
+  background: var(--vq-amber-soft);
+  border: 1px solid var(--vq-amber-line);
+  border-radius: var(--vq-radius-tile);
+  padding: 13px 15px;
+  font-family: var(--vq-font-body);
+  font-size: 11.5px;
+  color: var(--vq-amber);
+}
+
+/* Never a spinner in a table. */
+.vq-skel {
+  height: 11px;
+  border-radius: 3px;
+  background: var(--vq-surface-3);
+  animation: vq-pulse 1.6s ease-in-out infinite;
+}
+
+/* An inset block for a command an operator has to copy. */
+.vq-inset {
+  background: var(--vq-inset);
+  border: 1px solid var(--vq-line);
+  border-radius: var(--vq-radius-control);
+  padding: 11px 13px;
+  font-family: var(--vq-font-mono);
+  font-size: 12px;
+  color: var(--vq-text-2);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* The exact request that will be sent — shown on purpose (handoff §7). */
+.vq-submitbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  background: var(--vq-surface-2);
+  border: 1px solid var(--vq-line);
+  border-radius: var(--vq-radius-card);
+  padding: 16px 18px;
+}
+.vq-submitbar .req {
+  font-family: var(--vq-font-mono);
+  font-size: 11px;
+  color: var(--vq-text-3);
+  line-height: 1.7;
+  min-width: 0;
+  word-break: break-all;
+}
+
+/* --------------------------------------------------- host capacity column -- */
+
+.vq-hostcol {
+  min-width: 0;
+}
+.vq-hostcol .head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-family: var(--vq-font-mono);
+  font-size: 10.5px;
+  margin-bottom: 6px;
+}
+.vq-hosttrack {
+  height: 24px;
+  border-radius: 4px;
+  background: var(--vq-surface-3);
+  display: flex;
+  flex-direction: column-reverse;
+  overflow: hidden;
+}
+.vq-hosttrack.cordoned {
+  border: 1px dashed var(--vq-amber-line);
+}
+.vq-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  color: var(--vq-text-3);
+}
+.vq-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+
+/* IPAM pool: one cell per address. */
+.vq-poolgrid {
+  display: grid;
+  grid-template-columns: repeat(16, 1fr);
+  gap: 4px;
+}
+.vq-poolcell {
+  height: 12px;
+  border-radius: 2px;
+  background: var(--vq-surface-3);
+}
+.vq-poolcell.alloc {
+  background: var(--vq-blue);
+}
+.vq-poolcell.reserved {
+  background: var(--vq-cyan);
+}
+
+/* Sparkline — 12 bars, newest last. */
+.vq-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 34px;
+}
+.vq-spark > i {
+  flex: 1;
+  background: var(--vq-blue-soft);
+  border-top: 2px solid var(--vq-blue);
+  min-height: 2px;
+}
+.vq-spark.cyan > i {
+  background: var(--vq-cyan-soft);
+  border-top-color: var(--vq-cyan);
+}
+
+/* --------------------------------------------------------------- events -- */
+
+.vq-eventrow {
+  display: flex;
+  gap: 11px;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--vq-line);
+}
+.vq-eventrow:last-child {
+  border-bottom: 0;
+}
+.vq-eventrow .sev {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: 0 0 5px;
+}
+.vq-eventrow .msg {
+  font-size: 12.5px;
+  color: var(--vq-text);
+}
+.vq-eventrow .meta {
+  font-family: var(--vq-font-mono);
+  font-size: 10px;
+  color: var(--vq-text-4);
+  margin-top: 2px;
+}
+
+/* ------------------------------------------------------------- overlays -- */
+
+/* MUI owns dialogs and menus for focus management; they wear our tokens. */
+.MuiPaper-root {
+  background-image: none !important;
+}
+.vq-dialog-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--vq-line);
+}
+.vq-dialog-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.vq-dialog-foot {
+  padding: 13px 18px;
+  border-top: 1px solid var(--vq-line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: var(--vq-surface-2);
+}
+
+/* ----------------------------------------------------------- responsive -- */
+
+@media (max-width: 1400px) {
+  .vq-metrics-5 {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+}
+@media (max-width: 1100px) {
+  .vq-metrics-5,
+  .vq-metrics-4 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .vq-split {
+    grid-template-columns: 1fr !important;
+  }
+  /* Tables scroll rather than reflow — column alignment is the point. */
+  .vq-table {
+    overflow-x: auto;
+  }
+  .vq-th,
+  .vq-tr,
+  .vq-errorrow {
+    min-width: 960px;
+  }
+}

@@ -153,9 +153,19 @@ Split into three shippable slices.
     (`/O=vquasar/CN=…`) and the CN as a `DNS:` SAN — verified against the exact
     regex `ovs-monitor-ipsec` uses, which a single-RDN subject silently fails.
     See [`docs/overlay-encryption.md`](docs/overlay-encryption.md).
-    **Still required before this can be called done:** install
-    `openvswitch-ipsec` on the lab hosts and verify ESP on the wire, since none
-    of the OVS/IKE interaction has been exercised against a real installation.
+    **Verified against a real `openvswitch-ipsec` 3.3.4 + strongSwan 5.9.13
+    install** (on dome, then reverted): our exact `ovs-vsctl` argument vectors
+    are accepted; a pre-fix single-RDN certificate produces
+    `No CN in the certificate subject` and makes every tunnel report the
+    misleading `must set 'certificate' as local certificate` even though it is
+    set; the fixed `/O=vquasar/CN=…` subject yields `CONFIGURED` with the CN
+    extracted; and the kernel installs policies whose selector is
+    `dst <peer> proto udp dport 4789` — **with no VNI**, which is the empirical
+    confirmation that one association per host pair protects every overlay
+    between them, and therefore that the anchor belongs per peer.
+    **Still required:** ESP confirmed on the wire between two real hosts, which
+    needs `openvswitch-ipsec` installed on the agent hosts (dome is the control
+    plane and carries no overlays).
 - **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
   VXLAN packet from an unconfigured source IP matches no policy and is still
   delivered. Needs a host firewall rule accepting only ESP-protected traffic —

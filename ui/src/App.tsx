@@ -1,9 +1,11 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
-import { Dashboard } from "./pages/Dashboard";
+import { Overview } from "./pages/Overview";
 import { Hosts } from "./pages/Hosts";
+import { HostDetail } from "./pages/HostDetail";
 import { Vms } from "./pages/Vms";
 import { CreateVm } from "./pages/CreateVm";
+import { CreateVmFromTemplate } from "./pages/CreateVmFromTemplate";
 import { VmDetail } from "./pages/VmDetail";
 import { Console } from "./pages/Console";
 import { Networks } from "./pages/Networks";
@@ -14,19 +16,28 @@ import { Templates } from "./pages/Templates";
 import { Tasks } from "./pages/Tasks";
 import { Events } from "./pages/Events";
 import { Iam } from "./pages/Iam";
+import { Settings } from "./pages/Settings";
 import { useAuth } from "./auth/AuthProvider";
 import { Login } from "./pages/Login";
-import Box from "@mui/material/Box";
-import CircularProgress from "@mui/material/CircularProgress";
+import { SkeletonRows } from "./ui/kit";
 
 export function App() {
   const { loading, authenticated } = useAuth();
 
+  // Skeleton the shell rather than blocking the whole page on a spinner.
   if (loading) {
     return (
-      <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>
-        <CircularProgress />
-      </Box>
+      <div className="vq-app">
+        <div className="vq-sidebar" />
+        <div className="vq-body">
+          <div className="vq-topbar" />
+          <main className="vq-main">
+            <div className="vq-table">
+              <SkeletonRows cols="1.5fr 1fr 1fr 1fr" rows={6} />
+            </div>
+          </main>
+        </div>
+      </div>
     );
   }
   if (!authenticated) {
@@ -40,8 +51,9 @@ function AuthedApp() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<Overview />} />
         <Route path="/hosts" element={<Hosts />} />
+        <Route path="/hosts/:id" element={<HostDetail />} />
         <Route path="/vms" element={<Vms />} />
         <Route path="/vms/new" element={<CreateVm />} />
         <Route path="/vms/:id" element={<VmDetail />} />
@@ -51,9 +63,11 @@ function AuthedApp() {
         <Route path="/images" element={<Images />} />
         <Route path="/volumes" element={<Volumes />} />
         <Route path="/templates" element={<Templates />} />
+        <Route path="/templates/:id/launch" element={<CreateVmFromTemplate />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/events" element={<Events />} />
         <Route path="/iam" element={<Iam />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

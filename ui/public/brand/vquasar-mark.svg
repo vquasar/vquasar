@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="vQuasar">
+  <title>vQuasar</title>
+  <mask id="core-a">
+    <rect width="64" height="64" fill="#fff"></rect>
+    <circle cx="32" cy="32" r="3.2" fill="#000"></circle>
+  </mask>
+  <g mask="url(#core-a)">
+    <g transform="rotate(-14 32 32)">
+      <path d="M52 25.5A26 9 0 1 0 52 38.5" fill="none" stroke="#4F9CF9" stroke-width="3.6" stroke-linecap="round"></path>
+      <path d="M52 38.5 61 43" fill="none" stroke="#4F9CF9" stroke-width="3.6" stroke-linecap="round"></path>
+    </g>
+    <polygon points="25,36 37,31.5 45,4" fill="#58D6F5"></polygon>
+    <polygon points="39,28 27,32.5 19,60" fill="#58D6F5"></polygon>
+    <circle cx="32" cy="32" r="7.5" fill="#4F9CF9"></circle>
+  </g>
+</svg>
