@@ -57,6 +57,25 @@ pub struct Vm {
 pub struct Network {
     pub id: Uuid,
     pub name: String,
+    /// What this network is, and therefore what it isolates (design §18):
+    /// `provider` | `vlan` | `tenant`. See [`vquasar_model::NetworkKind`].
+    #[sqlx(default)]
+    pub kind: String,
+    /// Uplink name for a physical (provider/vlan) network.
+    #[sqlx(default)]
+    pub physical_network: Option<String>,
+    /// The L2 segment this network occupies; unique fleet-wide. `None` for a
+    /// network predating the kind model — grandfathered, possibly sharing a
+    /// broadcast domain with another (ADR-016).
+    #[sqlx(default)]
+    pub segment_key: Option<String>,
+    /// Predates the kind model: its segment is not guaranteed distinct.
+    #[sqlx(default)]
+    pub legacy_segment: bool,
+    /// Policy applied to every NIC on this network, unioned with the NIC's own
+    /// groups (ADR-017). `None` only for a network created before 0017.
+    #[sqlx(default)]
+    pub default_security_group_id: Option<Uuid>,
     /// 802.1Q VLAN tag; `None` is a flat/untagged provider network.
     pub vlan: Option<i32>,
     /// VXLAN VNI (design M13b): `Some` ⇒ this network is a VXLAN overlay,
@@ -300,6 +319,8 @@ pub struct Store {
     crypto: Option<std::sync::Arc<crate::crypto::Cryptor>>,
     /// Roots a caller-supplied host path must sit under (design §30).
     allowed_paths: std::sync::Arc<[String]>,
+    /// Platform policy over network segments (design §18).
+    network_policy: std::sync::Arc<crate::config::NetworkPolicy>,
 }
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
@@ -330,7 +351,61 @@ impl Store {
             shared_volumes_dir: shared_volumes_dir.into().into(),
             crypto: None,
             allowed_paths: vec!["/var/lib/vquasar".to_string()].into(),
+            network_policy: std::sync::Arc::new(crate::config::NetworkPolicy::default()),
         }
+    }
+
+    /// Platform policy over VLAN tags, uplinks and VNI allocation (design §18).
+    pub fn with_network_policy(mut self, policy: crate::config::NetworkPolicy) -> Self {
+        self.network_policy = std::sync::Arc::new(policy);
+        self
+    }
+
+    pub fn network_policy(&self) -> &crate::config::NetworkPolicy {
+        &self.network_policy
+    }
+
+    /// The connection pool, for helpers that own their own SQL (segments).
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Begin a transaction, for work that must be atomic with a row insert
+    /// (segment allocation).
+    pub async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        self.pool.begin().await
+    }
+
+    /// Seed a network's default policy group (ADR-017).
+    ///
+    /// A tenant network is self-contained, so its default is deny-ingress: the
+    /// segment already isolates it, and anything more open should be asked for.
+    /// A physical network's default is deny too — a brand-new segment has no
+    /// reason to be open — but it is created empty of allow rules either way;
+    /// the difference is only the description an operator reads.
+    pub async fn insert_default_group(
+        &self,
+        _network: Uuid,
+        network_name: &str,
+        tenant: bool,
+    ) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let scope = if tenant { "tenant" } else { "provider" };
+        sqlx::query(
+            "INSERT INTO security_groups (id, name, description, managed, created_at, updated_at)
+             VALUES ($1,$2,$3,true,$4,$4)",
+        )
+        .bind(id)
+        .bind(format!("default-{network_name}"))
+        .bind(format!(
+            "Default policy for the {scope} network {network_name}: default-deny ingress. \
+             Applies to every NIC on this network, unioned with the NIC's own groups."
+        ))
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
     }
 
     /// Restrict caller-supplied host paths to these roots (design §30).
@@ -795,6 +870,9 @@ impl Store {
     pub async fn insert_network(
         &self,
         name: &str,
+        kind: &str,
+        physical_network: Option<&str>,
+        segment_key: Option<&str>,
         vlan: Option<i32>,
         vni: Option<i32>,
         ipam: &NetworkIpam,
@@ -802,10 +880,11 @@ impl Store {
         let now = Utc::now();
         sqlx::query_as::<_, Network>(
             "INSERT INTO networks
-                (id, name, vlan, vni, cidr_v4, gateway_v4, cidr_v6, gateway_v6, dns,
+                (id, name, kind, physical_network, segment_key, vlan, vni,
+                 cidr_v4, gateway_v4, cidr_v6, gateway_v6, dns,
                  pool_v4_start, pool_v4_end, pool_v6_start, pool_v6_end,
                  created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+             VALUES ($1,$2,$15,$16,$17,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
@@ -822,17 +901,22 @@ impl Store {
         .bind(&ipam.pool_v6_start)
         .bind(&ipam.pool_v6_end)
         .bind(now)
+        .bind(kind)
+        .bind(physical_network)
+        .bind(segment_key)
         .fetch_one(&self.pool)
         .await
     }
 
-    /// Lowest free VNI at or above 4096 (design M13b).
-    pub async fn next_free_vni(&self) -> Result<i32> {
-        let max: Option<i32> =
-            sqlx::query_scalar("SELECT max(vni) FROM networks WHERE vni IS NOT NULL")
-                .fetch_one(&self.pool)
-                .await?;
-        Ok(max.map(|m| m + 1).unwrap_or(4096).max(4096))
+    /// Attach a network's default policy group (ADR-017).
+    pub async fn set_network_default_group(&self, network: Uuid, sg: Uuid) -> Result<()> {
+        sqlx::query("UPDATE networks SET default_security_group_id=$2, updated_at=$3 WHERE id=$1")
+            .bind(network)
+            .bind(sg)
+            .bind(Utc::now())
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
     }
 
     pub async fn get_network(&self, id: Uuid) -> Result<Option<Network>> {
@@ -1008,6 +1092,17 @@ impl Store {
         .bind(Utc::now())
         .fetch_optional(&self.pool)
         .await
+    }
+
+    /// Whether this group is a network's managed default (ADR-017).
+    pub async fn security_group_is_managed(&self, id: Uuid) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, bool>("SELECT managed FROM security_groups WHERE id=$1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?
+                .unwrap_or(false),
+        )
     }
 
     pub async fn delete_security_group(&self, id: Uuid) -> Result<bool> {

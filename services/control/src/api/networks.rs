@@ -7,21 +7,33 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::authz::{AuthUser, RequireNetworkCreate, RequireNetworkUpdate};
+use crate::authz::{AuthUser, RequireNetworkUpdate};
+use vquasar_model::{NetworkKind, SegmentKey};
+
 use crate::ipam::Subnet;
 use crate::store::{Network, NetworkIpam, Store};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateNetwork {
     pub name: String,
-    /// Optional 802.1Q VLAN tag (1–4094); omit for a flat provider network.
+    /// What this network is (design §18): `provider` | `vlan` | `tenant`.
+    /// Defaults to `provider` so pre-kind clients keep working; `overlay: true`
+    /// is still accepted and means `tenant`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Uplink a physical network attaches to. Defaults to `default`.
+    #[serde(default)]
+    pub physical_network: Option<String>,
+    /// 802.1Q VLAN tag (1–4094). Only for `kind = "vlan"`, and only from the
+    /// configured allowlist — a tag is a fact about the physical switch.
     #[serde(default)]
     pub vlan: Option<i32>,
-    /// Make this a VXLAN overlay (design M13b): a VNI is auto-allocated. Mutually
-    /// exclusive with `vlan`.
+    /// Deprecated spelling of `kind = "tenant"`.
     #[serde(default)]
     pub overlay: bool,
-    /// Explicit VNI override (otherwise auto-allocated when `overlay`).
+    /// Rejected: VNIs are allocated by the control plane (ADR-016). Accepted in
+    /// the body only so a stale client gets a clear error instead of silently
+    /// landing on someone else's overlay.
     #[serde(default)]
     pub vni: Option<i32>,
     /// IPAM config (design M13a). Absent/empty families ⇒ external DHCP.
@@ -29,33 +41,50 @@ pub struct CreateNetwork {
     pub ipam: NetworkIpam,
 }
 
-/// Resolve the VNI for a create/update: explicit override, else auto-allocate
-/// when overlay is requested (reusing an existing network's VNI), else none.
-async fn resolve_vni(
-    store: &Store,
-    body: &CreateNetwork,
-    existing: Option<&Network>,
-) -> ApiResult<Option<i32>> {
-    if let Some(v) = body.vni {
-        if !(1..=16_777_215).contains(&v) {
-            return Err(ApiError::invalid("vni must be between 1 and 16777215"));
-        }
-        return Ok(Some(v));
+/// Resolve the requested kind: explicit `kind`, else the legacy `overlay` flag,
+/// else `provider`.
+fn resolve_kind(body: &CreateNetwork) -> ApiResult<NetworkKind> {
+    match body.kind.as_deref() {
+        Some(k) => k
+            .parse::<NetworkKind>()
+            .map_err(|e| ApiError::invalid(e.to_string())),
+        None if body.overlay => Ok(NetworkKind::Tenant),
+        None => Ok(NetworkKind::Provider),
     }
-    if !body.overlay {
-        return Ok(None);
-    }
-    if let Some(v) = existing.and_then(|n| n.vni) {
-        return Ok(Some(v));
-    }
-    Ok(Some(store.next_free_vni().await?))
 }
 
-fn validate_vlan(vlan: Option<i32>) -> ApiResult<()> {
-    if let Some(v) = vlan {
-        if !(1..=4094).contains(&v) {
-            return Err(ApiError::invalid("vlan must be between 1 and 4094"));
+/// Check the request's segment fields against the kind, and against what the
+/// platform permits. A VLAN tag must match the physical switch, so it is
+/// allow-listed rather than free-form; a VNI is never caller-supplied.
+fn validate_request(
+    kind: NetworkKind,
+    body: &CreateNetwork,
+    policy: &crate::config::NetworkPolicy,
+) -> ApiResult<()> {
+    if body.vni.is_some() {
+        return Err(ApiError::invalid(
+            "vni is allocated by the control plane and cannot be requested",
+        ));
+    }
+    match kind {
+        NetworkKind::Vlan => {
+            let tag = body
+                .vlan
+                .ok_or_else(|| ApiError::invalid("a vlan network requires a vlan tag"))?;
+            if !policy.permits_vlan(tag) {
+                return Err(ApiError::invalid(format!(
+                    "vlan {tag} is not in the permitted range ({})",
+                    policy.describe_vlans()
+                )));
+            }
         }
+        NetworkKind::Provider | NetworkKind::Tenant if body.vlan.is_some() => {
+            return Err(ApiError::invalid(format!(
+                "a {} network must not carry a vlan tag",
+                kind.as_str()
+            )));
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -100,33 +129,92 @@ fn validate_ipam(ipam: &NetworkIpam) -> ApiResult<()> {
 
 pub async fn create(
     State(store): State<Store>,
-    _: RequireNetworkCreate,
+    user: AuthUser,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<(StatusCode, Json<Network>)> {
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
-    validate_vlan(body.vlan)?;
-    validate_ipam(&body.ipam)?;
-    let vni = resolve_vni(&store, &body, None).await?;
-    if vni.is_some() && body.vlan.is_some() {
-        return Err(ApiError::invalid(
-            "a VXLAN overlay network cannot also carry an 802.1Q VLAN",
-        ));
+    let kind = resolve_kind(&body)?;
+    // Attaching to physical infrastructure is a platform decision: the tag and
+    // the uplink are facts about the switch (ADR-016).
+    if kind.is_platform_only() {
+        user.require("network:create:provider")?;
+    } else {
+        user.require("network:create")?;
     }
+    let policy = store.network_policy();
+    validate_request(kind, &body, policy)?;
+    validate_ipam(&body.ipam)?;
+
+    let uplink = body.physical_network.as_deref().unwrap_or("default");
+    if kind.is_physical() && !policy.permits_uplink(uplink) {
+        return Err(ApiError::invalid(format!(
+            "unknown physical_network {uplink:?} — configure it in [network] physical_networks"
+        )));
+    }
+
+    let (segment, vni) = match kind {
+        NetworkKind::Tenant => {
+            let mut tx = store.begin().await?;
+            let key = crate::segments::allocate_vxlan(&mut tx, &policy.segments())
+                .await
+                .map_err(|e| match e {
+                    crate::segments::SegmentError::Exhausted { .. } => {
+                        ApiError::invalid(e.to_string())
+                    }
+                    crate::segments::SegmentError::Db(e) => e.into(),
+                })?;
+            tx.commit().await?;
+            let vni = match &key {
+                SegmentKey::Vxlan { vni } => *vni as i32,
+                _ => unreachable!("allocate_vxlan returns a vxlan key"),
+            };
+            (Some(key), Some(vni))
+        }
+        NetworkKind::Provider | NetworkKind::Vlan => (
+            Some(SegmentKey::Physical {
+                physical_network: uplink.to_string(),
+                vlan: body.vlan.map(|v| v as u16),
+            }),
+            None,
+        ),
+    };
+    let segment_key = segment.as_ref().map(|s| s.canonical());
+
     let net = store
-        .insert_network(&body.name, body.vlan, vni, &body.ipam)
+        .insert_network(
+            &body.name,
+            kind.as_str(),
+            kind.is_physical().then_some(uplink),
+            segment_key.as_deref(),
+            body.vlan,
+            vni,
+            &body.ipam,
+        )
         .await
-        .map_err(unique_vni)?;
+        .map_err(duplicate_segment)?;
+
+    // Every network carries a policy from the moment it exists (ADR-017).
+    let sg = store
+        .insert_default_group(net.id, &net.name, kind == NetworkKind::Tenant)
+        .await?;
+    store.set_network_default_group(net.id, sg).await?;
+    if let Some(key) = &segment_key {
+        let mut tx = store.begin().await?;
+        let _ = crate::segments::bind(&mut tx, key, net.id).await;
+        tx.commit().await?;
+    }
+    let net = store.get_network(net.id).await?.unwrap_or(net);
     Ok((StatusCode::CREATED, Json(net)))
 }
 
-/// Map a duplicate-VNI unique violation to a friendly 400.
-fn unique_vni(e: sqlx::Error) -> ApiError {
+/// A segment collision means another network already owns that L2 domain.
+fn duplicate_segment(e: sqlx::Error) -> ApiError {
     match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
-            ApiError::invalid("that VNI is already in use")
-        }
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError::invalid(
+            "that segment is already in use by another network (one network = one L2 domain)",
+        ),
         _ => e.into(),
     }
 }
@@ -140,19 +228,23 @@ pub async fn update(
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
-    validate_vlan(body.vlan)?;
     validate_ipam(&body.ipam)?;
-    let existing = store.get_network(id).await?;
-    let vni = resolve_vni(&store, &body, existing.as_ref()).await?;
-    if vni.is_some() && body.vlan.is_some() {
+    let existing = store
+        .get_network(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))?;
+    // A network's segment is its identity: changing it would silently move
+    // every attached VM to a different broadcast domain. Retarget the NICs
+    // instead (PUT /vms/:id/nics/:index).
+    if body.vni.is_some() || (body.vlan.is_some() && body.vlan != existing.vlan) {
         return Err(ApiError::invalid(
-            "a VXLAN overlay network cannot also carry an 802.1Q VLAN",
+            "a network's segment cannot be changed after creation",
         ));
     }
     store
-        .update_network(id, &body.name, body.vlan, vni, &body.ipam)
+        .update_network(id, &body.name, existing.vlan, existing.vni, &body.ipam)
         .await
-        .map_err(unique_vni)?
+        .map_err(duplicate_segment)?
         .map(Json)
         .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
 }
@@ -191,7 +283,15 @@ pub async fn delete(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("network:delete")?;
+    // Quarantine the segment rather than freeing it: a host may still carry the
+    // overlay bridge and its tunnel mesh (ADR-016).
+    let segment = store.get_network(id).await?.and_then(|n| n.segment_key);
     if store.delete_network(id).await? {
+        if let Some(key) = segment {
+            if let Err(e) = crate::segments::release(store.pool(), &key).await {
+                tracing::warn!(error = %e, segment = %key, "failed to quarantine segment");
+            }
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::invalid(format!("network not found: {id}")))

@@ -291,6 +291,10 @@ struct Harness {
 
 impl Harness {
     async fn start() -> Self {
+        Self::start_with(&[]).await
+    }
+
+    async fn start_with(extra_env: &[(&str, &str)]) -> Self {
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
         let db_name = format!("vquasar_e2e_{}_{}", std::process::id(), seq);
 
@@ -325,6 +329,7 @@ impl Harness {
             .env("VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS", "[\"/x\"]")
             .env("VQUASAR_CONTROL_RECONCILE__INTERVAL_SECS", "1")
             .env("RUST_LOG", "warn")
+            .envs(extra_env.iter().copied())
             .spawn()
             .expect("spawn vquasar-control");
 
@@ -693,4 +698,79 @@ async fn secrets_are_not_returned_and_host_paths_are_confined() {
         .post("/vms", json!({"name": "traversal", "spec": traversal}))
         .await;
     assert_eq!(st.as_u16(), 400, "traversal must be refused: {body}");
+}
+
+/// The network type model (ADR-016): a network declares what it isolates, its
+/// segment is platform-allocated, and one network is one L2 domain.
+#[tokio::test]
+async fn network_kinds_and_platform_allocated_segments() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_NETWORK__PROVIDER_VLANS", "100-200")]).await;
+
+    // A caller cannot pick the segment they land on — that is how you join
+    // somebody else's overlay, or reach a provider VLAN you were not given.
+    let (st, body) = h
+        .post(
+            "/networks",
+            json!({"name": "pick-vni", "kind": "tenant", "vni": 4096}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    let (st, body) = h
+        .post(
+            "/networks",
+            json!({"name": "pick-vlan", "kind": "vlan", "vlan": 999}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "vlan outside the allowlist: {body}");
+
+    // Tenant networks get distinct VNIs from the platform.
+    let (st, a) = h
+        .post("/networks", json!({"name": "t-a", "kind": "tenant"}))
+        .await;
+    assert!(st.is_success(), "{a}");
+    let (_, b) = h
+        .post("/networks", json!({"name": "t-b", "kind": "tenant"}))
+        .await;
+    assert_ne!(a["vni"], b["vni"], "two tenant networks share a VNI");
+    assert_eq!(
+        a["segment_key"],
+        json!(format!("vxlan:{}", a["vni"].as_i64().unwrap()))
+    );
+
+    // One network = one L2 domain: the same uplink+tag cannot be claimed twice.
+    let (st, _) = h
+        .post(
+            "/networks",
+            json!({"name": "v1", "kind": "vlan", "vlan": 150}),
+        )
+        .await;
+    assert!(st.is_success());
+    let (st, body) = h
+        .post(
+            "/networks",
+            json!({"name": "v2", "kind": "vlan", "vlan": 150}),
+        )
+        .await;
+    assert_eq!(
+        st.as_u16(),
+        400,
+        "duplicate segment must be refused: {body}"
+    );
+
+    // Every network carries a policy object from creation (ADR-017).
+    assert!(
+        a["default_security_group_id"].is_string(),
+        "tenant network has no default policy group: {a}"
+    );
+
+    // A network's segment is its identity and cannot be swapped underneath the
+    // VMs attached to it.
+    let id = a["id"].as_str().unwrap();
+    let (st, body) = h
+        .post(
+            &format!("/networks/{id}"),
+            json!({"name": "t-a", "vlan": 150}),
+        )
+        .await;
+    assert!(st.as_u16() == 400 || st.as_u16() == 405, "{body}");
 }
