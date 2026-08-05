@@ -123,6 +123,39 @@ fn rule_matches(r: &SecRule) -> Vec<String> {
     }
 }
 
+/// Priority of the catch-all drop that ends every TAP's egress pipeline.
+///
+/// Below every legitimate egress match (which are all ≥1080 and carry
+/// `dl_src=<mac>`), and above the bridge's default `NORMAL` flow. A frame the
+/// guest sources with someone else's MAC matches nothing above this and dies
+/// here.
+const SPOOF_DROP_PRIORITY: u32 = 1000;
+
+/// Port security for a NIC with **no** security groups (design §30).
+///
+/// The guest still reaches everything it reaches today — this only binds its
+/// egress to the MAC the control plane allocated. Without it a guest can source
+/// frames as any MAC on the shared bridge and impersonate another VM, which no
+/// amount of control-plane scoping can undo.
+///
+/// Deliberately not a conntrack policy: filtering is the security groups' job
+/// (M13c), and turning "no groups" into "default deny" would cut off every
+/// existing NIC. This is the part that is safe to apply unconditionally.
+pub fn build_port_security_flows(tap: &str, mac: &str) -> Vec<String> {
+    let c = cookie_for(tap);
+    vec![
+        // ARP must carry the guest's own MAC in both the frame and the sender
+        // hardware address, or it is an ARP-poisoning attempt.
+        format!(
+            "cookie={c},table=0,priority=1200,in_port={tap},dl_src={mac},arp,arp_sha={mac},actions=NORMAL"
+        ),
+        // Everything else the guest sends, as long as it owns the source MAC.
+        format!("cookie={c},table=0,priority=1180,in_port={tap},dl_src={mac},actions=NORMAL"),
+        // Anything else out of this port is spoofed.
+        format!("cookie={c},table=0,priority={SPOOF_DROP_PRIORITY},in_port={tap},actions=drop"),
+    ]
+}
+
 /// Build the full flow set for a NIC's firewall (pure — unit-tested).
 pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     let c = cookie_for(tap);
@@ -132,13 +165,23 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     let mut f = Vec::new();
 
     // --- table 0: allow essentials, send IP to conntrack ---
+    // Egress is qualified with `dl_src` so a spoofed source MAC misses every
+    // rule here and falls through to the catch-all drop below; ingress keys on
+    // `dl_dst`, which is already this NIC's MAC.
     for (dir, dir_match) in [
-        ("eg", format!("in_port={tap}")),
+        ("eg", format!("in_port={tap},dl_src={mac}")),
         ("ig", format!("dl_dst={mac}")),
     ] {
-        let _ = dir;
+        // On egress `dir_match` already pins dl_src; also pin the ARP sender
+        // hardware address, or a guest can poison peers while sourcing frames
+        // from its own MAC.
+        let arp_extra = if dir == "eg" {
+            format!(",arp_sha={mac}")
+        } else {
+            String::new()
+        };
         f.push(format!(
-            "cookie={c},table=0,priority=1100,{dir_match},arp,actions=NORMAL"
+            "cookie={c},table=0,priority=1100,{dir_match},arp{arp_extra},actions=NORMAL"
         ));
         f.push(format!(
             "cookie={c},table=0,priority=1085,{dir_match},icmp6,actions=NORMAL"
@@ -152,7 +195,7 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     }
     // DHCP client (so IPAM/DHCP still works through the filter).
     f.push(format!(
-        "cookie={c},table=0,priority=1090,in_port={tap},udp,tp_src=68,tp_dst=67,actions=NORMAL"
+        "cookie={c},table=0,priority=1090,in_port={tap},dl_src={mac},udp,tp_src=68,tp_dst=67,actions=NORMAL"
     ));
     f.push(format!(
         "cookie={c},table=0,priority=1090,dl_dst={mac},udp,tp_src=67,tp_dst=68,actions=NORMAL"
@@ -170,9 +213,12 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     ));
     // New egress from the VM is allowed (default-allow egress), commit it. A
     // ct(commit) action requires a known dl_type, so match ip / ipv6 explicitly.
+    // `dl_src` is redundant here — nothing reaches this table without passing
+    // the table-0 egress rules, which pin it — but it keeps "every egress match
+    // names the MAC" true no matter how table 0 is edited later.
     for l3 in ["ip", "ipv6"] {
         f.push(format!(
-            "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},{l3},actions={commit}"
+            "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},dl_src={mac},{l3},actions={commit}"
         ));
     }
     // New ingress: only where an allow-rule matches.
@@ -187,6 +233,12 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     f.push(format!(
         "cookie={c},table={RESULT_TABLE},priority=10,ct_zone={z},ct_state=+new+trk,dl_dst={mac},actions=drop"
     ));
+    // Port security: anything this guest sources with a MAC that is not its own
+    // matched none of the egress rules above (they all pin `dl_src`), so it
+    // lands here (design §30).
+    f.push(format!(
+        "cookie={c},table=0,priority={SPOOF_DROP_PRIORITY},in_port={tap},actions=drop"
+    ));
     f
 }
 
@@ -195,6 +247,21 @@ pub async fn apply(bridge: &str, tap: &str, mac: &str, rules: &[SecRule]) -> Res
     // Replace any prior flows for this TAP first (idempotent reconcile).
     clear(bridge, tap).await?;
     let flows = build_flows(tap, mac, rules).join("\n");
+    let output = ovs_ofctl_stdin(&["add-flows", bridge, "-"], &flows).await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(NetworkError::Command {
+            cmd: format!("ovs-ofctl add-flows {bridge} -"),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+/// Install port security only, for a NIC with no security groups.
+pub async fn apply_port_security(bridge: &str, tap: &str, mac: &str) -> Result<()> {
+    clear(bridge, tap).await?;
+    let flows = build_port_security_flows(tap, mac).join("\n");
     let output = ovs_ofctl_stdin(&["add-flows", bridge, "-"], &flows).await?;
     if output.status.success() {
         Ok(())
@@ -300,5 +367,118 @@ mod tests {
             rule_matches(&any),
             vec!["ip,nw_src=192.168.0.0/16".to_string()]
         );
+    }
+
+    // ---- port security (design §30) -----------------------------------
+
+    const MAC: &str = "02:aa:bb:cc:dd:01";
+    const OTHER: &str = "02:aa:bb:cc:dd:99";
+
+    /// Every rule that lets a frame *out* of the TAP must pin the source MAC,
+    /// or the catch-all drop below it is decorative.
+    fn egress_rules_all_pin_the_mac(flows: &[String]) {
+        for f in flows {
+            let is_egress = f.contains("in_port=tap0") && !f.contains("actions=drop");
+            if is_egress {
+                assert!(
+                    f.contains(&format!("dl_src={MAC}")),
+                    "egress rule without dl_src: {f}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unfiltered_nic_gets_port_security_and_a_catch_all_drop() {
+        let f = build_port_security_flows("tap0", MAC);
+        egress_rules_all_pin_the_mac(&f);
+        assert!(
+            f.iter().any(|r| r.contains(&format!(
+                "priority={SPOOF_DROP_PRIORITY},in_port=tap0,actions=drop"
+            ))),
+            "missing catch-all drop: {f:?}"
+        );
+        // The guest keeps working: it is not a conntrack policy, just a bind.
+        assert!(f
+            .iter()
+            .any(|r| r.contains("dl_src=") && r.contains("actions=NORMAL")));
+        assert!(
+            !f.iter().any(|r| r.contains("ct(")),
+            "must not filter L3/L4: {f:?}"
+        );
+    }
+
+    #[test]
+    fn arp_must_carry_the_guests_own_sender_address() {
+        for f in [
+            build_port_security_flows("tap0", MAC),
+            build_flows("tap0", MAC, &[]),
+        ] {
+            let arp_out: Vec<_> = f
+                .iter()
+                .filter(|r| r.contains("arp") && r.contains("in_port=tap0"))
+                .collect();
+            assert!(!arp_out.is_empty(), "no egress ARP rule");
+            for r in arp_out {
+                assert!(
+                    r.contains(&format!("arp_sha={MAC}")),
+                    "ARP egress without arp_sha, so poisoning is possible: {r}"
+                );
+            }
+        }
+    }
+
+    /// The filtered path must not lose port security when security groups are
+    /// present — the two layers are independent.
+    #[test]
+    fn filtered_nic_also_pins_the_mac_and_drops_the_rest() {
+        let f = build_flows("tap0", MAC, &[rule("tcp", 22, 22, "")]);
+        egress_rules_all_pin_the_mac(&f);
+        assert!(
+            f.iter().any(|r| r.contains(&format!(
+                "priority={SPOOF_DROP_PRIORITY},in_port=tap0,actions=drop"
+            ))),
+            "filtered NIC lost the spoof drop"
+        );
+        // ...and the security-group policy is still there.
+        assert!(f.iter().any(|r| r.contains("tp_dst=22")));
+        assert!(f
+            .iter()
+            .any(|r| r.contains("ct_state=+new+trk") && r.contains("actions=drop")));
+    }
+
+    /// No rule may admit a frame sourced from someone else's MAC. This is the
+    /// property the whole change exists for.
+    #[test]
+    fn no_flow_admits_another_vms_mac_on_egress() {
+        for f in [
+            build_port_security_flows("tap0", MAC),
+            build_flows("tap0", MAC, &[rule("tcp", 0, 0, "")]),
+        ] {
+            for r in &f {
+                if r.contains(OTHER) {
+                    panic!("a foreign MAC appears in a flow: {r}");
+                }
+            }
+            // The only rule matching bare in_port (no dl_src) is the drop.
+            for r in &f {
+                if r.contains("in_port=tap0") && !r.contains("dl_src=") {
+                    assert!(r.contains("actions=drop"), "unqualified egress rule: {r}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dhcp_still_works_through_port_security() {
+        let f = build_flows("tap0", MAC, &[]);
+        let dhcp_out = f
+            .iter()
+            .find(|r| r.contains("tp_src=68") && r.contains("in_port=tap0"))
+            .expect("no DHCP egress rule");
+        assert!(dhcp_out.contains(&format!("dl_src={MAC}")));
+        assert!(f
+            .iter()
+            .any(|r| r.contains("tp_dst=68") && r.contains("dl_dst=")));
     }
 }

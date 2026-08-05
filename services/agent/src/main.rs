@@ -77,12 +77,22 @@ async fn main() -> anyhow::Result<()> {
         &config.hypervisor.serial_mode,
         &config.hypervisor.seccomp,
     ));
-    let network = Arc::new(network::OvsNetworkBackend::new(
-        config.network.bridge.clone(),
-    ));
+    let network = Arc::new(
+        network::OvsNetworkBackend::new(config.network.bridge.clone())
+            .with_port_security(config.network.port_security),
+    );
+    if !config.network.port_security {
+        tracing::warn!(
+            "MAC anti-spoofing is OFF — any guest on this bridge can source frames \
+             as another VM's MAC. Enable [network] port_security once you have \
+             checked no guest relies on a virtual MAC (VRRP/keepalived, nested \
+             virtualisation, in-guest bridging)."
+        );
+    }
     info!(
         backend = %config.network.backend,
         bridge = %config.network.bridge,
+        port_security = config.network.port_security,
         "network dataplane configured"
     );
     // cloud-init phone_home IP-discovery fallback (design M13e): inject our CA so

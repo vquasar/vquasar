@@ -204,6 +204,25 @@ pub struct NetworkSection {
     pub backend: String,
     /// Integration bridge name (section 18).
     pub bridge: String,
+    /// Bind each TAP's egress to the MAC the control plane allocated, dropping
+    /// spoofed frames and ARP whose sender hardware address is not the guest's
+    /// own (design §30). Without it, any guest can impersonate any other VM on
+    /// the shared bridge — no control-plane scoping can undo that.
+    ///
+    /// **Defaults to off**, because switching it on changes the dataplane of a
+    /// running cluster: a guest that legitimately sources other MACs — VRRP or
+    /// keepalived (virtual MAC `00:00:5e:00:01:xx`), nested virtualisation,
+    /// in-guest bridging — loses that traffic. There is no allowed-address-pairs
+    /// escape yet, so it is all-or-nothing per host. Check for VIPs, then enable.
+    ///
+    /// The agent warns on every start while this is off; silence is not the
+    /// intended resting state.
+    #[serde(default = "default_port_security")]
+    pub port_security: bool,
+}
+
+fn default_port_security() -> bool {
+    false
 }
 
 impl Default for NetworkSection {
@@ -211,6 +230,7 @@ impl Default for NetworkSection {
         Self {
             backend: "ovs".to_string(),
             bridge: "br-int".to_string(),
+            port_security: default_port_security(),
         }
     }
 }
@@ -299,6 +319,19 @@ mod tests {
             cfg.hypervisor.binary,
             PathBuf::from("/usr/bin/cloud-hypervisor")
         );
+        // Port security is opt-in: an upgrade must not change the dataplane of
+        // a running cluster (a guest may rely on a virtual MAC).
+        assert!(!cfg.network.port_security);
+    }
+
+    #[test]
+    fn port_security_can_be_enabled_by_config() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("VQUASAR_AGENT_NETWORK__PORT_SECURITY", "true");
+            let cfg = AgentConfig::load(None).unwrap();
+            assert!(cfg.network.port_security);
+            Ok(())
+        });
     }
 
     #[test]
