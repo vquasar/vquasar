@@ -162,7 +162,9 @@ pub struct NicRender {
     pub gateway4: Option<String>,
     pub gateway6: Option<String>,
     pub dns: Vec<String>,
-    /// Link MTU, e.g. 1450 to absorb VXLAN overhead (design M13b).
+    /// Link MTU for an overlay NIC, derived from the underlay and whether ESP
+    /// headroom is reserved (see [`crate::overlay`]). `None` for a NIC that is
+    /// not on an overlay.
     pub mtu: Option<u32>,
 }
 
@@ -347,5 +349,39 @@ mod tests {
         // The second NIC has no static addresses -> DHCP.
         assert!(out.contains("02:11:22:33:44:55"));
         assert!(out.contains("dhcp4: true"));
+    }
+
+    /// The MTU an overlay NIC gets must reach the guest, because this rendered
+    /// netplan is the only place it is ever set — a running VM will not pick up
+    /// a later change.
+    #[test]
+    fn overlay_mtu_reaches_the_rendered_guest_config() {
+        use crate::overlay::{guest_mtu, OverlayEncryption};
+        let mtu = guest_mtu(1500, OverlayEncryption::Ipsec, false);
+        let out = render_network_config(&[NicRender {
+            set_name: "eth0".into(),
+            mac: "02:00:00:00:00:01".into(),
+            addresses: vec!["10.0.0.5/24".into()],
+            gateway4: Some("10.0.0.1".into()),
+            gateway6: None,
+            dns: vec![],
+            mtu: Some(mtu),
+        }]);
+        assert!(out.contains("mtu: 1416"), "{out}");
+    }
+
+    /// A NIC that is not on an overlay must not have its MTU pinned at all.
+    #[test]
+    fn a_non_overlay_nic_renders_no_mtu() {
+        let out = render_network_config(&[NicRender {
+            set_name: "eth0".into(),
+            mac: "02:00:00:00:00:01".into(),
+            addresses: vec![],
+            gateway4: None,
+            gateway6: None,
+            dns: vec![],
+            mtu: None,
+        }]);
+        assert!(!out.contains("mtu"), "{out}");
     }
 }

@@ -573,7 +573,9 @@ async fn build_network_config(store: &Store, vm: &Vm) -> anyhow::Result<String> 
             gateway6: network.gateway_v6.clone(),
             dns: network.dns.clone(),
             // Overlay NICs shrink the MTU to absorb VXLAN encap (design M13b).
-            mtu: network.is_overlay().then_some(1450),
+            mtu: network
+                .is_overlay()
+                .then(|| store.network_policy().overlay_guest_mtu()),
         });
     }
 

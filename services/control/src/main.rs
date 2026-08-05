@@ -15,6 +15,7 @@ mod crypto;
 mod ipam;
 mod metrics;
 mod netalloc;
+mod overlay;
 mod rbac;
 mod reconcile;
 mod scheduler;
@@ -102,6 +103,21 @@ async fn main() -> anyhow::Result<()> {
         roots = ?config.storage.allowed_paths,
         "caller-supplied disk/kernel/firmware paths confined to these roots"
     );
+    // Overlay encryption state (design §18, M18b). Cleartext tunnels are a
+    // production blocker, so say so at every start rather than only in docs.
+    let enc = config.network.overlay_encryption;
+    let mtu = config.network.overlay_guest_mtu();
+    if enc.is_encrypted() {
+        info!(overlay_mtu = mtu, "VXLAN underlay is IPsec-protected");
+    } else {
+        tracing::warn!(
+            overlay_encryption = enc.as_str(),
+            overlay_mtu = mtu,
+            "VXLAN underlay is CLEARTEXT — anyone on it can read overlay traffic \
+             and inject frames into any VNI. Roll out [network] overlay_encryption \
+             = \"reserve\" (MTU only), verify, then \"ipsec\"."
+        );
+    }
     store.migrate().await?;
     info!("migrations applied");
     store

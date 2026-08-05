@@ -30,6 +30,21 @@ allowed_paths = ["/var/lib/vquasar"]
 # switching does not change reachability — but it does move every NIC from no
 # flows to conntrack flows, so it is an operator decision.
 policy_mode = "legacy"
+# Whether the VXLAN underlay is encrypted (M18b). Tunnels are cleartext by
+# default: anyone on the underlay can read overlay traffic, and anyone who can
+# reach UDP/4789 can inject frames into any VNI.
+#
+# Roll this out in two steps. "reserve" keeps tunnels cleartext but shrinks the
+# guest MTU to leave room for ESP; re-seed or reboot the overlay VMs and verify.
+# Only then switch to "ipsec". Going straight to "ipsec" blackholes every
+# full-size packet on the overlay, because MTU is baked into cloud-init at seed
+# time and running VMs never pick up the new value.
+overlay_encryption = "none"
+# MTU of the host link the tunnels traverse; the guest MTU is derived from it.
+underlay_mtu = 1500
+# ESP wrapped in UDP for NAT traversal costs a further 8 bytes.
+overlay_nat_traversal = false
+
 # 802.1Q tags a `vlan` network may use, e.g. "100-200,300". Empty = none: a tag
 # must match what the physical switch trunks, so it is stated, not guessed.
 provider_vlans = ""
