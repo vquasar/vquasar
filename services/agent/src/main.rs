@@ -83,8 +83,10 @@ async fn main() -> anyhow::Result<()> {
     );
     if !config.network.port_security {
         tracing::warn!(
-            "MAC anti-spoofing DISABLED — a guest can impersonate any other VM \
-             on this bridge (set [network] port_security = true)"
+            "MAC anti-spoofing is OFF — any guest on this bridge can source frames \
+             as another VM's MAC. Enable [network] port_security once you have \
+             checked no guest relies on a virtual MAC (VRRP/keepalived, nested \
+             virtualisation, in-guest bridging)."
         );
     }
     info!(

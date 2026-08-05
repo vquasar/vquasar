@@ -22,9 +22,14 @@ bridge = "br-int"
 
 # Bind each TAP's egress to the MAC the control plane allocated, dropping
 # spoofed frames and ARP whose sender hardware address is not the guest's own
-# (design §30). Turn off only for a guest that must legitimately source frames
-# from other MACs (nested virtualisation, in-guest bridging).
-# port_security = true
+# (design §30). Without it, any guest can impersonate any other VM on this
+# bridge.
+#
+# Defaults to false so an upgrade changes nothing. Before enabling, check that
+# no guest legitimately sources another MAC — VRRP/keepalived virtual MACs,
+# nested virtualisation, in-guest bridging — because there is no per-NIC
+# allowed-address-pairs escape yet.
+port_security = true
 
 [storage]
 backend = "local"
