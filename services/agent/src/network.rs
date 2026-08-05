@@ -77,22 +77,41 @@ pub fn tap_name(vm: VmId, index: usize) -> String {
 /// Open vSwitch backend: TAPs on the configured integration bridge (`br-int`).
 pub struct OvsNetworkBackend {
     bridge: String,
+    /// Bind each TAP's egress to its allocated MAC (design §30).
+    port_security: bool,
 }
 
 impl OvsNetworkBackend {
     pub fn new(bridge: impl Into<String>) -> Self {
         Self {
             bridge: bridge.into(),
+            port_security: true,
         }
     }
 
-    /// Apply (or clear) this NIC's security-group firewall on `bridge` (M13c).
+    /// Disable MAC anti-spoofing (escape hatch for guests that legitimately
+    /// source frames from other MACs).
+    pub fn with_port_security(mut self, enabled: bool) -> Self {
+        self.port_security = enabled;
+        self
+    }
+
+    /// Apply this NIC's dataplane policy on `bridge`.
+    ///
+    /// Two layers: the security-group firewall when the NIC has groups (M13c),
+    /// and port security — binding egress to the allocated MAC — which applies
+    /// either way (design §30). A NIC with no groups is still unfiltered at
+    /// L3/L4, but it can no longer impersonate another VM on the shared bridge.
+    /// `port_security = false` restores the old behaviour for a guest that must
+    /// source frames from other MACs (nested virtualisation, bridging).
     async fn apply_firewall(&self, bridge: &str, tap: &str, binding: &NicBinding) -> Result<()> {
-        if binding.filtered {
-            crate::firewall::apply(bridge, tap, &binding.mac, &binding.ingress_rules).await
-        } else {
-            // Not filtered: make sure no stale flows linger from a prior config.
-            crate::firewall::clear(bridge, tap).await
+        match (binding.filtered, self.port_security) {
+            (true, _) => {
+                crate::firewall::apply(bridge, tap, &binding.mac, &binding.ingress_rules).await
+            }
+            (false, true) => crate::firewall::apply_port_security(bridge, tap, &binding.mac).await,
+            // Neither: make sure no stale flows linger from a prior config.
+            (false, false) => crate::firewall::clear(bridge, tap).await,
         }
     }
 
