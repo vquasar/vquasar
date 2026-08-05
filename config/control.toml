@@ -7,6 +7,14 @@ listen = "0.0.0.0:8080"
 
 [database]
 url = "postgres://ch:ch@localhost/vquasar"
+# TLS to PostgreSQL. Unset ⇒ "prefer": TLS if the server offers it, plaintext
+# otherwise, with no error. Set verify-full (and `ca` for a private CA) to make
+# an unencrypted or unverified connection a startup failure. See
+# docs/postgres-tls.md.
+# ssl_mode = "verify-full"
+# ca   = "/etc/vquasar/certs/pg-ca.crt"
+# cert = "/etc/vquasar/certs/pg-client.crt"   # optional client-cert auth
+# key  = "/etc/vquasar/certs/pg-client.key"
 
 [grpc]
 listen = "0.0.0.0:9443"
