@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use vquasar_model::{VirtualMachineSpec, VmId};
 use serde::{Deserialize, Serialize};
+use vquasar_model::{VirtualMachineSpec, VmId};
 
 /// Filesystem layout for VM runtime state, rooted at `<runtime_dir>/vms`.
 #[derive(Debug, Clone)]

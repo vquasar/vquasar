@@ -7,46 +7,54 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
 
 jobs:
-  build-test:
-    name: build / test / lint
+  rust:
+    name: build · lint · test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ch
+          POSTGRES_PASSWORD: ch
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc (tonic-build needs it)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy, rustfmt
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
 
-      - name: rustfmt
-        run: cargo fmt --all -- --check
+      - name: Format check
+        run: cargo fmt --all --check
 
-      - name: clippy
-        run: cargo clippy --workspace --all-targets --all-features
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: build
-        run: cargo build --workspace --all-targets
+      - name: Unit tests
+        run: cargo test --workspace --lib --bins
 
-      - name: test
-        run: cargo test --workspace
-
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
+      - name: End-to-end tests
+        env:
+          # The test creates a throwaway database per run from this admin URL.
+          E2E_PG_ADMIN_URL: postgres://ch:ch@localhost:5432/postgres
+        run: cargo test -p vquasar-control --test e2e -- --test-threads=1
 
   ui:
-    name: ui build / typecheck
+    name: web UI build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -55,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci

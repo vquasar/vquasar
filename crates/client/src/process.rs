@@ -112,10 +112,7 @@ mod tests {
         }
         let mut proc = ChProcess::spawn(&cfg).await.expect("spawn");
         assert!(proc.pid() > 0);
-        assert_eq!(
-            proc.api_socket(),
-            Path::new("/tmp/vquasar-test.sock")
-        );
+        assert_eq!(proc.api_socket(), Path::new("/tmp/vquasar-test.sock"));
         proc.kill().await.expect("kill");
     }
 }

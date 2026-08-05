@@ -59,7 +59,11 @@ fn port_masks(min: u16, max: u16) -> Vec<(u16, u16)> {
     let b = max as u32;
     while a <= b {
         // Largest aligned power-of-two block starting at `a` that fits in [a, b].
-        let align = if a == 0 { 1u32 << 16 } else { 1u32 << a.trailing_zeros() };
+        let align = if a == 0 {
+            1u32 << 16
+        } else {
+            1u32 << a.trailing_zeros()
+        };
         let mut size = align;
         while a + size - 1 > b {
             size >>= 1;
@@ -84,7 +88,7 @@ fn rule_matches(r: &SecRule) -> Vec<String> {
         ("udp", true) => "udp6",
         ("icmp", false) => "icmp",
         ("icmp", true) => "icmp6",
-        (_, false) => "ip",   // "any"
+        (_, false) => "ip", // "any"
         (_, true) => "ipv6",
     };
     let src = if r.remote_cidr.trim().is_empty() {
@@ -128,9 +132,14 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     let mut f = Vec::new();
 
     // --- table 0: allow essentials, send IP to conntrack ---
-    for (dir, dir_match) in [("eg", format!("in_port={tap}")), ("ig", format!("dl_dst={mac}"))] {
+    for (dir, dir_match) in [
+        ("eg", format!("in_port={tap}")),
+        ("ig", format!("dl_dst={mac}")),
+    ] {
         let _ = dir;
-        f.push(format!("cookie={c},table=0,priority=1100,{dir_match},arp,actions=NORMAL"));
+        f.push(format!(
+            "cookie={c},table=0,priority=1100,{dir_match},arp,actions=NORMAL"
+        ));
         f.push(format!(
             "cookie={c},table=0,priority=1085,{dir_match},icmp6,actions=NORMAL"
         ));
@@ -258,7 +267,11 @@ mod tests {
 
     #[test]
     fn build_has_default_deny_and_stateful_and_allow() {
-        let flows = build_flows("tapabc0", "02:aa:bb:cc:dd:ee", &[rule("tcp", 22, 22, "10.0.0.0/24")]);
+        let flows = build_flows(
+            "tapabc0",
+            "02:aa:bb:cc:dd:ee",
+            &[rule("tcp", 22, 22, "10.0.0.0/24")],
+        );
         let all = flows.join("\n");
         // stateful return traffic
         assert!(all.contains("ct_state=+est+trk,actions=NORMAL"));
@@ -268,7 +281,9 @@ mod tests {
         assert!(all.contains("tp_dst=22"));
         assert!(all.contains("nw_src=10.0.0.0/24"));
         // default-deny new ingress
-        assert!(all.contains("priority=10,") && all.contains("dl_dst=02:aa:bb:cc:dd:ee,actions=drop"));
+        assert!(
+            all.contains("priority=10,") && all.contains("dl_dst=02:aa:bb:cc:dd:ee,actions=drop")
+        );
         // ARP + DHCP allowed
         assert!(all.contains("arp,actions=NORMAL"));
         assert!(all.contains("tp_dst=67,actions=NORMAL"));
@@ -281,6 +296,9 @@ mod tests {
         r.ipv6 = true;
         assert_eq!(rule_matches(&r), vec!["icmp6".to_string()]);
         let any = rule("any", 0, 0, "192.168.0.0/16");
-        assert_eq!(rule_matches(&any), vec!["ip,nw_src=192.168.0.0/16".to_string()]);
+        assert_eq!(
+            rule_matches(&any),
+            vec!["ip,nw_src=192.168.0.0/16".to_string()]
+        );
     }
 }

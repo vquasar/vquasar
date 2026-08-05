@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use vquasar_model::VirtualMachineSpec;
 use tracing::{debug, info};
+use vquasar_model::VirtualMachineSpec;
 
 use crate::config::{self, TranslateOptions, VmInfo, VmState};
 use crate::error::Result;

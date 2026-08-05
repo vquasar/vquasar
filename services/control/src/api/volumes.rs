@@ -113,12 +113,26 @@ pub async fn create(
         let format = img.format.clone();
         let path = volume_path(store.shared_volumes_dir(), id, &format);
         // Full, independent copy so the volume outlives the image.
-        qemu_img(&["convert", "-O", ext(&format), &img.source_path, &path.to_string_lossy()]).await?;
+        qemu_img(&[
+            "convert",
+            "-O",
+            ext(&format),
+            &img.source_path,
+            &path.to_string_lossy(),
+        ])
+        .await?;
         if body.size_bytes > 0 {
             // Grow to the requested size if it exceeds the image's virtual size.
-            let _ = qemu_img(&["resize", &path.to_string_lossy(), &body.size_bytes.to_string()]).await;
+            let _ = qemu_img(&[
+                "resize",
+                &path.to_string_lossy(),
+                &body.size_bytes.to_string(),
+            ])
+            .await;
         }
-        let size = disk_virtual_size(&path).await.unwrap_or(body.size_bytes.max(0));
+        let size = disk_virtual_size(&path)
+            .await
+            .unwrap_or(body.size_bytes.max(0));
         (format, size, path)
     } else {
         if body.size_bytes <= 0 {
@@ -215,7 +229,8 @@ pub async fn attach(
         source: None, // already provisioned; reuse as-is
         size_bytes: None,
     });
-    spec.validate().map_err(|e| ApiError::invalid(e.to_string()))?;
+    spec.validate()
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
     store.set_vm_spec(body.vm_id, &spec).await?;
     store
         .set_volume_attachment(id, Some(body.vm_id), Some(serial))
@@ -306,7 +321,13 @@ pub async fn create_snapshot(
     let snap_id = Uuid::new_v4();
     let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
     // Tag the qcow2 internal snapshot with the record id (stable + unique).
-    qemu_img(&["snapshot", "-c", &snap_id.to_string(), &path.to_string_lossy()]).await?;
+    qemu_img(&[
+        "snapshot",
+        "-c",
+        &snap_id.to_string(),
+        &path.to_string_lossy(),
+    ])
+    .await?;
     let snap = store
         .create_volume_snapshot(snap_id, id, body.name.trim())
         .await?;
@@ -328,7 +349,13 @@ pub async fn delete_snapshot(
     }
     let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
     // Best-effort qcow2 delete (ignore if already gone), then drop the record.
-    let _ = qemu_img(&["snapshot", "-d", &snap_id.to_string(), &path.to_string_lossy()]).await;
+    let _ = qemu_img(&[
+        "snapshot",
+        "-d",
+        &snap_id.to_string(),
+        &path.to_string_lossy(),
+    ])
+    .await;
     store.delete_volume_snapshot(snap_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -347,7 +374,13 @@ pub async fn revert_snapshot(
     }
     snapshottable(&store, &v).await?;
     let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
-    qemu_img(&["snapshot", "-a", &snap_id.to_string(), &path.to_string_lossy()]).await?;
+    qemu_img(&[
+        "snapshot",
+        "-a",
+        &snap_id.to_string(),
+        &path.to_string_lossy(),
+    ])
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

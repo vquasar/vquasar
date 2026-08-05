@@ -3,8 +3,8 @@
 //! Validation lives in the domain model (not in the API or agent layers) so the
 //! same rules apply no matter how a spec enters the system.
 
-use vquasar_common::DomainError;
 use thiserror::Error;
+use vquasar_common::DomainError;
 
 use crate::vm::{BootSpec, VirtualMachineSpec};
 

@@ -11,6 +11,9 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
+use tonic::{Request, Response, Status, Streaming};
 use vquasar_model::{VirtualMachineSpec, VmId, VmPhase};
 use vquasar_proto::agent::host_agent_server::HostAgent;
 use vquasar_proto::agent::vm_observed_state::Phase;
@@ -21,9 +24,6 @@ use vquasar_proto::agent::{
     OperationResponse, PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest,
     StartVmRequest, StopVmRequest, VmMetricsResponse, VmObservedState,
 };
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::{Stream, StreamExt};
-use tonic::{Request, Response, Status, Streaming};
 
 use crate::inventory;
 use crate::manager::{ManagerError, ObservedVm, VmManager};

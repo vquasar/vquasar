@@ -7,9 +7,9 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use vquasar_common::ErrorCode;
 use serde::Serialize;
 use uuid::Uuid;
+use vquasar_common::ErrorCode;
 
 /// An error renderable as the public JSON envelope.
 #[derive(Debug)]

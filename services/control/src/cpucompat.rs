@@ -35,7 +35,10 @@ impl CpuCompat {
                 format!("CPU vendor mismatch: source is {source}, target is {target}")
             }
             CpuCompat::MissingFeatures(f) => {
-                format!("target CPU is missing features the guest may use: {}", f.join(", "))
+                format!(
+                    "target CPU is missing features the guest may use: {}",
+                    f.join(", ")
+                )
             }
             CpuCompat::Unknown => {
                 "CPU features for the source or target host are not known yet".to_string()
@@ -108,7 +111,9 @@ mod tests {
         // Skylake-SP guest -> Cascade Lake (adds avx512_vnni): safe.
         let src = v(&["avx", "avx2", "avx512f"]);
         let dst = v(&["avx", "avx2", "avx512f", "avx512_vnni", "mpx", "umip"]);
-        assert!(check(Some("GenuineIntel"), &src, Some("GenuineIntel"), &dst) == CpuCompat::Compatible);
+        assert!(
+            check(Some("GenuineIntel"), &src, Some("GenuineIntel"), &dst) == CpuCompat::Compatible
+        );
     }
 
     #[test]
@@ -138,6 +143,9 @@ mod tests {
             check(Some("GenuineIntel"), &f, Some("GenuineIntel"), &[]),
             CpuCompat::Unknown
         );
-        assert_eq!(check(None, &f, Some("GenuineIntel"), &f), CpuCompat::Unknown);
+        assert_eq!(
+            check(None, &f, Some("GenuineIntel"), &f),
+            CpuCompat::Unknown
+        );
     }
 }

@@ -7,8 +7,8 @@
 //! types are private to `ch-client` and must not leak into the domain model —
 //! [`to_vm_config`] is the one-way bridge.
 
-use vquasar_model::{BootSpec, DiskImageType, VirtualMachineSpec};
 use serde::{Deserialize, Serialize};
+use vquasar_model::{BootSpec, DiskImageType, VirtualMachineSpec};
 
 use crate::hypervisor::{HypervisorState, HypervisorVmInfo};
 

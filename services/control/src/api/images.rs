@@ -4,9 +4,9 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use vquasar_model::BootSpec;
 use serde::Deserialize;
 use uuid::Uuid;
+use vquasar_model::BootSpec;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::authz::{AuthUser, RequireImageCreate, RequireImageUpdate};
@@ -105,7 +105,10 @@ pub struct IsoEntry {
 
 /// List ISOs available to attach as read-only CDs (e.g. a Windows install ISO
 /// and the virtio-win driver ISO). Read-only: it only enumerates files.
-pub async fn list_isos(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<IsoEntry>>> {
+pub async fn list_isos(
+    State(store): State<Store>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<IsoEntry>>> {
     user.require("image:read")?;
     let dir = images_dir(&store).join("isos");
     let mut out = Vec::new();

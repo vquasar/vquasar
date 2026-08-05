@@ -6,13 +6,13 @@
 
 use std::sync::OnceLock;
 
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use vquasar_proto::agent::host_agent_client::HostAgentClient;
 use vquasar_proto::agent::{
     DeleteVmRequest, DiscardVmRequest, EnsureVmRequest, FinalizeReceiveRequest, GetHostInfoRequest,
-    GetHostInfoResponse, GetVmMetricsRequest, ListVmsRequest, NetworkBinding, PrepareReceiveRequest,
-    SendMigrationRequest, VmMetricsResponse, VmObservedState,
+    GetHostInfoResponse, GetVmMetricsRequest, ListVmsRequest, NetworkBinding,
+    PrepareReceiveRequest, SendMigrationRequest, VmMetricsResponse, VmObservedState,
 };
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 /// Process-wide mTLS material for talking to agents (design M12a). Set once at
 /// startup; `None` means plaintext. A global keeps every `Agent::new` call site

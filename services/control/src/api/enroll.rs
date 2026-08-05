@@ -138,17 +138,18 @@ pub async fn bootstrap_sign(
     let san = san_for_endpoint(&host.endpoint)
         .ok_or_else(|| ApiError::invalid("cannot derive SAN from host endpoint"))?;
 
-    let chain = sign_csr(
-        csr_pem,
-        en.issuer_cert.clone(),
-        en.issuer_key.clone(),
-        san,
-    )
-    .await
-    .map_err(|e| ApiError::internal(format!("sign CSR: {e}")))?;
+    let chain = sign_csr(csr_pem, en.issuer_cert.clone(), en.issuer_key.clone(), san)
+        .await
+        .map_err(|e| ApiError::internal(format!("sign CSR: {e}")))?;
 
     store
-        .insert_event("host", Some(host_id), "host.enroll.signed", "info", &host.name)
+        .insert_event(
+            "host",
+            Some(host_id),
+            "host.enroll.signed",
+            "info",
+            &host.name,
+        )
         .await?;
 
     Ok((
@@ -171,8 +172,7 @@ fn san_for_endpoint(endpoint: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    let is_ipv4 = host.split('.').count() == 4
-        && host.split('.').all(|o| o.parse::<u8>().is_ok());
+    let is_ipv4 = host.split('.').count() == 4 && host.split('.').all(|o| o.parse::<u8>().is_ok());
     Some(if is_ipv4 {
         format!("IP:{host}")
     } else {
@@ -225,7 +225,10 @@ async fn sign_csr(
             .args(["-verify", "-noout"])
             .output()?;
         if !verify.status.success() {
-            return run(Err(Error::new(ErrorKind::InvalidData, "CSR failed verification")));
+            return run(Err(Error::new(
+                ErrorKind::InvalidData,
+                "CSR failed verification",
+            )));
         }
 
         let out = Command::new("openssl")
@@ -281,7 +284,10 @@ mod tests {
 
     #[test]
     fn san_without_scheme_or_port() {
-        assert_eq!(san_for_endpoint("host.example").as_deref(), Some("DNS:host.example"));
+        assert_eq!(
+            san_for_endpoint("host.example").as_deref(),
+            Some("DNS:host.example")
+        );
     }
 
     #[test]

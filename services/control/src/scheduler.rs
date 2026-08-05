@@ -12,8 +12,8 @@
 
 use std::collections::HashMap;
 
-use vquasar_model::VirtualMachineSpec;
 use uuid::Uuid;
+use vquasar_model::VirtualMachineSpec;
 
 /// Resources already committed to VMs on a host.
 #[derive(Debug, Clone, Copy, Default)]
@@ -71,8 +71,8 @@ pub use crate::store::Host;
 
 #[cfg(test)]
 mod tests {
-    use vquasar_model::{BootSpec, CpuSpec, DesiredPowerState, MemorySpec, PlacementSpec};
     use chrono::Utc;
+    use vquasar_model::{BootSpec, CpuSpec, DesiredPowerState, MemorySpec, PlacementSpec};
 
     use super::*;
 

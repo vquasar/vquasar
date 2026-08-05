@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use vquasar_model::{
     CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec, MemorySpec,
     NetworkInterfaceSpec, PlacementSpec, VirtualMachineSpec,
 };
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -51,7 +51,10 @@ async fn allocate_one_nic(
         if !network.is_managed() {
             return Ok(());
         }
-        let mac = nic.mac.clone().unwrap_or_else(|| allocate_mac(vm_id, index));
+        let mac = nic
+            .mac
+            .clone()
+            .unwrap_or_else(|| allocate_mac(vm_id, index));
 
         // Parse operator-requested addresses (reject garbage early).
         let mut requested = Vec::new();
@@ -101,7 +104,14 @@ async fn allocate_one_nic(
                     .map_err(|e| ApiError::invalid(e.to_string()))?
             };
             store
-                .insert_allocation(network.id, &chosen.to_string(), family, Some(vm_id), index as i32, &mac)
+                .insert_allocation(
+                    network.id,
+                    &chosen.to_string(),
+                    family,
+                    Some(vm_id),
+                    index as i32,
+                    &mac,
+                )
                 .await
                 .map_err(|e| match &e {
                     sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -145,7 +155,9 @@ pub async fn create_from_volume(
         .await?
         .ok_or_else(|| ApiError::invalid(format!("volume not found: {}", body.volume_id)))?;
     let Some(image_id) = vol.source_image_id else {
-        return Err(ApiError::invalid("volume is not bootable (not cloned from an image)"));
+        return Err(ApiError::invalid(
+            "volume is not bootable (not cloned from an image)",
+        ));
     };
     if vol.attached_vm_id.is_some() {
         return Err(ApiError::invalid("volume is already attached"));
@@ -393,8 +405,8 @@ pub async fn create(
                 DiskImageType::Qcow2 => "qcow2",
                 DiskImageType::Raw => "raw",
             };
-            disk.path = PathBuf::from(store.shared_volumes_dir())
-                .join(format!("{vm_id}-disk{i}.{ext}"));
+            disk.path =
+                PathBuf::from(store.shared_volumes_dir()).join(format!("{vm_id}-disk{i}.{ext}"));
         }
     }
     body.spec
@@ -402,7 +414,9 @@ pub async fn create(
         .map_err(|e| ApiError::invalid(e.to_string()))?;
 
     // Persist desired state first (section 7), then let reconciliation act.
-    let vm = store.insert_vm_with_id(vm_id, &body.name, &body.spec).await?;
+    let vm = store
+        .insert_vm_with_id(vm_id, &body.name, &body.spec)
+        .await?;
     // Allocate static IPs for NICs on managed networks (M13a); roll back the VM
     // row if allocation fails so we never leave a half-provisioned VM.
     if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {

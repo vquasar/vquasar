@@ -7,10 +7,10 @@
 
 use std::time::Duration;
 
-use vquasar_proto::agent::vm_observed_state::Phase;
-use vquasar_proto::agent::NetworkBinding;
 use tokio::time::sleep;
 use tracing::{debug, warn};
+use vquasar_proto::agent::vm_observed_state::Phase;
+use vquasar_proto::agent::NetworkBinding;
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,7 +31,8 @@ pub async fn run(store: Store, interval: Duration) {
         }
         if let Err(e) = reconcile_migrations(&store).await {
             warn!(error = %e, "migration reconcile pass failed");
-            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "migrations").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "migrations")
+                .increment(1);
         }
         if let Err(e) = reconcile_vms(&store).await {
             warn!(error = %e, "vm reconcile pass failed");
@@ -43,7 +44,8 @@ pub async fn run(store: Store, interval: Duration) {
         }
         if let Err(e) = refresh_vm_ips(&store).await {
             warn!(error = %e, "vm ip refresh pass failed");
-            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "ip_refresh").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "ip_refresh")
+                .increment(1);
         }
         // Refresh inventory gauges from the current DB state (design M17).
         if let Err(e) = crate::metrics::update_from_store(&store).await {
@@ -122,7 +124,10 @@ pub async fn recover_running_vms(store: &Store) -> anyhow::Result<()> {
                         Some(vm.id),
                         "vm.recovering",
                         "warning",
-                        &format!("not running on {} — relaunching after host recovery", host.name),
+                        &format!(
+                            "not running on {} — relaunching after host recovery",
+                            host.name
+                        ),
                     )
                     .await?;
                 metrics::counter!("vquasar_vm_recoveries_total").increment(1);
@@ -711,9 +716,18 @@ mod tests {
 
     #[test]
     fn underlay_ip_strips_scheme_and_port() {
-        assert_eq!(underlay_ip("https://172.16.56.81:9500").as_deref(), Some("172.16.56.81"));
-        assert_eq!(underlay_ip("http://10.0.0.5:9500").as_deref(), Some("10.0.0.5"));
-        assert_eq!(underlay_ip("172.16.56.81:9500").as_deref(), Some("172.16.56.81"));
+        assert_eq!(
+            underlay_ip("https://172.16.56.81:9500").as_deref(),
+            Some("172.16.56.81")
+        );
+        assert_eq!(
+            underlay_ip("http://10.0.0.5:9500").as_deref(),
+            Some("10.0.0.5")
+        );
+        assert_eq!(
+            underlay_ip("172.16.56.81:9500").as_deref(),
+            Some("172.16.56.81")
+        );
         assert_eq!(underlay_ip("172.16.56.81").as_deref(), Some("172.16.56.81"));
         assert_eq!(underlay_ip("chnode1.lab").as_deref(), Some("chnode1.lab"));
         assert_eq!(underlay_ip("[fd00::1]:9500").as_deref(), Some("fd00::1"));

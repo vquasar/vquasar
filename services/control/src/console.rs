@@ -8,13 +8,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
-use vquasar_proto::agent::ConsoleClientMessage;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
 use uuid::Uuid;
+use vquasar_proto::agent::ConsoleClientMessage;
 
 use crate::authz::AuthState;
 use crate::store::Store;

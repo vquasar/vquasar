@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use vquasar_client::{ApiClient, ChError, HypervisorState, TapBinding};
-use vquasar_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
+use vquasar_client::{ApiClient, ChError, HypervisorState, TapBinding};
+use vquasar_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
 
 use crate::backend::{Backend, ManagedVmm};
 use crate::console::SerialHub;
@@ -347,7 +347,10 @@ impl VmManager {
             match vms.get(&id) {
                 Some(m) => (
                     m.vmm.pid(),
-                    m.vmm.counters().await.unwrap_or_else(|_| serde_json::json!({})),
+                    m.vmm
+                        .counters()
+                        .await
+                        .unwrap_or_else(|_| serde_json::json!({})),
                 ),
                 None => (None, serde_json::json!({})),
             }
@@ -656,7 +659,13 @@ mod tests {
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
         let obs = mgr
-            .ensure(id, "web-1".into(), spec(DesiredPowerState::Running), vec![], None)
+            .ensure(
+                id,
+                "web-1".into(),
+                spec(DesiredPowerState::Running),
+                vec![],
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(obs.phase, VmPhase::Running);
@@ -686,9 +695,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
-        mgr.ensure(id, "db".into(), spec(DesiredPowerState::Running), vec![], None)
-            .await
-            .unwrap();
+        mgr.ensure(
+            id,
+            "db".into(),
+            spec(DesiredPowerState::Running),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(mgr.stop(id).await.unwrap().phase, VmPhase::Stopped);
         assert_eq!(mgr.start(id).await.unwrap().phase, VmPhase::Running);
     }
@@ -698,9 +713,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mgr, _) = manager(dir.path());
         let id = VmId::new();
-        mgr.ensure(id, "tmp".into(), spec(DesiredPowerState::Running), vec![], None)
-            .await
-            .unwrap();
+        mgr.ensure(
+            id,
+            "tmp".into(),
+            spec(DesiredPowerState::Running),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
         mgr.delete(id).await.unwrap();
         assert!(matches!(mgr.get(id).await, Err(ManagerError::NotFound(_))));
         assert!(mgr.layout.discover_vm_ids().is_empty());

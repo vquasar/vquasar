@@ -7,8 +7,8 @@
 //! an agent restart without any persisted per-NIC state (section 23).
 
 use async_trait::async_trait;
-use vquasar_model::VmId;
 use tokio::process::Command;
+use vquasar_model::VmId;
 
 /// A failure preparing or releasing host networking.
 #[derive(Debug, thiserror::Error)]
@@ -134,7 +134,8 @@ impl OvsNetworkBackend {
     /// integration bridge for flat/VLAN.
     async fn desired_bridge(&self, binding: &NicBinding) -> Result<String> {
         if binding.vni != 0 {
-            self.ensure_overlay(binding.vni, &binding.overlay_peers).await
+            self.ensure_overlay(binding.vni, &binding.overlay_peers)
+                .await
         } else {
             Ok(self.bridge.clone())
         }
@@ -228,7 +229,11 @@ impl NetworkBackend for OvsNetworkBackend {
             self.gc_overlay_if_empty(&br).await;
         } else {
             // Not on any bridge; still fall back to the integration bridge.
-            let _ = run("ovs-vsctl", &["--if-exists", "del-port", &self.bridge, &tap]).await;
+            let _ = run(
+                "ovs-vsctl",
+                &["--if-exists", "del-port", &self.bridge, &tap],
+            )
+            .await;
         }
         let _ = run("ip", &["link", "del", &tap]).await;
         Ok(())

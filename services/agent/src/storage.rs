@@ -10,9 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
-use vquasar_model::{CloudInitSpec, DiskImageType, DiskSpec, VirtualMachineSpec, VmId};
 use tokio::process::Command;
 use tracing::{info, warn};
+use vquasar_model::{CloudInitSpec, DiskImageType, DiskSpec, VirtualMachineSpec, VmId};
 
 /// A failure provisioning host storage.
 #[derive(Debug, thiserror::Error)]
@@ -388,7 +388,13 @@ mod tests {
             user_data: None,
         };
         let ca = "-----BEGIN CERTIFICATE-----\nABCD\n-----END CERTIFICATE-----";
-        let s = render_user_data(&ci, "h", "vm-42", Some("https://172.16.56.8:8080/"), Some(ca));
+        let s = render_user_data(
+            &ci,
+            "h",
+            "vm-42",
+            Some("https://172.16.56.8:8080/"),
+            Some(ca),
+        );
         // curl-based phone home to the vm-id URL (trailing slash trimmed);
         // no explicit --cacert so it works across Debian/RHEL guests.
         assert!(s.contains("curl -fsS -X POST"));

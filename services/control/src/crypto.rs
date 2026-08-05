@@ -230,7 +230,10 @@ mod tests {
     #[test]
     fn open_passes_through_plaintext() {
         let c = cryptor();
-        assert_eq!(c.open(PURPOSE_PASSWORD, "not-encrypted").unwrap(), "not-encrypted");
+        assert_eq!(
+            c.open(PURPOSE_PASSWORD, "not-encrypted").unwrap(),
+            "not-encrypted"
+        );
     }
 
     #[test]
@@ -286,7 +289,10 @@ mod tests {
         .unwrap();
         assert_eq!(rotated.open(PURPOSE_PASSWORD, &sealed).unwrap(), "secret");
         // New seals use k2.
-        assert!(rotated.seal(PURPOSE_PASSWORD, "x").unwrap().contains(":k2:"));
+        assert!(rotated
+            .seal(PURPOSE_PASSWORD, "x")
+            .unwrap()
+            .contains(":k2:"));
     }
 
     #[test]

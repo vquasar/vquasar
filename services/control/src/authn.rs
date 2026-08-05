@@ -67,9 +67,8 @@ impl Authenticator {
         // Trust an internal CA in addition to the system roots when the IdP is
         // behind one (e.g. Keycloak issued by our own CA).
         if let Some(ca_path) = &cfg.ca {
-            let pem = std::fs::read(ca_path).map_err(|e| {
-                AuthError::Provider(format!("reading auth CA {ca_path}: {e}"))
-            })?;
+            let pem = std::fs::read(ca_path)
+                .map_err(|e| AuthError::Provider(format!("reading auth CA {ca_path}: {e}")))?;
             let cert = reqwest::Certificate::from_pem(&pem)
                 .map_err(|e| AuthError::Provider(format!("parsing auth CA: {e}")))?;
             builder = builder.add_root_certificate(cert);

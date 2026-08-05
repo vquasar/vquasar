@@ -2,8 +2,8 @@
 //! `/api/v1`. Handlers are thin: they validate input, call the [`Store`], and
 //! return typed errors — no infrastructure logic here (ADR-015).
 
-pub mod error;
 pub mod enroll;
+pub mod error;
 mod events;
 mod hosts;
 mod iam;

@@ -21,8 +21,16 @@ use crate::store::Store;
 /// All phases a VM can report, so a gauge that drops to zero is published as 0
 /// rather than going stale at its last value.
 const VM_PHASES: &[&str] = &[
-    "Pending", "Scheduling", "Creating", "Stopped", "Starting", "Running", "Stopping",
-    "Migrating", "Failed", "Deleting",
+    "Pending",
+    "Scheduling",
+    "Creating",
+    "Stopped",
+    "Starting",
+    "Running",
+    "Stopping",
+    "Migrating",
+    "Failed",
+    "Deleting",
 ];
 const HOST_STATES: &[&str] = &["Ready", "NotReady", "Maintenance", "Disabled"];
 const TASK_STATES: &[&str] = &["Pending", "Running", "Succeeded", "Failed", "Cancelled"];
@@ -37,12 +45,27 @@ pub fn install() -> anyhow::Result<PrometheusHandle> {
     describe_gauge!("vquasar_hosts_schedulable", "Hosts currently schedulable");
     describe_gauge!("vquasar_tasks", "Tasks by state");
     describe_gauge!("vquasar_migrations_active", "In-flight live migrations");
-    describe_counter!("vquasar_reconcile_passes_total", "Reconcile loop iterations");
-    describe_counter!("vquasar_reconcile_errors_total", "Reconcile pass errors by pass");
+    describe_counter!(
+        "vquasar_reconcile_passes_total",
+        "Reconcile loop iterations"
+    );
+    describe_counter!(
+        "vquasar_reconcile_errors_total",
+        "Reconcile pass errors by pass"
+    );
     describe_counter!("vquasar_migrations_total", "Finished migrations by result");
-    describe_counter!("vquasar_vm_recoveries_total", "VMs re-launched after host recovery");
-    describe_counter!("vquasar_http_requests_total", "HTTP requests by method/path/status");
-    describe_histogram!("vquasar_http_request_duration_seconds", "HTTP request latency (s)");
+    describe_counter!(
+        "vquasar_vm_recoveries_total",
+        "VMs re-launched after host recovery"
+    );
+    describe_counter!(
+        "vquasar_http_requests_total",
+        "HTTP requests by method/path/status"
+    );
+    describe_histogram!(
+        "vquasar_http_request_duration_seconds",
+        "HTTP request latency (s)"
+    );
     Ok(handle)
 }
 
@@ -88,7 +111,11 @@ trait EntryOrOther {
 }
 impl EntryOrOther for HashMap<&'static str, f64> {
     fn entry_or_other(&mut self, key: &str, known: &[&'static str]) -> &mut f64 {
-        let label = known.iter().find(|k| **k == key).copied().unwrap_or("Other");
+        let label = known
+            .iter()
+            .find(|k| **k == key)
+            .copied()
+            .unwrap_or("Other");
         self.entry(label).or_insert(0.0)
     }
 }

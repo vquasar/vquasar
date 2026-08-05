@@ -72,7 +72,9 @@ pub async fn update(
     } else {
         "host.cordoned"
     };
-    store.insert_event("host", Some(id), event, "info", &host.name).await?;
+    store
+        .insert_event("host", Some(id), event, "info", &host.name)
+        .await?;
     store
         .get_host(id)
         .await?

@@ -4,9 +4,9 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use vquasar_model::CloudInitSpec;
 use serde::Deserialize;
 use uuid::Uuid;
+use vquasar_model::CloudInitSpec;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::authz::{AuthUser, RequireTemplateCreate, RequireTemplateUpdate};

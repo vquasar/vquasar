@@ -21,10 +21,10 @@ mod storage;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use vquasar_proto::agent::host_agent_server::HostAgentServer;
 use clap::Parser;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::info;
+use vquasar_proto::agent::host_agent_server::HostAgentServer;
 
 use crate::backend::CloudHypervisorBackend;
 use crate::config::AgentConfig;
@@ -46,7 +46,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = AgentConfig::load(cli.config.as_deref())?;
 
-    vquasar_common::telemetry::init(&config.logging.level, config.logging.format == "json", config.logging.otlp_endpoint.as_deref(), "ch-agent");
+    vquasar_common::telemetry::init(
+        &config.logging.level,
+        config.logging.format == "json",
+        config.logging.otlp_endpoint.as_deref(),
+        "ch-agent",
+    );
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();

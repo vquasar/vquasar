@@ -1,7 +1,7 @@
 //! Errors produced by the Cloud Hypervisor client.
 
-use vquasar_common::DomainError;
 use thiserror::Error;
+use vquasar_common::DomainError;
 
 /// Result alias for this crate.
 pub type Result<T> = std::result::Result<T, ChError>;

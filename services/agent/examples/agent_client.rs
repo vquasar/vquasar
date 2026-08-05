@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use clap::{Parser, Subcommand};
 use vquasar_model::{
     BootSpec, CpuSpec, DesiredPowerState, DiskSpec, MemorySpec, PlacementSpec, VirtualMachineSpec,
 };
@@ -15,7 +16,6 @@ use vquasar_proto::agent::{
     DeleteVmRequest, EnsureVmRequest, GetHostInfoRequest, GetVmRequest, ListVmsRequest,
     StartVmRequest, StopVmRequest,
 };
-use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "agent_client", about = "Drive a ch-agent over gRPC")]
