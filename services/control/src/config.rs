@@ -29,6 +29,119 @@ pub struct ControlConfig {
     pub encryption: EncryptionConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub network: NetworkPolicy,
+}
+
+/// Platform policy over network segments (design §18, ADR-016).
+///
+/// VLAN tags and VXLAN VNIs are facts about physical and overlay infrastructure,
+/// not caller preferences: a chosen tag lands on whatever provider segment the
+/// trunk carries. The platform therefore states which are permissible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkPolicy {
+    /// How per-NIC policy is resolved (ADR-017):
+    ///
+    /// * `legacy` — a NIC with no security groups of its own is unfiltered, and
+    ///   the agent installs no flows for it. What deployed clusters do today.
+    /// * `enforced` — effective policy is the network's default group unioned
+    ///   with the NIC's own, so every NIC carries a policy object.
+    ///
+    /// Defaults to `legacy`: switching to `enforced` moves every existing NIC
+    /// from no flows to conntrack flows. Reachability is unchanged (migration
+    /// 0017 seeds each network an allow-any default), but it is a real
+    /// dataplane change and must be an operator's decision.
+    #[serde(default = "default_policy_mode")]
+    pub policy_mode: String,
+    /// VLAN tags a `vlan` network may use, as inclusive ranges "100-200,300".
+    /// Empty ⇒ no VLAN network may be created.
+    #[serde(default)]
+    pub provider_vlans: String,
+    /// Uplink names a physical network may attach to.
+    #[serde(default = "default_physical_networks")]
+    pub physical_networks: Vec<String>,
+    /// Inclusive VXLAN VNI range the allocator draws from.
+    #[serde(default = "default_vni_start")]
+    pub vni_start: u32,
+    #[serde(default = "default_vni_end")]
+    pub vni_end: u32,
+    /// How long a released VNI is withheld before reuse, in seconds. Guards
+    /// against a host that still carries the overlay bridge and tunnel mesh.
+    #[serde(default = "default_segment_quarantine_secs")]
+    pub segment_quarantine_secs: u64,
+}
+
+fn default_policy_mode() -> String {
+    "legacy".to_string()
+}
+fn default_physical_networks() -> Vec<String> {
+    vec!["default".to_string()]
+}
+fn default_vni_start() -> u32 {
+    4096
+}
+fn default_vni_end() -> u32 {
+    16_777_215
+}
+fn default_segment_quarantine_secs() -> u64 {
+    3600
+}
+
+impl Default for NetworkPolicy {
+    fn default() -> Self {
+        Self {
+            policy_mode: default_policy_mode(),
+            provider_vlans: String::new(),
+            physical_networks: default_physical_networks(),
+            vni_start: default_vni_start(),
+            vni_end: default_vni_end(),
+            segment_quarantine_secs: default_segment_quarantine_secs(),
+        }
+    }
+}
+
+impl NetworkPolicy {
+    /// Whether `tag` is inside the configured allowlist.
+    pub fn permits_vlan(&self, tag: i32) -> bool {
+        if !(1..=4094).contains(&tag) {
+            return false;
+        }
+        self.provider_vlans.split(',').any(|part| {
+            let part = part.trim();
+            match part.split_once('-') {
+                Some((lo, hi)) => match (lo.trim().parse::<i32>(), hi.trim().parse::<i32>()) {
+                    (Ok(lo), Ok(hi)) => (lo..=hi).contains(&tag),
+                    _ => false,
+                },
+                None => part.parse::<i32>().map(|v| v == tag).unwrap_or(false),
+            }
+        })
+    }
+
+    pub fn describe_vlans(&self) -> String {
+        if self.provider_vlans.trim().is_empty() {
+            "none configured — set [network] provider_vlans".to_string()
+        } else {
+            self.provider_vlans.clone()
+        }
+    }
+
+    /// Whether a NIC's policy includes its network's default group.
+    pub fn policy_enforced(&self) -> bool {
+        self.policy_mode == "enforced"
+    }
+
+    pub fn permits_uplink(&self, name: &str) -> bool {
+        self.physical_networks.iter().any(|n| n == name)
+    }
+
+    pub fn segments(&self) -> crate::segments::SegmentPolicy {
+        crate::segments::SegmentPolicy {
+            vni_start: self.vni_start,
+            vni_end: self.vni_end,
+            quarantine: std::time::Duration::from_secs(self.segment_quarantine_secs),
+        }
+    }
 }
 
 /// Field-level encryption of sensitive data at rest (design M12c). Encryption
@@ -395,6 +508,42 @@ mod tests {
 
     /// Absent config must not change how we connect — the default stays
     /// whatever the URL/libpq says, so existing deployments are unaffected.
+    #[test]
+    fn vlan_allowlist_parses_ranges_and_singletons() {
+        let p = NetworkPolicy {
+            provider_vlans: "100-200, 300, 400-401".to_string(),
+            ..Default::default()
+        };
+        assert!(p.permits_vlan(100) && p.permits_vlan(200) && p.permits_vlan(150));
+        assert!(p.permits_vlan(300) && p.permits_vlan(401));
+        assert!(!p.permits_vlan(99) && !p.permits_vlan(201) && !p.permits_vlan(301));
+        // Out-of-spec tags are never permitted, whatever the config says.
+        assert!(!p.permits_vlan(0) && !p.permits_vlan(4095));
+    }
+
+    /// An upgrade must not change the dataplane: policy enforcement is opt-in,
+    /// exactly like port security on the agent.
+    #[test]
+    fn policy_enforcement_is_opt_in() {
+        assert!(!NetworkPolicy::default().policy_enforced());
+        let p = NetworkPolicy {
+            policy_mode: "enforced".to_string(),
+            ..Default::default()
+        };
+        assert!(p.policy_enforced());
+    }
+
+    /// Absent config permits nothing: a VLAN tag has to be a deliberate
+    /// statement about the physical switch.
+    #[test]
+    fn no_vlan_is_permitted_by_default() {
+        let p = NetworkPolicy::default();
+        assert!(!p.permits_vlan(100));
+        assert!(p.describe_vlans().contains("none configured"));
+        assert!(p.permits_uplink("default"));
+        assert!(!p.permits_uplink("dmz"));
+    }
+
     #[test]
     fn database_tls_defaults_to_prefer_and_is_optional() {
         let cfg = DatabaseConfig::default();

@@ -111,6 +111,37 @@ Split into three shippable slices.
   anti-spoofing and default-deny NICs, tenant-selectable VLAN/VNI, global
   task/event streams, and resource upper bounds.
 
+### M18 — network isolation model
+- **M18a — network types, platform-owned segments, per-network policy.** ✅ **Done.**
+  A network now declares a `kind` (`provider` | `vlan` | `tenant`) that states
+  what it isolates, and one network is exactly one L2 segment (unique
+  `segment_key`) — two untagged provider networks on the same uplink can no
+  longer silently be the same broadcast domain. VNIs are allocated by the
+  control plane from a configured range and quarantined before reuse (the old
+  `max(vni)+1` allocator reused a VNI as soon as the highest network was
+  deleted, while hosts could still carry its tunnel mesh); VLAN tags come from
+  an allowlist and need the new platform-only `network:create:provider`
+  permission, which `operator` deliberately does not hold. Every network gets a
+  managed default security group, and effective NIC policy becomes
+  `network default ∪ NIC groups`, so an empty group set stops meaning
+  "unfiltered" — gated on `[network] policy_mode`, default `legacy`. Existing
+  networks are grandfathered (`legacy_segment`, NULL segment key, permissive
+  seeded default) so a running cluster is unchanged. ADR-016/ADR-017.
+- **M18b — VXLAN underlay encryption.** Not started, and a **blocker for any
+  production use of tenant networks**: tunnels are cleartext and unauthenticated
+  today. Plan is OVS-native IPsec (portable across libreswan and strongSwan,
+  unlike a swanctl-specific integration), one anchor tunnel port per host pair
+  rather than per VNI, CA-signed mode reusing the internal PKI. Requires a
+  derived guest MTU (1416, not 1450) rolled out and verified *before* IPsec is
+  enabled, or every existing overlay VM blackholes large packets.
+- **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
+  VXLAN packet from an unconfigured source IP matches no policy and is still
+  delivered. Needs a host firewall rule accepting only ESP-protected traffic —
+  the one piece that is distro-specific (iptables/nftables).
+- **M18d — UI for network kinds.** Kind selector, uplink/VLAN fields for platform
+  admins only, and badges for "legacy overlapping segment" and "allows all
+  ingress".
+
 ### Networking
 - **M13a — IPAM: control-plane-managed / static IP assignment.** ✅ **Done.**
   Networks carry optional IPv4 and/or IPv6 subnets (cidr + gateway + dns + pool);
