@@ -156,6 +156,25 @@ message NetworkBinding {
   // allow established/related — with `ingress_rules` as the allow-list.
   bool filtered = 5;
   repeated SecurityRule ingress_rules = 6;
+  // Identity of each overlay peer, so the agent can pin who it is talking to
+  // (design §18, M18b). Parallel to `overlay_peers` but carries the peer
+  // certificate's Common Name; a peer whose CN is unknown is sent with an empty
+  // `cert_cn` and cannot be identity-pinned.
+  repeated OverlayPeer overlay_peer_identities = 7;
+  // Protect the underlay between hosts with IPsec. An agent that predates this
+  // field ignores it and keeps cleartext tunnels, so control warns rather than
+  // assuming the fleet is protected.
+  bool encrypt_underlay = 8;
+}
+
+// A peer host in a VXLAN mesh (design §18, M18b).
+message OverlayPeer {
+  // Underlay IP the tunnel is built to.
+  string underlay_ip = 1;
+  // Common Name of the peer agent's certificate, pinned as the IPsec identity.
+  // Empty when the control plane does not know it (a host enrolled before the
+  // identity was recorded).
+  string cert_cn = 2;
 }
 
 // One resolved ingress allow-rule for a NIC (design M13c). Egress is allowed by

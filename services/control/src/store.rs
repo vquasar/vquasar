@@ -25,6 +25,9 @@ pub struct Host {
     pub logical_cpus: Option<i32>,
     pub cpu_model: Option<String>,
     pub cpu_vendor: Option<String>,
+    /// CN of this host's agent certificate, for IPsec peer pinning (M18b).
+    #[sqlx(default)]
+    pub cert_cn: Option<String>,
     #[sqlx(default)]
     pub cpu_features: Vec<String>,
     pub total_memory_bytes: Option<i64>,
@@ -906,6 +909,17 @@ impl Store {
         .bind(segment_key)
         .fetch_one(&self.pool)
         .await
+    }
+
+    /// Record the CN of a host's agent certificate, so overlay IPsec can pin
+    /// this peer's identity (M18b).
+    pub async fn set_host_cert_cn(&self, host: Uuid, cn: &str) -> Result<()> {
+        sqlx::query("UPDATE hosts SET cert_cn = $2 WHERE id = $1")
+            .bind(host)
+            .bind(cn)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
     }
 
     /// Attach a network's default policy group (ADR-017).
