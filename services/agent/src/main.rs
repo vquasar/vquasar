@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = AgentConfig::load(cli.config.as_deref())?;
 
-    ch_common::telemetry::init(&config.logging.level);
+    ch_common::telemetry::init(&config.logging.level, config.logging.format == "json");
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();

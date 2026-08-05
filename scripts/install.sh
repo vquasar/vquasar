@@ -17,6 +17,7 @@
 #   --tls-ca PATH        CA cert for mutual TLS (design M12a)
 #   --tls-cert PATH      This component's certificate (agent: server; control: server + gRPC client)
 #   --tls-key PATH       This component's private key
+#   --log-format FMT     Log output: text (default) or json (design M17)
 #   --tls-issuer-cert P  (control) Intermediate issuing-CA cert for enrollment (M16)
 #   --tls-issuer-key P   (control) Intermediate issuing-CA key (0600); enables signing
 #   --enrollment-url URL (control) HTTPS URL agents reach for enrollment
@@ -64,6 +65,7 @@ NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
 DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
+LOG_FORMAT=""
 TLS_ISSUER_CERT=""; TLS_ISSUER_KEY=""; ENROLLMENT_URL=""
 BOOTSTRAP_TOKEN=""; BOOTSTRAP_URL=""; BOOTSTRAP_CA=""
 OIDC_ISSUER=""; OIDC_CLIENT_ID=""; OIDC_AUDIENCE=""; OIDC_CA=""; BOOTSTRAP_ADMIN=""; ALLOW_NO_AUTH=0
@@ -86,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --tls-ca) TLS_CA="$2"; shift 2 ;;
     --tls-cert) TLS_CERT="$2"; shift 2 ;;
     --tls-key) TLS_KEY="$2"; shift 2 ;;
+    --log-format) LOG_FORMAT="$2"; shift 2 ;;
     --tls-issuer-cert) TLS_ISSUER_CERT="$2"; shift 2 ;;
     --tls-issuer-key) TLS_ISSUER_KEY="$2"; shift 2 ;;
     --enrollment-url) ENROLLMENT_URL="$2"; shift 2 ;;
@@ -219,6 +222,7 @@ CH_AGENT_MIGRATION__TRANSPORT=tcp
 # Advertise an IP, not a hostname: the static CH binary has no working resolver.
 CH_AGENT_MIGRATION__ADVERTISE_HOST=$ADVERTISE_HOST
 ${PHONE_HOME_URL:+CH_AGENT_PHONE_HOME__URL=$PHONE_HOME_URL}
+${LOG_FORMAT:+CH_AGENT_LOGGING__FORMAT=$LOG_FORMAT}
 $(tls_env AGENT)
 EOF
 
@@ -292,6 +296,7 @@ CH_CONTROL_SERVER__LISTEN=$LISTEN
 CH_CONTROL_RECONCILE__INTERVAL_SECS=3
 CH_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
 ${UI_DIR:+CH_CONTROL_SERVER__UI_DIR=$UI_DIR}
+${LOG_FORMAT:+CH_CONTROL_LOGGING__FORMAT=$LOG_FORMAT}
 $(tls_env CONTROL)
 $(auth_env)
 $(enc_env)

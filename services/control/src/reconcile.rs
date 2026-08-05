@@ -24,20 +24,30 @@ use crate::store::{HostInventory, Store, Vm};
 /// Run the reconcile loop forever.
 pub async fn run(store: Store, interval: Duration) {
     loop {
+        metrics::counter!("ch_reconcile_passes_total").increment(1);
         if let Err(e) = reconcile_hosts(&store).await {
             warn!(error = %e, "host reconcile pass failed");
+            metrics::counter!("ch_reconcile_errors_total", "pass" => "hosts").increment(1);
         }
         if let Err(e) = reconcile_migrations(&store).await {
             warn!(error = %e, "migration reconcile pass failed");
+            metrics::counter!("ch_reconcile_errors_total", "pass" => "migrations").increment(1);
         }
         if let Err(e) = reconcile_vms(&store).await {
             warn!(error = %e, "vm reconcile pass failed");
+            metrics::counter!("ch_reconcile_errors_total", "pass" => "vms").increment(1);
         }
         if let Err(e) = recover_running_vms(&store).await {
             warn!(error = %e, "vm recovery pass failed");
+            metrics::counter!("ch_reconcile_errors_total", "pass" => "recovery").increment(1);
         }
         if let Err(e) = refresh_vm_ips(&store).await {
             warn!(error = %e, "vm ip refresh pass failed");
+            metrics::counter!("ch_reconcile_errors_total", "pass" => "ip_refresh").increment(1);
+        }
+        // Refresh inventory gauges from the current DB state (design M17).
+        if let Err(e) = crate::metrics::update_from_store(&store).await {
+            warn!(error = %e, "metrics refresh failed");
         }
         sleep(interval).await;
     }
@@ -113,6 +123,7 @@ pub async fn recover_running_vms(store: &Store) -> anyhow::Result<()> {
                         &format!("not running on {} — relaunching after host recovery", host.name),
                     )
                     .await?;
+                metrics::counter!("ch_vm_recoveries_total").increment(1);
                 warn!(vm = %vm.id, host = %host.name, "VM down on its host; re-launching");
             }
         }
@@ -202,6 +213,7 @@ pub async fn reconcile_migrations(store: &Store) -> anyhow::Result<()> {
     for m in store.list_active_migrations().await? {
         if let Err(e) = advance_migration(store, &m).await {
             warn!(migration = %m.id, vm = %m.vm_id, error = %e, "migration failed");
+            metrics::counter!("ch_migrations_total", "result" => "failed").increment(1);
             store
                 .update_migration(m.id, "Failed", None, Some(&e.to_string()))
                 .await?;
@@ -299,6 +311,7 @@ async fn advance_migration(store: &Store, m: &crate::store::Migration) -> anyhow
                 }
             }
             store.set_vm_host_running(vm.id, m.target_host_id).await?;
+            metrics::counter!("ch_migrations_total", "result" => "completed").increment(1);
             store
                 .update_migration(m.id, "Completed", None, None)
                 .await?;

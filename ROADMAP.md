@@ -186,10 +186,18 @@ Split into three shippable slices.
   documented paths are a pre-built virtio image or an unattended serial setup.
 
 ### Platform & resilience
+- **Host lifecycle.** ✅ **Done (M16).** Maintenance mode (cordon/uncordon via
+  the `schedulable` flag) + drain/evacuate (`POST /hosts/:id/drain` live-migrates
+  a host's VMs to CPU-compatible peers), and **automated agent cert enrollment**
+  (token-gated CSR signing via an intermediate issuing CA; `POST /hosts/enroll`
+  + `POST /enroll/sign`; `install.sh --bootstrap-token`).
+- **End-to-end host-reboot recovery.** ✅ **Done (M16).** A Running VM now
+  auto-recovers after its host reboots: a `recover_running_vms` reconcile pass
+  re-drives VMs the agent no longer reports; the NFS mount is made reboot-
+  persistent + the agent waits for it (`RequiresMountsFor`); and a
+  `ch-vm-shutdown.service` terminates CH VMs before NFS unmount so reboots don't
+  hang on the orphaned (KillMode=process) hypervisor processes. Verified live.
 - Control-plane HA (multiple control nodes; PostgreSQL HA).
-- Host lifecycle: maintenance mode, drain/evacuate, and automated enrollment
-  (ties into M12 certificate issuance).
-- End-to-end host-reboot recovery validation.
 - Quotas, projects, multi-tenancy.
 
 ### Quality & delivery

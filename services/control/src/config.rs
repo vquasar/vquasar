@@ -237,12 +237,21 @@ impl Default for GrpcConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
     pub level: String,
+    /// Log output format: "text" (default) or "json" for structured export
+    /// (design M17).
+    #[serde(default = "default_log_format")]
+    pub format: String,
+}
+
+fn default_log_format() -> String {
+    "text".to_string()
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             level: "info".to_string(),
+            format: default_log_format(),
         }
     }
 }

@@ -12,6 +12,7 @@ mod config;
 mod console;
 mod cpucompat;
 mod crypto;
+mod metrics;
 mod ipam;
 mod netalloc;
 mod rbac;
@@ -43,10 +44,14 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = ControlConfig::load(cli.config.as_deref())?;
-    ch_common::telemetry::init(&config.logging.level);
+    ch_common::telemetry::init(&config.logging.level, config.logging.format == "json");
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Prometheus metrics recorder (design M17). Installed before the reconcile
+    // loop so its counters have somewhere to record.
+    let prom = metrics::install()?;
 
     // Configure mutual TLS to agents when certs are present (design M12a).
     if config.tls.enabled() {
@@ -129,7 +134,20 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let mut app = api::router(store, auth_state, enrollment);
+    let mut app = api::router(store, auth_state, enrollment)
+        // Prometheus scrape endpoint (unauthenticated, like /healthz — it
+        // exposes cluster shape, not secrets; restrict by network policy).
+        .route(
+            "/metrics",
+            axum::routing::get({
+                let prom = prom.clone();
+                move || {
+                    let prom = prom.clone();
+                    async move { prom.render() }
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn(metrics::track_http));
     if let Some(ui_dir) = &config.server.ui_dir {
         let dir = std::path::PathBuf::from(ui_dir);
         let index = dir.join("index.html");
