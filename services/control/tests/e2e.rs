@@ -503,17 +503,23 @@ async fn vm_lifecycle_end_to_end() {
         "agent has the VM"
     );
 
-    // /metrics reflects one Running VM.
-    let metrics = reqwest::get(format!("{}/metrics", h.base))
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(
-        metrics.contains("vquasar_vms{phase=\"Running\"} 1"),
-        "metrics should show 1 running VM"
-    );
+    // /metrics reflects one Running VM. The gauge is refreshed on a reconcile
+    // tick (separate from the VM's phase transition), so poll for it.
+    let mut metrics_ok = false;
+    for _ in 0..40 {
+        let m = reqwest::get(format!("{}/metrics", h.base))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if m.contains("vquasar_vms{phase=\"Running\"} 1") {
+            metrics_ok = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(metrics_ok, "metrics should show 1 running VM");
 
     // Stop → Stopped, Start → Running.
     let (st, _) = h.post(&format!("/vms/{vm_id}/stop"), json!({})).await;
