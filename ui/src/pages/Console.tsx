@@ -1,22 +1,21 @@
+// Interactive serial console (design section 25): browser <-WS-> control
+// <-gRPC-> agent <-> VM serial. Not redesigned in the handoff — kept functional
+// and restyled from the token set.
+
 import { useEffect, useRef } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import { Link, useParams } from "react-router-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useVm } from "../api/hooks";
 import { authToken } from "../api/client";
+import { PageHeader } from "../ui/kit";
+import { useThemeMode } from "../theme/ThemeMode";
 
-// Interactive serial console (design section 25): browser <-WS-> control
-// <-gRPC-> agent <-> VM serial.
 export function Console() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const vm = useVm(id);
+  const { mode } = useThemeMode();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,9 +23,12 @@ export function Console() {
 
     const term = new Terminal({
       convertEol: true,
-      fontFamily: "ui-monospace, Menlo, Consolas, monospace",
-      fontSize: 13,
-      theme: { background: "#0b0e14" },
+      fontFamily: '"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace',
+      fontSize: 12.5,
+      theme:
+        mode === "light"
+          ? { background: "#F4F7FB", foreground: "#0B0F16", cursor: "#1E6FD9" }
+          : { background: "#0D1219", foreground: "#F4F7FB", cursor: "#4F9CF9" },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -61,20 +63,31 @@ export function Console() {
       ws.close();
       term.dispose();
     };
-  }, [id]);
+  }, [id, mode]);
 
   return (
-    <Stack spacing={2} sx={{ height: "calc(100vh - 120px)" }}>
-      <Stack direction="row" alignItems="center" spacing={2}>
-        <Button startIcon={<ArrowBackIcon />} onClick={() => navigate(`/vms/${id}`)}>
-          Back
-        </Button>
-        <Typography variant="h5">Console — {vm.data?.name ?? id}</Typography>
-      </Stack>
-      <Box
-        ref={containerRef}
-        sx={{ flexGrow: 1, bgcolor: "#0b0e14", p: 1, borderRadius: 1, overflow: "hidden" }}
+    <>
+      <PageHeader
+        back={
+          <Link to={`/vms/${id}`} className="vq-backlink">
+            ← {vm.data?.name ?? "Virtual machine"}
+          </Link>
+        }
+        title="Serial console"
+        subline={vm.data ? `${vm.data.id} · ${vm.data.phase}` : undefined}
       />
-    </Stack>
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          minHeight: 460,
+          background: "var(--vq-inset)",
+          border: "1px solid var(--vq-line)",
+          borderRadius: "var(--vq-radius-card)",
+          padding: 12,
+          overflow: "hidden",
+        }}
+      />
+    </>
   );
 }

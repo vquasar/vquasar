@@ -1,43 +1,128 @@
-import Alert from "@mui/material/Alert";
-import Stack from "@mui/material/Stack";
-import Typography from "@mui/material/Typography";
-import { DataGrid, type GridColDef } from "@mui/x-data-grid";
-import { useEvents } from "../api/hooks";
-import { StatusChip } from "../components/StatusChip";
-import { formatDate, shortId } from "../format";
-import type { Event } from "../api/types";
+// Events (handoff §12). The whole table is monospace on purpose: this is a log,
+// and column alignment matters more than warmth.
 
-const columns: GridColDef<Event>[] = [
-  { field: "ts", headerName: "Time", width: 190, valueGetter: (v) => formatDate(v as string) },
-  {
-    field: "severity",
-    headerName: "Severity",
-    width: 110,
-    renderCell: (p) => <StatusChip value={(p.value as string) === "warning" ? "Maintenance" : "Running"} />,
-  },
-  { field: "event_type", headerName: "Event", width: 170 },
-  { field: "resource_type", headerName: "Resource", width: 110 },
-  { field: "resource_id", headerName: "ID", width: 110, valueGetter: (v) => shortId(v as string | null) },
-  { field: "message", headerName: "Message", flex: 1, minWidth: 200 },
-];
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { useEvents, useHosts, useVms } from "../api/hooks";
+import {
+  Dash,
+  EmptyState,
+  QueryError,
+  Segmented,
+  SkeletonRows,
+  Table,
+  THead,
+  TRow,
+} from "../ui/kit";
+import { formatTime } from "../format";
+
+const COLS = "130px 90px 1.3fr 1.2fr 2.6fr";
+
+type Severity = "all" | "info" | "warning" | "error";
+
+function severityColor(sev: string): string {
+  switch (sev) {
+    case "error":
+      return "var(--vq-red)";
+    case "warning":
+      return "var(--vq-amber)";
+    default:
+      return "var(--vq-cyan)";
+  }
+}
 
 export function Events() {
   const events = useEvents();
+  const vms = useVms();
+  const hosts = useHosts();
+  const [severity, setSeverity] = useState<Severity>("all");
+
+  // Resolve a resource id to the name an operator recognises, and to a link
+  // where one exists.
+  const resolve = useMemo(() => {
+    const m = new Map<string, { name: string; to?: string }>();
+    (vms.data ?? []).forEach((v) => m.set(v.id, { name: v.name, to: `/vms/${v.id}` }));
+    (hosts.data ?? []).forEach((h) => m.set(h.id, { name: h.name, to: `/hosts/${h.id}` }));
+    return m;
+  }, [vms.data, hosts.data]);
+
+  const list = (events.data ?? []).filter((e) => severity === "all" || e.severity === severity);
+
   return (
-    <Stack spacing={2}>
-      <Typography variant="h5">Events</Typography>
-      {events.isError && <Alert severity="error">{(events.error as Error).message}</Alert>}
-      <div style={{ height: 600, width: "100%" }}>
-        <DataGrid
-          rows={events.data ?? []}
-          columns={columns}
-          loading={events.isLoading}
-          density="compact"
-          disableRowSelectionOnClick
-          initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
-          pageSizeOptions={[50, 100, 200]}
+    <>
+      <div className="vq-pagehead">
+        <div>
+          <h1 className="vq-title">Events</h1>
+          <div className="vq-sub">Append-only audit stream · retained 90 days</div>
+        </div>
+        <Segmented
+          value={severity}
+          onChange={setSeverity}
+          options={[
+            { value: "all", label: "All" },
+            { value: "info", label: "Info" },
+            { value: "warning", label: "Warning" },
+            { value: "error", label: "Error" },
+          ]}
         />
       </div>
-    </Stack>
+
+      <QueryError error={events.error} what="events" />
+
+      <Table>
+        <THead cols={COLS}>
+          <div>Timestamp</div>
+          <div>Severity</div>
+          <div>Event type</div>
+          <div>Resource</div>
+          <div>Message</div>
+        </THead>
+
+        {events.isLoading && <SkeletonRows cols={COLS} />}
+
+        {!events.isLoading && list.length === 0 && (
+          <div style={{ padding: 18 }}>
+            <EmptyState
+              headline={severity === "all" ? "No events yet" : `No ${severity} events`}
+              hint="Every state change the control plane makes is recorded here."
+            />
+          </div>
+        )}
+
+        {list.map((e) => {
+          const res = e.resource_id ? resolve.get(e.resource_id) : undefined;
+          const isError = e.severity === "error";
+          return (
+            <TRow key={e.id} cols={COLS} gap={14} tint={isError ? "red" : undefined}>
+              <div className="vq-mono-sm">{formatTime(e.ts, true)}</div>
+              {/* Bare mono word, not a chip: five chips a row would drown the
+                  message column. */}
+              <div className="vq-mono-sm" style={{ color: severityColor(e.severity) }}>
+                {e.severity}
+              </div>
+              <div className="vq-cell vq-mono">{e.event_type}</div>
+              <div className="vq-cell vq-mono-sm">
+                {res?.to ? (
+                  <Link className="vq-name" to={res.to}>
+                    {res.name}
+                  </Link>
+                ) : e.resource_id ? (
+                  e.resource_id.slice(0, 8)
+                ) : (
+                  <Dash />
+                )}
+              </div>
+              <div
+                className="vq-cell vq-mono-sm"
+                style={isError ? { color: "var(--vq-red)" } : undefined}
+                title={e.message}
+              >
+                {e.message}
+              </div>
+            </TRow>
+          );
+        })}
+      </Table>
+    </>
   );
 }

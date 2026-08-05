@@ -1,36 +1,56 @@
+// Images (handoff §6). A card grid rather than a table: an image is a small
+// object with a status that matters, and an import in flight deserves its own
+// progress rather than a cell.
+
 import { useState } from "react";
-import Alert from "@mui/material/Alert";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
+import { Link } from "react-router-dom";
 import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
-import DeleteIcon from "@mui/icons-material/Delete";
-import EditIcon from "@mui/icons-material/Edit";
-import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
-import UploadIcon from "@mui/icons-material/Upload";
-import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import {
   useCreateImage,
   useDeleteImage,
   useImages,
   useImportImage,
+  useNetworks,
+  useTemplates,
   useUpdateImage,
   useUploadImage,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
-import { formatBytes, formatDate } from "../format";
+import {
+  Btn,
+  Card,
+  Dash,
+  DialogBody,
+  DialogFoot,
+  DialogHead,
+  EmptyState,
+  ErrorPanel,
+  Field,
+  Grid,
+  Input,
+  PageHeader,
+  QueryError,
+  RowMenu,
+  Select,
+  SkeletonRows,
+  StateChip,
+  Table,
+  THead,
+  TRow,
+  Toggle,
+} from "../ui/kit";
+import { formatBytes, formatMib } from "../format";
 import type { BootSpec, CreateImageRequest, Image } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
+const TPL_COLS = "1.4fr 1.2fr 90px 100px 100px 1fr 110px";
+
+function bootLabel(img: Image): string {
+  const parts: string[] = [img.format];
+  parts.push(img.boot.type === "firmware" ? "firmware boot" : "direct kernel");
+  parts.push(img.cloud_init ? "cloud-init" : "no seed");
+  return parts.join(" · ");
+}
 
 function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void }) {
   const dk = edit?.boot.type === "direct_kernel" ? edit.boot : null;
@@ -56,12 +76,7 @@ function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void
   const submit = () => {
     const boot: BootSpec =
       bootType === "direct_kernel"
-        ? {
-            type: "direct_kernel",
-            kernel,
-            initramfs: initramfs || null,
-            cmdline: cmdline || null,
-          }
+        ? { type: "direct_kernel", kernel, initramfs: initramfs || null, cmdline: cmdline || null }
         : { type: "firmware", firmware };
     const body: CreateImageRequest = {
       name,
@@ -77,58 +92,73 @@ function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void
   };
 
   const busy = create.isPending || update.isPending;
-  const err = (create.error || update.error) as Error | null;
+  const err = create.error || update.error;
   const ready = name && sourcePath && (bootType === "firmware" ? firmware : kernel);
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{edit ? "Edit image" : "Register image"}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          <TextField label="OS label (optional)" value={os} onChange={(e) => setOs(e.target.value)} />
-          <TextField
-            label="Base disk path (shared storage)"
-            value={sourcePath}
-            onChange={(e) => setSourcePath(e.target.value)}
-            helperText="e.g. /var/lib/vquasar/shared/images/ubuntu-26.04.raw"
-          />
-          <TextField select label="Base format" value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")}>
-            <MenuItem value="raw">raw</MenuItem>
-            <MenuItem value="qcow2">qcow2</MenuItem>
-          </TextField>
-          <TextField select label="Boot" value={bootType} onChange={(e) => setBootType(e.target.value as "direct_kernel" | "firmware")}>
-            <MenuItem value="direct_kernel">Direct kernel</MenuItem>
-            <MenuItem value="firmware">Firmware (UEFI)</MenuItem>
-          </TextField>
-          {bootType === "direct_kernel" ? (
-            <>
-              <TextField label="Kernel path" value={kernel} onChange={(e) => setKernel(e.target.value)} />
-              <TextField label="Initramfs path (optional)" value={initramfs} onChange={(e) => setInitramfs(e.target.value)} />
-              <TextField label="Kernel cmdline" value={cmdline} onChange={(e) => setCmdline(e.target.value)} />
-            </>
-          ) : (
-            <TextField label="Firmware path (CLOUDHV.fd)" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
-          )}
-          <TextField
-            label="Default disk size (GiB, optional)"
-            value={sizeGib}
-            onChange={(e) => setSizeGib(e.target.value)}
-            helperText="Grow provisioned volumes to this size"
-          />
-          <FormControlLabel
-            control={<Switch checked={cloudInit} onChange={(e) => setCloudInit(e.target.checked)} />}
-            label="Expects cloud-init seed"
-          />
-          {err && <Alert severity="error">{err.message}</Alert>}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!ready || busy}>
+      <DialogHead>{edit ? "Edit image" : "Register image"}</DialogHead>
+      <DialogBody>
+        <Grid cols="1fr 1fr">
+          <Field label="Name">
+            <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="OS label">
+            <Input value={os} onChange={(e) => setOs(e.target.value)} placeholder="ubuntu-24.04" />
+          </Field>
+        </Grid>
+        <Field
+          label="Base disk path"
+          help="On shared storage, e.g. /var/lib/vquasar/shared/images/ubuntu-24.04.raw"
+        >
+          <Input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} />
+        </Field>
+        <Grid cols="1fr 1fr">
+          <Field label="Base format">
+            <Select value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")}>
+              <option value="raw">raw</option>
+              <option value="qcow2">qcow2</option>
+            </Select>
+          </Field>
+          <Field label="Boot">
+            <Select
+              value={bootType}
+              onChange={(e) => setBootType(e.target.value as "direct_kernel" | "firmware")}
+            >
+              <option value="direct_kernel">direct kernel</option>
+              <option value="firmware">firmware (UEFI)</option>
+            </Select>
+          </Field>
+        </Grid>
+        {bootType === "direct_kernel" ? (
+          <>
+            <Field label="Kernel path">
+              <Input value={kernel} onChange={(e) => setKernel(e.target.value)} />
+            </Field>
+            <Field label="Initramfs path">
+              <Input value={initramfs} onChange={(e) => setInitramfs(e.target.value)} />
+            </Field>
+            <Field label="Kernel cmdline">
+              <Input value={cmdline} onChange={(e) => setCmdline(e.target.value)} />
+            </Field>
+          </>
+        ) : (
+          <Field label="Firmware path">
+            <Input value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+          </Field>
+        )}
+        <Field label="Default disk size (GiB)" help="Grow provisioned volumes to this size.">
+          <Input value={sizeGib} onChange={(e) => setSizeGib(e.target.value)} />
+        </Field>
+        <Toggle on={cloudInit} onChange={setCloudInit} label="Expects a cloud-init seed" />
+        {err && <ErrorPanel summary="Could not save the image" detail={err} />}
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" onClick={submit} disabled={!ready || busy}>
           {edit ? "Save" : "Register"}
-        </Button>
-      </DialogActions>
+        </Btn>
+      </DialogFoot>
     </Dialog>
   );
 }
@@ -143,57 +173,66 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
   const [sizeGib, setSizeGib] = useState("");
   const [cloudInit, setCloudInit] = useState(true);
 
-  const submit = () =>
-    imp.mutate(
-      {
-        name,
-        url,
-        format,
-        os: os || null,
-        cloud_init: cloudInit,
-        boot: { type: "firmware", firmware },
-        default_size_bytes: sizeGib ? Math.round(Number(sizeGib) * GIB) : null,
-      },
-      { onSuccess: onClose },
-    );
-
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Import image from URL</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          <TextField
-            label="URL"
+      <DialogHead>Import image from URL</DialogHead>
+      <DialogBody>
+        <Field label="Name">
+          <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="URL">
+          <Input
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder="https://cloud-images.ubuntu.com/…/disk.img"
           />
-          <Stack direction="row" spacing={2}>
-            <TextField select label="Format" value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")} sx={{ minWidth: 120 }}>
-              <MenuItem value="qcow2">qcow2</MenuItem>
-              <MenuItem value="raw">raw</MenuItem>
-            </TextField>
-            <TextField label="OS label" value={os} onChange={(e) => setOs(e.target.value)} fullWidth placeholder="ubuntu-26.04" />
-          </Stack>
-          <TextField label="Firmware (UEFI) path" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
-          <TextField label="Default size (GiB, optional)" value={sizeGib} onChange={(e) => setSizeGib(e.target.value)} />
-          <FormControlLabel
-            control={<Switch checked={cloudInit} onChange={(e) => setCloudInit(e.target.checked)} />}
-            label="Uses cloud-init"
-          />
-          <Typography variant="caption" color="text.secondary">
-            The download runs in the background; the image becomes usable when it turns “ready”.
-          </Typography>
-          {imp.error && <Alert severity="error">{(imp.error as Error).message}</Alert>}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || !url || imp.isPending}>
+        </Field>
+        <Grid cols="1fr 1fr">
+          <Field label="Format">
+            <Select value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")}>
+              <option value="qcow2">qcow2</option>
+              <option value="raw">raw</option>
+            </Select>
+          </Field>
+          <Field label="OS label">
+            <Input value={os} onChange={(e) => setOs(e.target.value)} placeholder="ubuntu-24.04" />
+          </Field>
+        </Grid>
+        <Field label="Firmware (UEFI) path">
+          <Input value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+        </Field>
+        <Field label="Default size (GiB)">
+          <Input value={sizeGib} onChange={(e) => setSizeGib(e.target.value)} />
+        </Field>
+        <Toggle on={cloudInit} onChange={setCloudInit} label="Uses cloud-init" />
+        <div className="vq-help">
+          The download runs in the background; the image becomes usable when it turns ready.
+        </div>
+        {imp.isError && <ErrorPanel summary="Import rejected" detail={imp.error} />}
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn
+          kind="primary"
+          disabled={!name || !url || imp.isPending}
+          onClick={() =>
+            imp.mutate(
+              {
+                name,
+                url,
+                format,
+                os: os || null,
+                cloud_init: cloudInit,
+                boot: { type: "firmware", firmware },
+                default_size_bytes: sizeGib ? Math.round(Number(sizeGib) * GIB) : null,
+              },
+              { onSuccess: onClose },
+            )
+          }
+        >
           Import
-        </Button>
-      </DialogActions>
+        </Btn>
+      </DialogFoot>
     </Dialog>
   );
 }
@@ -206,20 +245,13 @@ function UploadDialog({ onClose }: { onClose: () => void }) {
   const [firmware, setFirmware] = useState("/var/lib/vquasar/firmware/CLOUDHV.fd");
   const [file, setFile] = useState<File | null>(null);
 
-  const submit = () => {
-    if (!file) return;
-    up.mutate(
-      { params: { name, format, os, firmware, cloud_init: "true" }, file },
-      { onSuccess: onClose },
-    );
-  };
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Upload image</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <Button variant="outlined" component="label">
-            {file ? file.name : "Choose disk file…"}
+      <DialogHead>Upload image</DialogHead>
+      <DialogBody>
+        <Field label="Disk file">
+          <label className="vq-btn tall" style={{ justifyContent: "flex-start" }}>
+            {file ? file.name : "Choose a disk file…"}
             <input
               type="file"
               hidden
@@ -229,111 +261,271 @@ function UploadDialog({ onClose }: { onClose: () => void }) {
                 if (f && !name) setName(f.name.replace(/\.(qcow2|img|raw)$/i, ""));
               }}
             />
-          </Button>
-          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} />
-          <Stack direction="row" spacing={2}>
-            <TextField select label="Format" value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")} sx={{ minWidth: 120 }}>
-              <MenuItem value="qcow2">qcow2</MenuItem>
-              <MenuItem value="raw">raw</MenuItem>
-            </TextField>
-            <TextField label="OS label" value={os} onChange={(e) => setOs(e.target.value)} fullWidth />
-          </Stack>
-          <TextField label="Firmware (UEFI) path" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
-          {up.isPending && <Alert severity="info">Uploading… keep this dialog open.</Alert>}
-          {up.error && <Alert severity="error">{(up.error as Error).message}</Alert>}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || !file || up.isPending}>
+          </label>
+        </Field>
+        <Field label="Name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Grid cols="1fr 1fr">
+          <Field label="Format">
+            <Select value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")}>
+              <option value="qcow2">qcow2</option>
+              <option value="raw">raw</option>
+            </Select>
+          </Field>
+          <Field label="OS label">
+            <Input value={os} onChange={(e) => setOs(e.target.value)} />
+          </Field>
+        </Grid>
+        <Field label="Firmware (UEFI) path">
+          <Input value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+        </Field>
+        {up.isPending && (
+          <div className="vq-warnpanel">Uploading — keep this dialog open until it finishes.</div>
+        )}
+        {up.isError && <ErrorPanel summary="Upload failed" detail={up.error} />}
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn
+          kind="primary"
+          disabled={!name || !file || up.isPending}
+          onClick={() =>
+            file &&
+            up.mutate(
+              { params: { name, format, os, firmware, cloud_init: "true" }, file },
+              { onSuccess: onClose },
+            )
+          }
+        >
           Upload
-        </Button>
-      </DialogActions>
+        </Btn>
+      </DialogFoot>
     </Dialog>
   );
 }
 
-function StatusChip({ image }: { image: Image }) {
-  const color = image.status === "ready" ? "success" : image.status === "failed" ? "error" : "warning";
-  return <Chip size="small" color={color} label={image.status} title={image.error ?? undefined} />;
+function ImageCard({
+  img,
+  derived,
+  menu,
+}: {
+  img: Image;
+  derived: number;
+  menu: { label: string; onClick: () => void; danger?: boolean }[];
+}) {
+  const importing = img.status === "importing";
+  const failed = img.status === "failed";
+
+  return (
+    <div
+      className="vq-card"
+      style={{
+        borderColor: importing
+          ? "var(--vq-cyan-line)"
+          : failed
+            ? "var(--vq-red-line)"
+            : undefined,
+      }}
+    >
+      <div className="vq-card-body">
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{img.name}</div>
+            <div className="vq-mono-sm" style={{ fontSize: 10.5, marginTop: 3 }}>
+              {bootLabel(img)}
+            </div>
+          </div>
+          <StateChip value={img.status} dense title={img.error ?? undefined} />
+          <RowMenu items={menu} />
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          {importing ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span className="vq-mono-sm">transferred</span>
+                <span className="vq-mono-sm t-cyan">
+                  {img.size_bytes != null ? formatBytes(img.size_bytes) : "…"}
+                  {img.default_size_bytes ? ` / ${formatBytes(img.default_size_bytes)}` : ""}
+                </span>
+              </div>
+              <div className="vq-bar thick" style={{ marginTop: 8 }}>
+                <span
+                  className="vq-bar-cyan vq-pulse-fast"
+                  style={{
+                    width: `${
+                      img.size_bytes && img.default_size_bytes
+                        ? Math.min(100, (img.size_bytes / img.default_size_bytes) * 100)
+                        : 40
+                    }%`,
+                  }}
+                />
+              </div>
+              <div
+                style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 10 }}
+              >
+                <span className="vq-mono-sm">source</span>
+                <span className="vq-mono-sm vq-cell">{img.source_path}</span>
+              </div>
+            </>
+          ) : failed ? (
+            <ErrorPanel summary="Import failed" detail={img.error} />
+          ) : (
+            <>
+              <Row k="size" v={formatBytes(img.size_bytes)} />
+              <Row k="default disk" v={formatBytes(img.default_size_bytes)} />
+              <Row k="derived volumes" v={String(derived)} />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Row({ k, v }: { k: string; v: string }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 0" }}>
+      <span className="vq-mono-sm">{k}</span>
+      <span className="vq-mono-sm t-2">{v}</span>
+    </div>
+  );
 }
 
 export function Images() {
   const images = useImages();
+  const templates = useTemplates();
+  const networks = useNetworks();
   const del = useDeleteImage();
   const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Image | null } | null>(null);
   const [importing, setImporting] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  const columns: GridColDef<Image>[] = [
-    { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
-    {
-      field: "status",
-      headerName: "Status",
-      width: 110,
-      renderCell: (p) => <StatusChip image={p.row} />,
-    },
-    { field: "os", headerName: "OS", width: 140, valueGetter: (v) => v ?? "—" },
-    { field: "format", headerName: "Format", width: 90 },
-    { field: "source_path", headerName: "Base disk", flex: 1, minWidth: 240 },
-    {
-      field: "default_size_bytes",
-      headerName: "Default size",
-      width: 120,
-      valueGetter: (v) => (v == null ? "—" : formatBytes(v as number)),
-    },
-    {
-      field: "cloud_init",
-      headerName: "cloud-init",
-      width: 100,
-      valueGetter: (v) => (v ? "yes" : "no"),
-    },
-    { field: "created_at", headerName: "Created", width: 190, valueGetter: (v) => formatDate(v as string) },
-    {
-      field: "actions",
-      type: "actions",
-      headerName: "",
-      width: 90,
-      getActions: (p) => [
-        <GridActionsCellItem key="edit" icon={<EditIcon />} label="Edit" onClick={() => setDialog({ edit: p.row })} />,
-        <GridActionsCellItem key="del" icon={<DeleteIcon />} label="Delete" onClick={() => del.mutate(p.row.id)} />,
-      ],
-    },
-  ];
+  const list = images.data ?? [];
+  const inFlight = list.filter((i) => i.status === "importing").length;
+  const derivedCount = (imageId: string) =>
+    (templates.data ?? []).filter((t) => t.image_id === imageId).length;
+  const imageName = (id: string) => list.find((i) => i.id === id)?.name ?? id.slice(0, 8);
+  const networkName = (id: string | null) =>
+    id ? (networks.data?.find((n) => n.id === id)?.name ?? id.slice(0, 8)) : null;
 
   return (
-    <Stack spacing={2}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Typography variant="h5">Images</Typography>
-        {can("image:create") && (
-          <Stack direction="row" spacing={1}>
-            <Button startIcon={<UploadIcon />} onClick={() => setUploading(true)}>
-              Upload
-            </Button>
-            <Button startIcon={<CloudDownloadIcon />} onClick={() => setImporting(true)}>
-              Import from URL
-            </Button>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
-              Register image
-            </Button>
-          </Stack>
-        )}
-      </Stack>
-      {images.isError && <Alert severity="error">{(images.error as Error).message}</Alert>}
-      {del.isError && <Alert severity="error">{(del.error as Error).message}</Alert>}
-      <div style={{ height: 480, width: "100%" }}>
-        <DataGrid
-          rows={images.data ?? []}
-          columns={columns}
-          loading={images.isLoading}
-          density="compact"
-          disableRowSelectionOnClick
+    <>
+      <PageHeader
+        title="Images"
+        subtitle={`${list.length} image${list.length === 1 ? "" : "s"}${
+          inFlight ? ` · ${inFlight} importing` : ""
+        } · managed images are reference-counted`}
+        actions={
+          can("image:create") && (
+            <>
+              <Btn onClick={() => setUploading(true)}>Upload</Btn>
+              <Btn onClick={() => setDialog({ edit: null })}>Register</Btn>
+              <Btn kind="primary" onClick={() => setImporting(true)}>
+                Import image
+              </Btn>
+            </>
+          )
+        }
+      />
+
+      <QueryError error={images.error} what="images" />
+      {del.isError && <ErrorPanel summary="Delete failed" detail={del.error} />}
+
+      {images.isLoading ? (
+        <Grid cols="repeat(3, 1fr)">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="vq-card">
+              <div className="vq-card-body">
+                <div className="vq-skel" style={{ width: "60%" }} />
+                <div className="vq-skel" style={{ width: "90%", marginTop: 12 }} />
+                <div className="vq-skel" style={{ width: "40%", marginTop: 8 }} />
+              </div>
+            </div>
+          ))}
+        </Grid>
+      ) : list.length === 0 ? (
+        <EmptyState
+          headline="No images yet"
+          hint="Import one from a URL, upload a disk, or register a path on shared storage."
         />
-      </div>
+      ) : (
+        <Grid cols="repeat(3, 1fr)">
+          {list.map((img) => (
+            <ImageCard
+              key={img.id}
+              img={img}
+              derived={derivedCount(img.id)}
+              menu={
+                can("image:create")
+                  ? [
+                      { label: "Edit", onClick: () => setDialog({ edit: img }) },
+                      { label: "Delete", danger: true, onClick: () => del.mutate(img.id) },
+                    ]
+                  : []
+              }
+            />
+          ))}
+        </Grid>
+      )}
+
+      <Card
+        title="Templates"
+        actions={
+          <Link to="/templates" className="vq-card-note" style={{ color: "var(--vq-blue)" }}>
+            Manage
+          </Link>
+        }
+      >
+        <Table>
+          <THead cols={TPL_COLS}>
+            <div>Template</div>
+            <div>Image</div>
+            <div>vCPU</div>
+            <div>Memory</div>
+            <div>Disk</div>
+            <div>Network</div>
+            <div>Machine</div>
+          </THead>
+          {templates.isLoading && <SkeletonRows cols={TPL_COLS} rows={3} />}
+          {!templates.isLoading && (templates.data ?? []).length === 0 && (
+            <div style={{ padding: 18 }}>
+              <EmptyState
+                headline="No templates"
+                hint="A template pins an image, a size and a network so a VM is one click."
+              />
+            </div>
+          )}
+          {(templates.data ?? []).map((t) => (
+            <TRow key={t.id} cols={TPL_COLS}>
+              <div className="vq-cell">
+                <Link className="vq-name" to={`/templates/${t.id}/launch`}>
+                  {t.name}
+                </Link>
+              </div>
+              <div className="vq-cell vq-mono-sm">{imageName(t.image_id)}</div>
+              <div className="vq-mono-sm">
+                {t.boot_vcpus} / {t.max_vcpus}
+              </div>
+              <div className="vq-mono-sm">{formatMib(t.memory_mib)}</div>
+              <div className="vq-mono-sm">
+                {t.disk_size_bytes ? formatBytes(t.disk_size_bytes) : "image default"}
+              </div>
+              <div className="vq-cell vq-mono-sm">{networkName(t.network_id) ?? <Dash />}</div>
+              {/* microvm is the moving part worth noticing here. */}
+              <div className={`vq-mono-sm ${t.machine_type === "microvm" ? "t-cyan" : "t-3"}`}>
+                {t.machine_type}
+              </div>
+            </TRow>
+          ))}
+        </Table>
+      </Card>
+
       {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
       {importing && <ImportDialog onClose={() => setImporting(false)} />}
       {uploading && <UploadDialog onClose={() => setUploading(false)} />}
-    </Stack>
+    </>
   );
 }

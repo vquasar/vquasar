@@ -1,19 +1,10 @@
+// Hosts (handoff §2). Scheduling is deliberately bare mono text rather than a
+// chip — a cordoned host already tints its whole row, and two chips per row
+// would fight.
+
 import { useState } from "react";
-import Button from "@mui/material/Button";
+import { Link } from "react-router-dom";
 import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import Alert from "@mui/material/Alert";
-import Chip from "@mui/material/Chip";
-import AddIcon from "@mui/icons-material/Add";
-import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
-import BlockIcon from "@mui/icons-material/Block";
-import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import CleaningServicesIcon from "@mui/icons-material/CleaningServices";
 import {
   useDrainHost,
   useEnrollHost,
@@ -22,48 +13,73 @@ import {
   useSetHostSchedulable,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
-import { StatusChip } from "../components/StatusChip";
-import { formatBytes } from "../format";
+import {
+  Btn,
+  Dash,
+  DialogBody,
+  DialogFoot,
+  DialogHead,
+  EmptyState,
+  ErrorPanel,
+  Field,
+  Input,
+  PageHeader,
+  ProgressCell,
+  QueryError,
+  RowMenu,
+  SkeletonRows,
+  StateChip,
+  Table,
+  THead,
+  TRow,
+} from "../ui/kit";
+import { ageSecs, formatBytes, relTime } from "../format";
 import type { DrainResult, EnrollResponse, Host } from "../api/types";
+
+const COLS = "1.3fr 110px 130px 1fr 1.3fr 70px 1fr 110px 40px";
+
+// The control plane marks a host NotReady after this long without a heartbeat;
+// the column turns red at the same threshold so the UI never looks calmer than
+// the scheduler.
+const HEARTBEAT_STALE_SECS = 30;
 
 function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("http://127.0.0.1:9500");
   const register = useRegisterHost();
 
-  const submit = () => {
-    register.mutate(
-      { name, endpoint },
-      {
-        onSuccess: () => {
-          setName("");
-          onClose();
-        },
-      },
-    );
-  };
-
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Register host</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          <TextField
-            label="Agent gRPC endpoint"
-            value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
-            helperText="e.g. http://10.0.0.11:9500"
-          />
-          {register.isError && <Alert severity="error">{(register.error as Error).message}</Alert>}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || !endpoint || register.isPending}>
+      <DialogHead>Register host manually</DialogHead>
+      <DialogBody>
+        <Field label="Name">
+          <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Agent gRPC endpoint" help="e.g. http://10.0.0.11:9500">
+          <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
+        </Field>
+        {register.isError && <ErrorPanel summary="Register failed" detail={register.error} />}
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn
+          kind="primary"
+          disabled={!name || !endpoint || register.isPending}
+          onClick={() =>
+            register.mutate(
+              { name, endpoint },
+              {
+                onSuccess: () => {
+                  setName("");
+                  onClose();
+                },
+              },
+            )
+          }
+        >
           Register
-        </Button>
-      </DialogActions>
+        </Btn>
+      </DialogFoot>
     </Dialog>
   );
 }
@@ -90,50 +106,47 @@ function EnrollDialog({ open, onClose }: { open: boolean; onClose: () => void })
 
   return (
     <Dialog open={open} onClose={close} maxWidth="sm" fullWidth>
-      <DialogTitle>Enroll host</DialogTitle>
-      <DialogContent>
+      <DialogHead>Enroll host</DialogHead>
+      <DialogBody>
         {!result ? (
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-            <TextField
+          <>
+            <Field label="Name">
+              <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <Field
               label="Agent gRPC endpoint"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-              helperText="Control dials this; the issued cert's SAN is derived from it. e.g. http://10.0.0.11:9500"
-            />
-            {enroll.isError && <Alert severity="error">{(enroll.error as Error).message}</Alert>}
-          </Stack>
+              help="Control dials this; the issued certificate's SAN is derived from it."
+            >
+              <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
+            </Field>
+            {enroll.isError && <ErrorPanel summary="Enroll failed" detail={enroll.error} />}
+          </>
         ) : (
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <Alert severity="success">
-              Host registered. Run this on the new host to auto-provision its mTLS cert (the token is
-              one-time and expires in {Math.round(result.expires_in_secs / 60)} min):
-            </Alert>
-            <TextField
-              value={cmd}
-              multiline
-              minRows={4}
-              InputProps={{ readOnly: true, sx: { fontFamily: "monospace", fontSize: 12 } }}
-            />
-            <Alert severity="info">
-              Copy this now — the token is shown only once. The host will appear Ready once its agent
-              is up.
-            </Alert>
-          </Stack>
+          <>
+            <div className="vq-warnpanel">
+              Copy this now — the join token is shown once and expires in{" "}
+              {Math.round(result.expires_in_secs / 60)} minutes.
+            </div>
+            <div className="vq-inset">{cmd}</div>
+            <div className="vq-help">
+              Run it on the new host to auto-provision its mTLS certificate. The host turns Ready
+              once its agent is up.
+            </div>
+          </>
         )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={close}>Close</Button>
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={close}>Close</Btn>
         {!result && (
-          <Button
-            variant="contained"
+          <Btn
+            kind="primary"
             disabled={!name || !endpoint || enroll.isPending}
             onClick={() => enroll.mutate({ name, endpoint }, { onSuccess: (r) => setResult(r) })}
           >
             Enroll
-          </Button>
+          </Btn>
         )}
-      </DialogActions>
+      </DialogFoot>
     </Dialog>
   );
 }
@@ -142,46 +155,53 @@ function DrainResultDialog({ result, onClose }: { result: DrainResult | null; on
   if (!result) return null;
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Drain started</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <Typography>
-            Host cordoned. {result.migrating.length} VM(s) migrating, {result.skipped.length}{" "}
-            left in place.
-          </Typography>
-          {result.migrating.length > 0 && (
-            <div>
-              <Typography variant="subtitle2">Migrating</Typography>
-              {result.migrating.map((m) => (
-                <Typography key={m.vm_id} variant="body2" color="text.secondary">
-                  {m.vm_name} → {m.target_host_name}
-                </Typography>
-              ))}
-            </div>
-          )}
-          {result.skipped.length > 0 && (
-            <Alert severity="warning">
-              {result.skipped.map((s) => (
-                <div key={s.vm_id}>
-                  {s.vm_name}: {s.reason}
-                </div>
-              ))}
-            </Alert>
-          )}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button variant="contained" onClick={onClose}>
+      <DialogHead>Drain started</DialogHead>
+      <DialogBody>
+        <div style={{ fontSize: 12.5 }}>
+          Host cordoned. {result.migrating.length} VM
+          {result.migrating.length === 1 ? "" : "s"} migrating, {result.skipped.length} left in
+          place.
+        </div>
+        {result.migrating.length > 0 && (
+          <div>
+            <div className="vq-label">Migrating</div>
+            {result.migrating.map((m) => (
+              <div key={m.vm_id} className="vq-mono-sm" style={{ color: "var(--vq-cyan)" }}>
+                {m.vm_name} → {m.target_host_name}
+              </div>
+            ))}
+          </div>
+        )}
+        {result.skipped.length > 0 && (
+          <div className="vq-warnpanel">
+            {result.skipped.map((s) => (
+              <div key={s.vm_id}>
+                {s.vm_name}: {s.reason}
+              </div>
+            ))}
+          </div>
+        )}
+      </DialogBody>
+      <DialogFoot>
+        <Btn kind="primary" onClick={onClose}>
           Close
-        </Button>
-      </DialogActions>
+        </Btn>
+      </DialogFoot>
     </Dialog>
   );
 }
 
+function schedulingLabel(h: Host, receiving: boolean): { text: string; color: string } {
+  if (h.state === "NotReady" || h.state === "Disabled")
+    return { text: "Unschedulable", color: "var(--vq-text-4)" };
+  if (!h.schedulable) return { text: "Cordoned", color: "var(--vq-amber)" };
+  if (receiving) return { text: "Receiving", color: "var(--vq-cyan)" };
+  return { text: "Schedulable", color: "var(--vq-text-2)" };
+}
+
 export function Hosts() {
   const hosts = useHosts();
-  const [dialog, setDialog] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const [enrollOpen, setEnrollOpen] = useState(false);
   const { can } = usePermissions();
   const setSchedulable = useSetHostSchedulable();
@@ -189,132 +209,143 @@ export function Hosts() {
   const [drainResult, setDrainResult] = useState<DrainResult | null>(null);
   const manage = can("host:manage");
 
-  const columns: GridColDef<Host>[] = [
-    { field: "name", headerName: "Name", flex: 1, minWidth: 120 },
-    {
-      field: "state",
-      headerName: "Status",
-      width: 110,
-      renderCell: (p) => <StatusChip value={p.value as string} />,
-    },
-    {
-      field: "schedulable",
-      headerName: "Scheduling",
-      width: 130,
-      renderCell: (p) =>
-        p.value ? (
-          <Chip size="small" color="success" variant="outlined" label="Schedulable" />
-        ) : (
-          <Chip size="small" color="warning" variant="outlined" label="Cordoned" />
-        ),
-    },
-    {
-      field: "logical_cpus",
-      headerName: "vCPUs",
-      width: 80,
-      valueGetter: (_v, row) => row.logical_cpus ?? "—",
-    },
-    {
-      field: "memory",
-      headerName: "Memory (used / total)",
-      width: 190,
-      valueGetter: (_v, row) =>
-        row.total_memory_bytes != null && row.available_memory_bytes != null
-          ? `${formatBytes(row.total_memory_bytes - row.available_memory_bytes)} / ${formatBytes(row.total_memory_bytes)}`
-          : "—",
-    },
-    { field: "vm_count", headerName: "VMs", width: 70 },
-    {
-      field: "cloud_hypervisor_version",
-      headerName: "CH version",
-      width: 110,
-      valueGetter: (_v, row) => row.cloud_hypervisor_version ?? "—",
-    },
-    { field: "endpoint", headerName: "Agent endpoint", flex: 1, minWidth: 160 },
-    ...(manage
-      ? [
-          {
-            field: "actions",
-            type: "actions",
-            headerName: "",
-            width: 60,
-            getActions: (p) =>
-              p.row.schedulable
-                ? [
-                    <GridActionsCellItem
-                      key="cordon"
-                      icon={<BlockIcon />}
-                      label="Cordon (maintenance)"
-                      onClick={() => setSchedulable.mutate({ id: p.row.id, schedulable: false })}
-                      showInMenu
-                    />,
-                    <GridActionsCellItem
-                      key="drain"
-                      icon={<CleaningServicesIcon />}
-                      label="Drain (evacuate VMs)"
-                      onClick={() =>
-                        drain.mutate(p.row.id, { onSuccess: (r) => setDrainResult(r) })
-                      }
-                      showInMenu
-                    />,
-                  ]
-                : [
-                    <GridActionsCellItem
-                      key="uncordon"
-                      icon={<CheckCircleIcon />}
-                      label="Uncordon"
-                      onClick={() => setSchedulable.mutate({ id: p.row.id, schedulable: true })}
-                      showInMenu
-                    />,
-                    <GridActionsCellItem
-                      key="drain"
-                      icon={<CleaningServicesIcon />}
-                      label="Drain (evacuate VMs)"
-                      onClick={() =>
-                        drain.mutate(p.row.id, { onSuccess: (r) => setDrainResult(r) })
-                      }
-                      showInMenu
-                    />,
-                  ],
-          } as GridColDef<Host>,
-        ]
-      : []),
+  const list = hosts.data ?? [];
+  const ready = list.filter((h) => h.state === "Ready").length;
+  const cordoned = list.filter((h) => !h.schedulable).length;
+  const chVersions = [
+    ...new Set(list.map((h) => h.cloud_hypervisor_version).filter((v): v is string => !!v)),
   ];
 
   return (
-    <Stack spacing={2}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Typography variant="h5">Hosts</Typography>
-        {manage && (
-          <Stack direction="row" spacing={1}>
-            <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setEnrollOpen(true)}>
-              Enroll host
-            </Button>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog(true)}>
-              Register host
-            </Button>
-          </Stack>
-        )}
-      </Stack>
-      {hosts.isError && <Alert severity="error">{(hosts.error as Error).message}</Alert>}
-      {drain.isError && <Alert severity="error">{(drain.error as Error).message}</Alert>}
+    <>
+      <PageHeader
+        title="Hosts"
+        subtitle={
+          list.length
+            ? `${ready} Ready · ${cordoned} cordoned · ${
+                chVersions.length === 1
+                  ? `all agents on cloud-hypervisor ${chVersions[0]}`
+                  : `${chVersions.length} cloud-hypervisor versions in the fleet`
+              }`
+            : "No hosts registered yet."
+        }
+        actions={
+          manage && (
+            <>
+              <Btn onClick={() => setRegisterOpen(true)}>Register manually</Btn>
+              <Btn kind="primary" onClick={() => setEnrollOpen(true)}>
+                Enroll host
+              </Btn>
+            </>
+          )
+        }
+      />
+
+      <QueryError error={hosts.error} what="hosts" />
+      {drain.isError && <ErrorPanel summary="Drain failed" detail={drain.error} />}
       {setSchedulable.isError && (
-        <Alert severity="error">{(setSchedulable.error as Error).message}</Alert>
+        <ErrorPanel summary="Could not change scheduling" detail={setSchedulable.error} />
       )}
-      <div style={{ height: 520, width: "100%" }}>
-        <DataGrid
-          rows={hosts.data ?? []}
-          columns={columns}
-          loading={hosts.isLoading}
-          density="compact"
-          disableRowSelectionOnClick
-          initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
-          pageSizeOptions={[10, 25, 50]}
-        />
-      </div>
-      <RegisterDialog open={dialog} onClose={() => setDialog(false)} />
+
+      <Table>
+        <THead cols={COLS}>
+          <div>Host</div>
+          <div>State</div>
+          <div>Scheduling</div>
+          <div>CPU model</div>
+          <div>Memory used</div>
+          <div>VMs</div>
+          <div>Agent endpoint</div>
+          <div>Heartbeat</div>
+          <div />
+        </THead>
+
+        {hosts.isLoading && <SkeletonRows cols={COLS} />}
+
+        {!hosts.isLoading && list.length === 0 && (
+          <div style={{ padding: 18 }}>
+            <EmptyState
+              headline="No hosts yet"
+              hint="Enroll a host to give the control plane somewhere to run VMs."
+            />
+          </div>
+        )}
+
+        {list.map((h) => {
+          const total = h.total_memory_bytes;
+          const avail = h.available_memory_bytes;
+          const used = total != null && avail != null ? total - avail : null;
+          const pct = used != null && total ? (used / total) * 100 : 0;
+          const sched = schedulingLabel(h, false);
+          const age = ageSecs(h.last_heartbeat);
+          const stale = age == null || age > HEARTBEAT_STALE_SECS;
+
+          const menu = manage
+            ? [
+                h.schedulable
+                  ? { label: "Cordon (maintenance)", onClick: () => setSchedulable.mutate({ id: h.id, schedulable: false }) }
+                  : { label: "Uncordon", onClick: () => setSchedulable.mutate({ id: h.id, schedulable: true }) },
+                {
+                  label: "Drain (evacuate VMs)",
+                  onClick: () => drain.mutate(h.id, { onSuccess: (r) => setDrainResult(r) }),
+                },
+              ]
+            : [];
+
+          return (
+            <TRow key={h.id} cols={COLS} tint={!h.schedulable ? "amber" : undefined}>
+              <div className="vq-cell">
+                <Link className="vq-name" to={`/hosts/${h.id}`}>
+                  {h.name}
+                </Link>
+              </div>
+              <div>
+                <StateChip value={h.state} dense />
+              </div>
+              <div className="vq-cell vq-mono-sm" style={{ color: sched.color }}>
+                {sched.text}
+              </div>
+              <div className="vq-cell vq-mono-sm">
+                {h.cpu_model ? (
+                  <>
+                    {h.cpu_model}
+                    {h.logical_cpus != null && ` · ${h.logical_cpus}c`}
+                  </>
+                ) : (
+                  <Dash />
+                )}
+              </div>
+              <div>
+                {used != null && total != null ? (
+                  <div className="vq-barcell">
+                    <ProgressCell
+                      pct={pct}
+                      width={52}
+                      tone={h.schedulable ? "blue" : "amber"}
+                      label={`${formatBytes(used)} / ${formatBytes(total)}`}
+                    />
+                  </div>
+                ) : (
+                  <Dash />
+                )}
+              </div>
+              <div className="vq-mono-sm">{h.vm_count}</div>
+              <div className="vq-cell vq-mono-sm">{h.endpoint}</div>
+              <div
+                className="vq-cell vq-mono-sm"
+                style={stale ? { color: "var(--vq-red)" } : undefined}
+              >
+                {relTime(h.last_heartbeat) ?? "never"}
+              </div>
+              <RowMenu items={menu} />
+            </TRow>
+          );
+        })}
+      </Table>
+
+      <RegisterDialog open={registerOpen} onClose={() => setRegisterOpen(false)} />
       <EnrollDialog open={enrollOpen} onClose={() => setEnrollOpen(false)} />
       <DrainResultDialog result={drainResult} onClose={() => setDrainResult(null)} />
-    </Stack>
+    </>
   );
 }

@@ -1,34 +1,43 @@
+// Templates. The list; creating a VM from one is its own screen
+// (/templates/:id/launch) because the override semantics need the room.
+
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import Alert from "@mui/material/Alert";
-import Button from "@mui/material/Button";
+import { Link } from "react-router-dom";
 import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
-import DeleteIcon from "@mui/icons-material/Delete";
-import EditIcon from "@mui/icons-material/Edit";
-import RocketLaunchIcon from "@mui/icons-material/RocketLaunch";
-import { DataGrid, GridActionsCellItem, type GridColDef } from "@mui/x-data-grid";
 import {
   useCreateTemplate,
-  useCreateVmFromTemplate,
   useDeleteTemplate,
   useImages,
   useNetworks,
   useTemplates,
   useUpdateTemplate,
 } from "../api/hooks";
-import { formatBytes, formatDate, formatMib } from "../format";
-import type { CreateTemplateRequest, MachineType, Template } from "../api/types";
 import { usePermissions } from "../auth/permissions";
+import {
+  Btn,
+  Dash,
+  DialogBody,
+  DialogFoot,
+  DialogHead,
+  EmptyState,
+  ErrorPanel,
+  Field,
+  Grid,
+  Input,
+  PageHeader,
+  QueryError,
+  RowMenu,
+  Select,
+  SkeletonRows,
+  Table,
+  THead,
+  TRow,
+} from "../ui/kit";
+import { formatBytes, formatMib } from "../format";
+import type { CreateTemplateRequest, MachineType, Template } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
+const COLS = "1.4fr 1.2fr 90px 100px 100px 1fr 110px";
 
 function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => void }) {
   const images = useImages();
@@ -63,10 +72,7 @@ function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => v
       // microVMs can't carry a cloud-init seed.
       cloud_init:
         !isMicro && (password || sshKey)
-          ? {
-              password: password || null,
-              ssh_authorized_keys: sshKey ? [sshKey] : [],
-            }
+          ? { password: password || null, ssh_authorized_keys: sshKey ? [sshKey] : [] }
           : null,
     };
     if (edit) update.mutate({ id: edit.id, body }, { onSuccess: onClose });
@@ -74,125 +80,92 @@ function EditDialog({ edit, onClose }: { edit: Template | null; onClose: () => v
   };
 
   const busy = create.isPending || update.isPending;
-  const err = (create.error || update.error) as Error | null;
+  const err = create.error || update.error;
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{edit ? "Edit template" : "Create template"}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          <TextField select label="Image" value={imageId} onChange={(e) => setImageId(e.target.value)}>
+      <DialogHead>{edit ? "Edit template" : "Create template"}</DialogHead>
+      <DialogBody>
+        <Field label="Name">
+          <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Image">
+          <Select value={imageId} onChange={(e) => setImageId(e.target.value)}>
+            <option value="">— pick an image —</option>
             {(images.data ?? []).map((img) => (
-              <MenuItem key={img.id} value={img.id}>
+              <option key={img.id} value={img.id}>
                 {img.name}
-              </MenuItem>
+              </option>
             ))}
-          </TextField>
-          <Stack direction="row" spacing={2}>
-            <TextField label="vCPUs" value={vcpus} onChange={(e) => setVcpus(e.target.value)} fullWidth />
-            <TextField label="Memory (MiB)" value={memMib} onChange={(e) => setMemMib(e.target.value)} fullWidth />
-          </Stack>
-          <Stack direction="row" spacing={2}>
-            <TextField label="Disk size (GiB)" value={sizeGib} onChange={(e) => setSizeGib(e.target.value)} fullWidth />
-            <TextField select label="Disk format" value={format} onChange={(e) => setFormat(e.target.value as "qcow2" | "raw")} fullWidth>
-              <MenuItem value="qcow2">qcow2 (thin overlay)</MenuItem>
-              <MenuItem value="raw">raw (full copy)</MenuItem>
-            </TextField>
-          </Stack>
-          <TextField select label="Network (optional)" value={networkId} onChange={(e) => setNetworkId(e.target.value)}>
-            <MenuItem value="">— none —</MenuItem>
+          </Select>
+        </Field>
+        <Grid cols="1fr 1fr">
+          <Field label="vCPU">
+            <Input value={vcpus} onChange={(e) => setVcpus(e.target.value)} />
+          </Field>
+          <Field label="Memory (MiB)">
+            <Input value={memMib} onChange={(e) => setMemMib(e.target.value)} />
+          </Field>
+        </Grid>
+        <Grid cols="1fr 1fr">
+          <Field label="Disk size (GiB)">
+            <Input value={sizeGib} onChange={(e) => setSizeGib(e.target.value)} />
+          </Field>
+          <Field label="Disk format">
+            <Select value={format} onChange={(e) => setFormat(e.target.value as "qcow2" | "raw")}>
+              <option value="qcow2">qcow2 (thin overlay)</option>
+              <option value="raw">raw (full copy)</option>
+            </Select>
+          </Field>
+        </Grid>
+        <Field label="Network">
+          <Select value={networkId} onChange={(e) => setNetworkId(e.target.value)}>
+            <option value="">— none —</option>
             {(networks.data ?? []).map((n) => (
-              <MenuItem key={n.id} value={n.id}>
+              <option key={n.id} value={n.id}>
                 {n.name}
-              </MenuItem>
+              </option>
             ))}
-          </TextField>
-          <TextField
-            select
-            label="Machine type"
+          </Select>
+        </Field>
+        <Field
+          label="Machine type"
+          help={
+            isMicro
+              ? "Minimal profile: requires a direct-kernel image and carries no cloud-init seed."
+              : "Full device model."
+          }
+        >
+          <Select
             value={machineType}
             onChange={(e) => setMachineType(e.target.value as MachineType)}
-            helperText={
-              isMicro
-                ? "Minimal profile: requires a direct-kernel image and no cloud-init."
-                : "Full device model."
-            }
           >
-            <MenuItem value="standard">Standard</MenuItem>
-            <MenuItem value="microvm">microVM</MenuItem>
-          </TextField>
-          {!isMicro && (
-            <>
-              <TextField label="Default password (optional)" value={password} onChange={(e) => setPassword(e.target.value)} />
-              <TextField label="Default SSH public key (optional)" value={sshKey} onChange={(e) => setSshKey(e.target.value)} />
-            </>
-          )}
-          {err && <Alert severity="error">{err.message}</Alert>}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || !imageId || busy}>
+            <option value="standard">standard</option>
+            <option value="microvm">microvm</option>
+          </Select>
+        </Field>
+        {!isMicro && (
+          <Grid cols="1fr 1fr">
+            <Field label="Default password">
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+            <Field label="Default SSH key">
+              <Input value={sshKey} onChange={(e) => setSshKey(e.target.value)} />
+            </Field>
+          </Grid>
+        )}
+        {err && <ErrorPanel summary="Could not save the template" detail={err} />}
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" onClick={submit} disabled={!name || !imageId || busy}>
           {edit ? "Save" : "Create"}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-function LaunchDialog({ template, onClose }: { template: Template | null; onClose: () => void }) {
-  const launch = useCreateVmFromTemplate();
-  const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [cloudInit, setCloudInit] = useState("");
-
-  if (!template) return null;
-  const submit = () =>
-    launch.mutate(
-      {
-        name,
-        template_id: template.id,
-        overrides: cloudInit.trim() ? { cloud_init: { user_data: cloudInit } } : undefined,
-      },
-      {
-        onSuccess: () => {
-          onClose();
-          navigate("/vms");
-        },
-      },
-    );
-
-  return (
-    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Launch VM from “{template.name}”</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="VM name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          <Typography variant="caption" color="text.secondary">
-            {template.boot_vcpus} vCPU · {formatMib(template.memory_mib)} ·{" "}
-            {template.disk_size_bytes ? formatBytes(template.disk_size_bytes) : "image default"} ·{" "}
-            {template.disk_format}
-          </Typography>
-          <TextField
-            label="Cloud-init user-data (optional)"
-            value={cloudInit}
-            onChange={(e) => setCloudInit(e.target.value)}
-            multiline
-            minRows={4}
-            placeholder={"#cloud-config\nhostname: my-vm\npackages:\n  - nginx"}
-            helperText="Raw NoCloud user-data, used verbatim (overrides the template's cloud-init)"
-            slotProps={{ input: { sx: { fontFamily: "monospace", fontSize: 13 } } }}
-          />
-          {launch.isError && <Alert severity="error">{(launch.error as Error).message}</Alert>}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={submit} disabled={!name || launch.isPending}>
-          Launch
-        </Button>
-      </DialogActions>
+        </Btn>
+      </DialogFoot>
     </Dialog>
   );
 }
@@ -200,67 +173,91 @@ function LaunchDialog({ template, onClose }: { template: Template | null; onClos
 export function Templates() {
   const templates = useTemplates();
   const images = useImages();
+  const networks = useNetworks();
   const del = useDeleteTemplate();
   const { can } = usePermissions();
   const [dialog, setDialog] = useState<{ edit: Template | null } | null>(null);
-  const [launch, setLaunch] = useState<Template | null>(null);
 
+  const list = templates.data ?? [];
   const imageName = (id: string) => images.data?.find((i) => i.id === id)?.name ?? id.slice(0, 8);
-
-  const columns: GridColDef<Template>[] = [
-    { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
-    { field: "image_id", headerName: "Image", width: 160, valueGetter: (v) => imageName(v as string) },
-    { field: "boot_vcpus", headerName: "vCPU", width: 80 },
-    { field: "memory_mib", headerName: "Memory", width: 110, valueGetter: (v) => formatMib(v as number) },
-    {
-      field: "disk_size_bytes",
-      headerName: "Disk",
-      width: 110,
-      valueGetter: (v) => (v == null ? "image default" : formatBytes(v as number)),
-    },
-    { field: "disk_format", headerName: "Format", width: 90 },
-    { field: "created_at", headerName: "Created", width: 180, valueGetter: (v) => formatDate(v as string) },
-    {
-      field: "actions",
-      type: "actions",
-      headerName: "",
-      width: 130,
-      getActions: (p) => [
-        <GridActionsCellItem
-          key="launch"
-          icon={<RocketLaunchIcon />}
-          label="Launch VM"
-          onClick={() => setLaunch(p.row)}
-        />,
-        <GridActionsCellItem key="edit" icon={<EditIcon />} label="Edit" onClick={() => setDialog({ edit: p.row })} />,
-        <GridActionsCellItem key="del" icon={<DeleteIcon />} label="Delete" onClick={() => del.mutate(p.row.id)} />,
-      ],
-    },
-  ];
+  const networkName = (id: string | null) =>
+    id ? (networks.data?.find((n) => n.id === id)?.name ?? id.slice(0, 8)) : null;
 
   return (
-    <Stack spacing={2}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Typography variant="h5">Templates</Typography>
-        {can("template:create") && (
-          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ edit: null })}>
-            Create template
-          </Button>
+    <>
+      <PageHeader
+        title="Templates"
+        subtitle={`${list.length} template${
+          list.length === 1 ? "" : "s"
+        } · a template pins an image, a size and a network so a VM is one form`}
+        actions={
+          can("template:create") && (
+            <Btn kind="primary" onClick={() => setDialog({ edit: null })}>
+              Create template
+            </Btn>
+          )
+        }
+      />
+
+      <QueryError error={templates.error} what="templates" />
+      {del.isError && <ErrorPanel summary="Delete failed" detail={del.error} />}
+
+      <Table>
+        <THead cols={COLS}>
+          <div>Template</div>
+          <div>Image</div>
+          <div>vCPU</div>
+          <div>Memory</div>
+          <div>Disk</div>
+          <div>Network</div>
+          <div>Machine</div>
+        </THead>
+
+        {templates.isLoading && <SkeletonRows cols={COLS} />}
+
+        {!templates.isLoading && list.length === 0 && (
+          <div style={{ padding: 18 }}>
+            <EmptyState
+              headline="No templates yet"
+              hint="Create one from a ready image to make VM creation a single form."
+            />
+          </div>
         )}
-      </Stack>
-      {templates.isError && <Alert severity="error">{(templates.error as Error).message}</Alert>}
-      {del.isError && <Alert severity="error">{(del.error as Error).message}</Alert>}
-      <div style={{ height: 480, width: "100%" }}>
-        <DataGrid
-          rows={templates.data ?? []}
-          columns={columns}
-          loading={templates.isLoading}
-          density="compact"
-          disableRowSelectionOnClick
-        />
-      </div>
+
+        {list.map((t) => (
+          <TRow key={t.id} cols={COLS}>
+            <div className="vq-cell" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Link className="vq-name" to={`/templates/${t.id}/launch`}>
+                {t.name}
+              </Link>
+              <RowMenu
+                items={
+                  can("template:create")
+                    ? [
+                        { label: "Edit", onClick: () => setDialog({ edit: t }) },
+                        { label: "Delete", danger: true, onClick: () => del.mutate(t.id) },
+                      ]
+                    : []
+                }
+              />
+            </div>
+            <div className="vq-cell vq-mono-sm">{imageName(t.image_id)}</div>
+            <div className="vq-mono-sm">
+              {t.boot_vcpus} / {t.max_vcpus}
+            </div>
+            <div className="vq-mono-sm">{formatMib(t.memory_mib)}</div>
+            <div className="vq-mono-sm">
+              {t.disk_size_bytes ? formatBytes(t.disk_size_bytes) : "image default"}
+            </div>
+            <div className="vq-cell vq-mono-sm">{networkName(t.network_id) ?? <Dash />}</div>
+            <div className={`vq-mono-sm ${t.machine_type === "microvm" ? "t-cyan" : "t-3"}`}>
+              {t.machine_type}
+            </div>
+          </TRow>
+        ))}
+      </Table>
+
       {dialog && <EditDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
-      <LaunchDialog template={launch} onClose={() => setLaunch(null)} />
-    </Stack>
+    </>
   );
 }

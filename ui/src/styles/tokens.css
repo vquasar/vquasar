@@ -1,0 +1,116 @@
+/* vQuasar design tokens
+ * Single source of truth for both themes. Set data-theme="light" on <html>
+ * to switch. No component may hardcode a hex value.
+ */
+:root {
+  /* surfaces */
+  --vq-bg: #0B0F16;
+  --vq-surface: #161B22;
+  --vq-surface-2: #12171F;
+  --vq-surface-3: #1A212B;
+  --vq-inset: #0D1219;
+  --vq-btn: #1D2530;
+  --vq-btn-hover: #242E3B;
+
+  /* lines */
+  --vq-line: #222A35;
+  --vq-line-2: #2C3644;
+  --vq-line-3: #3A4655;
+
+  /* text */
+  --vq-text: #F4F7FB;
+  --vq-text-2: #A6B0BF;
+  --vq-text-3: #6E7887;
+  --vq-text-4: #4E5867;
+
+  /* accents */
+  --vq-blue: #4F9CF9;
+  --vq-blue-2: #7CB6FB;
+  --vq-blue-soft: rgba(79, 156, 249, 0.15);
+  --vq-blue-line: rgba(79, 156, 249, 0.38);
+
+  --vq-cyan: #58D6F5;
+  --vq-cyan-soft: rgba(88, 214, 245, 0.14);
+  --vq-cyan-line: rgba(88, 214, 245, 0.38);
+
+  --vq-amber: #F5A94A;
+  --vq-amber-soft: rgba(245, 169, 74, 0.14);
+  --vq-amber-line: rgba(245, 169, 74, 0.36);
+
+  --vq-red: #F2695F;
+  --vq-red-soft: rgba(242, 105, 95, 0.14);
+  --vq-red-line: rgba(242, 105, 95, 0.36);
+
+  --vq-green: #4FD08A;
+  --vq-green-soft: rgba(79, 208, 138, 0.13);
+  --vq-green-line: rgba(79, 208, 138, 0.34);
+
+  --vq-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* type */
+  --vq-font-ui: "Inter Tight", Inter, Helvetica, Arial, sans-serif;
+  --vq-font-body: Inter, Helvetica, Arial, sans-serif;
+  --vq-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* radius */
+  --vq-radius-card: 9px;
+  --vq-radius-control: 6px;
+  --vq-radius-chip: 4px;
+  --vq-radius-tile: 7px;
+
+  /* layout */
+  --vq-sidebar-w: 224px;
+  --vq-topbar-h: 48px;
+  --vq-control-h: 30px;
+  --vq-input-h: 32px;
+  --vq-page-pad: 26px;
+  --vq-gap-block: 16px;
+  --vq-gap-card: 12px;
+}
+
+[data-theme="light"] {
+  --vq-bg: #F1F4F9;
+  --vq-surface: #FFFFFF;
+  --vq-surface-2: #F7F9FC;
+  --vq-surface-3: #EEF2F8;
+  --vq-inset: #F4F7FB;
+  --vq-btn: #FFFFFF;
+  --vq-btn-hover: #F1F4F9;
+
+  --vq-line: #DFE5EE;
+  --vq-line-2: #CBD4E1;
+  --vq-line-3: #AEBACA;
+
+  --vq-text: #0B0F16;
+  --vq-text-2: #4A5666;
+  --vq-text-3: #75828F;
+  --vq-text-4: #98A3B2;
+
+  --vq-blue: #1E6FD9;
+  --vq-blue-2: #1558B4;
+  --vq-blue-soft: rgba(30, 111, 217, 0.09);
+  --vq-blue-line: rgba(30, 111, 217, 0.28);
+
+  --vq-cyan: #0A7E9E;
+  --vq-cyan-soft: rgba(10, 126, 158, 0.09);
+  --vq-cyan-line: rgba(10, 126, 158, 0.28);
+
+  --vq-amber: #A66200;
+  --vq-amber-soft: rgba(166, 98, 0, 0.09);
+  --vq-amber-line: rgba(166, 98, 0, 0.26);
+
+  --vq-red: #C0362C;
+  --vq-red-soft: rgba(192, 54, 44, 0.08);
+  --vq-red-line: rgba(192, 54, 44, 0.24);
+
+  --vq-green: #0E7A50;
+  --vq-green-soft: rgba(14, 122, 80, 0.08);
+  --vq-green-line: rgba(14, 122, 80, 0.24);
+
+  --vq-shadow: 0 10px 28px rgba(15, 26, 44, 0.10);
+}
+
+@keyframes vq-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
