@@ -60,6 +60,26 @@ pub struct NetworkPolicy {
     /// Uplink names a physical network may attach to.
     #[serde(default = "default_physical_networks")]
     pub physical_networks: Vec<String>,
+    /// Whether the VXLAN underlay is encrypted (design §18, M18b).
+    ///
+    /// `none` (default) — cleartext tunnels. `reserve` — still cleartext, but
+    /// the guest MTU already leaves room for ESP, which is the step that makes
+    /// enabling encryption safe on a cluster with running VMs. `ipsec` —
+    /// tunnels protected between host pairs.
+    ///
+    /// Go through `reserve` first: MTU is rendered into cloud-init at seed
+    /// time, so a running VM never picks up a new value, and enabling IPsec
+    /// before the guests have the smaller MTU blackholes every full-size packet
+    /// on the overlay.
+    #[serde(default)]
+    pub overlay_encryption: crate::overlay::OverlayEncryption,
+    /// MTU of the host link the tunnels traverse. The guest MTU is derived from
+    /// it; set it for a jumbo-frame underlay.
+    #[serde(default = "default_underlay_mtu")]
+    pub underlay_mtu: u32,
+    /// Whether ESP is wrapped in UDP for NAT traversal (a further 8 bytes).
+    #[serde(default)]
+    pub overlay_nat_traversal: bool,
     /// Inclusive VXLAN VNI range the allocator draws from.
     #[serde(default = "default_vni_start")]
     pub vni_start: u32,
@@ -73,6 +93,9 @@ pub struct NetworkPolicy {
 
 fn default_policy_mode() -> String {
     "legacy".to_string()
+}
+fn default_underlay_mtu() -> u32 {
+    1500
 }
 fn default_physical_networks() -> Vec<String> {
     vec!["default".to_string()]
@@ -91,6 +114,9 @@ impl Default for NetworkPolicy {
     fn default() -> Self {
         Self {
             policy_mode: default_policy_mode(),
+            overlay_encryption: crate::overlay::OverlayEncryption::default(),
+            underlay_mtu: default_underlay_mtu(),
+            overlay_nat_traversal: false,
             provider_vlans: String::new(),
             physical_networks: default_physical_networks(),
             vni_start: default_vni_start(),
@@ -124,6 +150,16 @@ impl NetworkPolicy {
         } else {
             self.provider_vlans.clone()
         }
+    }
+
+    /// The MTU an overlay guest should use, given the underlay and whether ESP
+    /// headroom is reserved (design §18).
+    pub fn overlay_guest_mtu(&self) -> u32 {
+        crate::overlay::guest_mtu(
+            self.underlay_mtu,
+            self.overlay_encryption,
+            self.overlay_nat_traversal,
+        )
     }
 
     /// Whether a NIC's policy includes its network's default group.
