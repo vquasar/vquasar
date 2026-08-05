@@ -371,122 +371,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "ch-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "ch-client",
- "ch-common",
- "ch-model",
- "ch-proto",
- "clap",
- "figment",
- "prost 0.13.5",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tokio-stream",
- "tonic 0.12.3",
- "tracing",
-]
-
-[[package]]
-name = "ch-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "ch-common",
- "ch-model",
- "clap",
- "http-body-util",
- "hyper",
- "hyper-util",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "ch-common"
-version = "0.1.0"
-dependencies = [
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "serde",
- "thiserror 2.0.19",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "ch-control"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "axum",
- "axum-server",
- "base64",
- "ch-common",
- "ch-model",
- "ch-proto",
- "chrono",
- "clap",
- "figment",
- "futures-util",
- "ipnet",
- "jsonwebtoken",
- "metrics",
- "metrics-exporter-prometheus",
- "reqwest 0.12.28",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror 2.0.19",
- "tokio",
- "tokio-stream",
- "tonic 0.12.3",
- "tower-http",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "ch-model"
-version = "0.1.0"
-dependencies = [
- "ch-common",
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "uuid",
-]
-
-[[package]]
-name = "ch-proto"
-version = "0.1.0"
-dependencies = [
- "prost 0.13.5",
- "protoc-bin-vendored",
- "tonic 0.12.3",
- "tonic-build",
-]
-
-[[package]]
 name = "chacha20"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3857,6 +3741,122 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vquasar-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "figment",
+ "prost 0.13.5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tracing",
+ "vquasar-client",
+ "vquasar-common",
+ "vquasar-model",
+ "vquasar-proto",
+]
+
+[[package]]
+name = "vquasar-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vquasar-common",
+ "vquasar-model",
+]
+
+[[package]]
+name = "vquasar-common"
+version = "0.1.0"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "serde",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "vquasar-control"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "axum",
+ "axum-server",
+ "base64",
+ "chrono",
+ "clap",
+ "figment",
+ "futures-util",
+ "ipnet",
+ "jsonwebtoken",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "reqwest 0.12.28",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tower-http",
+ "tracing",
+ "uuid",
+ "vquasar-common",
+ "vquasar-model",
+ "vquasar-proto",
+]
+
+[[package]]
+name = "vquasar-model"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "uuid",
+ "vquasar-common",
+]
+
+[[package]]
+name = "vquasar-proto"
+version = "0.1.0"
+dependencies = [
+ "prost 0.13.5",
+ "protoc-bin-vendored",
+ "tonic 0.12.3",
+ "tonic-build",
+]
 
 [[package]]
 name = "want"

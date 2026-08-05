@@ -1,4 +1,4 @@
-//! Cross-cutting concerns shared by every `ch-orchestrator` crate.
+//! Cross-cutting concerns shared by every `vquasar` crate.
 //!
 //! Kept deliberately small: a stable domain-error taxonomy (see the design
 //! document, section 37) and telemetry initialisation. Business logic lives in

@@ -1,4 +1,4 @@
-# Windows guests on ch-orchestrator
+# Windows guests on vquasar
 
 This platform runs Windows guests on Cloud Hypervisor. Two properties of Cloud
 Hypervisor shape the whole workflow and are worth understanding up front:
@@ -17,7 +17,7 @@ Cloud Hypervisor.** The supported paths are below.
 ## What the platform provides
 
 - **UEFI firmware boot.** Select *Firmware* boot with the EDK II firmware at
-  `/var/lib/ch-orchestrator/shared/firmware/CLOUDHV.fd`. This reaches the UEFI
+  `/var/lib/vquasar/shared/firmware/CLOUDHV.fd`. This reaches the UEFI
   environment (verified: EDK II UEFI v2.70 shell), which is what the Windows
   boot manager needs.
 - **Read-only ISO/CD attachment.** Any `*.iso` placed under the image store's

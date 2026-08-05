@@ -10,7 +10,7 @@
 
 use std::fs;
 
-use ch_model::{HostState, HostStatus};
+use vquasar_model::{HostState, HostStatus};
 
 /// Collect the current host inventory into a [`HostStatus`].
 ///

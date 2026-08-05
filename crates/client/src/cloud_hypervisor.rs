@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ch_model::VirtualMachineSpec;
+use vquasar_model::VirtualMachineSpec;
 use tracing::{debug, info};
 
 use crate::config::{self, TranslateOptions, VmInfo, VmState};
@@ -135,7 +135,7 @@ impl CloudHypervisor {
     }
 
     /// Hot-add a disk to a running VM (design M10).
-    pub async fn add_disk(&self, disk: &ch_model::DiskSpec) -> Result<()> {
+    pub async fn add_disk(&self, disk: &vquasar_model::DiskSpec) -> Result<()> {
         self.api
             .put_json("/vm.add-disk", &config::disk_config(disk))
             .await

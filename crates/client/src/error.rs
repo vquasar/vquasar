@@ -1,6 +1,6 @@
 //! Errors produced by the Cloud Hypervisor client.
 
-use ch_common::DomainError;
+use vquasar_common::DomainError;
 use thiserror::Error;
 
 /// Result alias for this crate.

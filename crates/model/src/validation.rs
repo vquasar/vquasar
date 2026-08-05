@@ -3,7 +3,7 @@
 //! Validation lives in the domain model (not in the API or agent layers) so the
 //! same rules apply no matter how a spec enters the system.
 
-use ch_common::DomainError;
+use vquasar_common::DomainError;
 use thiserror::Error;
 
 use crate::vm::{BootSpec, VirtualMachineSpec};
@@ -203,6 +203,6 @@ mod tests {
     #[test]
     fn validation_error_maps_to_invalid_configuration() {
         let err: DomainError = ValidationError::ZeroBootVcpus.into();
-        assert_eq!(err.code(), ch_common::ErrorCode::InvalidConfiguration);
+        assert_eq!(err.code(), vquasar_common::ErrorCode::InvalidConfiguration);
     }
 }

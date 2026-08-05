@@ -170,7 +170,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            shared_volumes_dir: "/var/lib/ch-orchestrator/shared/volumes".to_string(),
+            shared_volumes_dir: "/var/lib/vquasar/shared/volumes".to_string(),
         }
     }
 }
@@ -215,7 +215,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: "postgres://localhost/ch_orchestrator".to_string(),
+            url: "postgres://localhost/vquasar".to_string(),
         }
     }
 }
@@ -263,7 +263,7 @@ impl Default for LoggingConfig {
 
 impl ControlConfig {
     /// Load configuration from an optional TOML file, then apply environment
-    /// overrides prefixed with `CH_CONTROL_` (e.g. `CH_CONTROL_SERVER__LISTEN`).
+    /// overrides prefixed with `VQUASAR_CONTROL_` (e.g. `VQUASAR_CONTROL_SERVER__LISTEN`).
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         // Seed with the full default config so partial file/env overrides (a
         // single leaf key) merge cleanly instead of failing on missing fields.
@@ -272,7 +272,7 @@ impl ControlConfig {
             figment = figment.merge(Toml::file(path));
         }
         let config = figment
-            .merge(Env::prefixed("CH_CONTROL_").split("__"))
+            .merge(Env::prefixed("VQUASAR_CONTROL_").split("__"))
             .extract()?;
         Ok(config)
     }
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn env_overrides_apply() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("CH_CONTROL_SERVER__LISTEN", "127.0.0.1:9000");
+            jail.set_env("VQUASAR_CONTROL_SERVER__LISTEN", "127.0.0.1:9000");
             let cfg = ControlConfig::load(None).unwrap();
             assert_eq!(cfg.server.listen, "127.0.0.1:9000");
             Ok(())

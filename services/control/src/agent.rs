@@ -6,8 +6,8 @@
 
 use std::sync::OnceLock;
 
-use ch_proto::agent::host_agent_client::HostAgentClient;
-use ch_proto::agent::{
+use vquasar_proto::agent::host_agent_client::HostAgentClient;
+use vquasar_proto::agent::{
     DeleteVmRequest, DiscardVmRequest, EnsureVmRequest, FinalizeReceiveRequest, GetHostInfoRequest,
     GetHostInfoResponse, GetVmMetricsRequest, ListVmsRequest, NetworkBinding, PrepareReceiveRequest,
     SendMigrationRequest, VmMetricsResponse, VmObservedState,

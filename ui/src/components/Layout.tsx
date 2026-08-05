@@ -96,7 +96,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <Toolbar variant="dense">
           <ComputerIcon sx={{ mr: 1 }} color="primary" />
           <Typography variant="h6" noWrap>
-            ch-orchestrator
+            vquasar
           </Typography>
           <Box sx={{ flexGrow: 1 }} />
           <UserMenu />

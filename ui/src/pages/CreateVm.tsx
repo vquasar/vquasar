@@ -20,7 +20,7 @@ import { formatBytes } from "../format";
 import type { BootSpec, CreateVmRequest, DiskSpec, MachineType } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
-const WINDOWS_FIRMWARE = "/var/lib/ch-orchestrator/shared/firmware/CLOUDHV.fd";
+const WINDOWS_FIRMWARE = "/var/lib/vquasar/shared/firmware/CLOUDHV.fd";
 
 type BootKind = "direct_kernel" | "firmware";
 
@@ -43,10 +43,10 @@ export function CreateVm() {
   const [memoryMib, setMemoryMib] = useState(2048);
   const [bootKind, setBootKind] = useState<BootKind>("direct_kernel");
   const isMicro = machineType === "microvm";
-  const [kernel, setKernel] = useState("/var/lib/ch-orchestrator/images/vmlinuz");
-  const [initramfs, setInitramfs] = useState("/var/lib/ch-orchestrator/images/initrd.img");
+  const [kernel, setKernel] = useState("/var/lib/vquasar/images/vmlinuz");
+  const [initramfs, setInitramfs] = useState("/var/lib/vquasar/images/initrd.img");
   const [cmdline, setCmdline] = useState("root=/dev/vda1 rw console=ttyS0");
-  const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
+  const [firmware, setFirmware] = useState("/var/lib/vquasar/firmware/CLOUDHV.fd");
   const [disks, setDisks] = useState<DiskRow[]>([{ path: "", readonly: false }]);
   const [sysDiskGib, setSysDiskGib] = useState("");
   const [isoSel, setIsoSel] = useState<string[]>([]);

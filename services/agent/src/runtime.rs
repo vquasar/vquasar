@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ch_model::{VirtualMachineSpec, VmId};
+use vquasar_model::{VirtualMachineSpec, VmId};
 use serde::{Deserialize, Serialize};
 
 /// Filesystem layout for VM runtime state, rooted at `<runtime_dir>/vms`.
@@ -18,7 +18,7 @@ pub struct RuntimeLayout {
 }
 
 impl RuntimeLayout {
-    /// Build a layout under `runtime_dir` (e.g. `/run/ch-orchestrator`).
+    /// Build a layout under `runtime_dir` (e.g. `/run/vquasar`).
     pub fn new(runtime_dir: impl AsRef<Path>) -> Self {
         Self {
             root: runtime_dir.as_ref().join("vms"),
@@ -128,7 +128,7 @@ pub struct VmRecord {
 
 #[cfg(test)]
 mod tests {
-    use ch_model::{
+    use vquasar_model::{
         BootSpec, CpuSpec, DesiredPowerState, MemorySpec, PlacementSpec, VirtualMachineSpec,
     };
 
@@ -154,7 +154,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
-            machine_type: ch_model::MachineType::Standard,
+            machine_type: vquasar_model::MachineType::Standard,
         }
     }
 
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn paths_are_derived_from_uuid() {
-        let layout = RuntimeLayout::new("/run/ch-orchestrator");
+        let layout = RuntimeLayout::new("/run/vquasar");
         let id = VmId::new();
         assert!(layout.api_socket(id).ends_with(format!("{id}/api.sock")));
     }

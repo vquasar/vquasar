@@ -89,7 +89,7 @@ fn default_migration_port_max() -> u16 {
     9700
 }
 fn default_migration_socket_dir() -> PathBuf {
-    PathBuf::from("/var/lib/ch-orchestrator/migrations")
+    PathBuf::from("/var/lib/vquasar/migrations")
 }
 
 impl Default for MigrationSection {
@@ -166,7 +166,7 @@ impl Default for HypervisorSection {
     fn default() -> Self {
         Self {
             binary: PathBuf::from("/usr/bin/cloud-hypervisor"),
-            runtime_dir: PathBuf::from("/run/ch-orchestrator"),
+            runtime_dir: PathBuf::from("/run/vquasar"),
             serial_mode: default_serial_mode(),
             seccomp: default_seccomp(),
         }
@@ -203,14 +203,14 @@ pub struct StorageSection {
 }
 
 fn default_shared_dir() -> PathBuf {
-    PathBuf::from("/var/lib/ch-orchestrator/shared")
+    PathBuf::from("/var/lib/vquasar/shared")
 }
 
 impl Default for StorageSection {
     fn default() -> Self {
         Self {
             backend: "local".to_string(),
-            path: PathBuf::from("/var/lib/ch-orchestrator"),
+            path: PathBuf::from("/var/lib/vquasar"),
             shared_dir: default_shared_dir(),
         }
     }
@@ -245,7 +245,7 @@ impl Default for LoggingSection {
 
 impl AgentConfig {
     /// Load configuration from an optional TOML file, then apply environment
-    /// overrides prefixed with `CH_AGENT_` (e.g. `CH_AGENT_AGENT__NAME`).
+    /// overrides prefixed with `VQUASAR_AGENT_` (e.g. `VQUASAR_AGENT_AGENT__NAME`).
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         // Seed with the full default config so partial file/env overrides (a
         // single leaf key) merge cleanly instead of failing on missing fields.
@@ -254,7 +254,7 @@ impl AgentConfig {
             figment = figment.merge(Toml::file(path));
         }
         let config = figment
-            .merge(Env::prefixed("CH_AGENT_").split("__"))
+            .merge(Env::prefixed("VQUASAR_AGENT_").split("__"))
             .extract()?;
         Ok(config)
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn env_overrides_apply() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("CH_AGENT_AGENT__NAME", "hv-42");
+            jail.set_env("VQUASAR_AGENT_AGENT__NAME", "hv-42");
             let cfg = AgentConfig::load(None).unwrap();
             assert_eq!(cfg.agent.name, "hv-42");
             Ok(())

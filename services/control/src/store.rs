@@ -4,7 +4,7 @@
 //! dependency. State transitions run inside the methods here; the `generation`
 //! columns exist for optimistic concurrency as the controllers mature.
 
-use ch_model::{BootSpec, CloudInitSpec, VirtualMachineSpec};
+use vquasar_model::{BootSpec, CloudInitSpec, VirtualMachineSpec};
 use chrono::{DateTime, Utc};
 use sqlx::types::Json;
 use sqlx::{FromRow, PgPool};

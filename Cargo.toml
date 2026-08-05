@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "crates/common",
     "crates/model",
-    "crates/ch-client",
+    "crates/client",
     "crates/proto",
     "services/control",
     "services/agent",
@@ -14,15 +14,15 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/wrkode/ch-orchestrator"
-authors = ["ch-orchestrator contributors"]
+repository = "https://github.com/vquasar/vquasar"
+authors = ["vquasar contributors"]
 
 [workspace.dependencies]
 # Internal crates
-ch-common = { path = "crates/common" }
-ch-model = { path = "crates/model" }
-ch-client = { path = "crates/ch-client" }
-ch-proto = { path = "crates/proto" }
+vquasar-common = { path = "crates/common" }
+vquasar-model = { path = "crates/model" }
+vquasar-client = { path = "crates/client" }
+vquasar-proto = { path = "crates/proto" }
 
 # Async runtime
 tokio = { version = "1", default-features = false }

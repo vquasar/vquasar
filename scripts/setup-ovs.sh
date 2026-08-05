@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install Open vSwitch and create the integration bridge (design document,
-# section 18). Run once per host before starting ch-agent with the OVS backend.
+# section 18). Run once per host before starting vquasar-agent with the OVS backend.
 #
 # Usage: scripts/setup-ovs.sh [--bridge br-int]
 set -euo pipefail
@@ -39,6 +39,6 @@ else
 fi
 
 echo
-echo "Done. Start the agent with:  CH_AGENT_NETWORK__BRIDGE=$BRIDGE"
+echo "Done. Start the agent with:  VQUASAR_AGENT_NETWORK__BRIDGE=$BRIDGE"
 echo "The agent must run privileged (root or CAP_NET_ADMIN) to create TAPs and"
 echo "attach them to $BRIDGE."

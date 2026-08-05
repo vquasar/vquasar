@@ -91,7 +91,7 @@ function EditDialog({ edit, onClose }: { edit: Image | null; onClose: () => void
             label="Base disk path (shared storage)"
             value={sourcePath}
             onChange={(e) => setSourcePath(e.target.value)}
-            helperText="e.g. /var/lib/ch-orchestrator/shared/images/ubuntu-26.04.raw"
+            helperText="e.g. /var/lib/vquasar/shared/images/ubuntu-26.04.raw"
           />
           <TextField select label="Base format" value={format} onChange={(e) => setFormat(e.target.value as "raw" | "qcow2")}>
             <MenuItem value="raw">raw</MenuItem>
@@ -139,7 +139,7 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
   const [url, setUrl] = useState("");
   const [format, setFormat] = useState<"raw" | "qcow2">("qcow2");
   const [os, setOs] = useState("");
-  const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
+  const [firmware, setFirmware] = useState("/var/lib/vquasar/firmware/CLOUDHV.fd");
   const [sizeGib, setSizeGib] = useState("");
   const [cloudInit, setCloudInit] = useState(true);
 
@@ -203,7 +203,7 @@ function UploadDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [format, setFormat] = useState<"raw" | "qcow2">("qcow2");
   const [os, setOs] = useState("");
-  const [firmware, setFirmware] = useState("/var/lib/ch-orchestrator/firmware/CLOUDHV.fd");
+  const [firmware, setFirmware] = useState("/var/lib/vquasar/firmware/CLOUDHV.fd");
   const [file, setFile] = useState<File | null>(null);
 
   const submit = () => {

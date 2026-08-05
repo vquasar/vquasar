@@ -18,7 +18,7 @@
 set -euo pipefail
 
 RELEASE="26.04"
-BASE_DIR="/var/lib/ch-orchestrator"
+BASE_DIR="/var/lib/vquasar"
 PASSWORD="ubuntu"
 
 while [[ $# -gt 0 ]]; do

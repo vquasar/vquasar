@@ -1,4 +1,4 @@
-//! The `ch-orchestrator` domain model.
+//! The `vquasar` domain model.
 //!
 //! This crate defines the *stable orchestration model* (design document,
 //! section 6). It is intentionally independent of Cloud Hypervisor's own

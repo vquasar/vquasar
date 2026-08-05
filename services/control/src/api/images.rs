@@ -4,7 +4,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use ch_model::BootSpec;
+use vquasar_model::BootSpec;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -245,7 +245,7 @@ pub struct UploadParams {
 }
 
 fn default_firmware() -> String {
-    "/var/lib/ch-orchestrator/firmware/CLOUDHV.fd".into()
+    "/var/lib/vquasar/firmware/CLOUDHV.fd".into()
 }
 
 /// Upload an image by streaming the disk file in the request body (design M14e).

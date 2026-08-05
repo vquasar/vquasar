@@ -17,7 +17,7 @@
 # Usage: scripts/build-cloudhv-firmware.sh [--base-dir DIR] [--edk2-tag TAG]
 set -euo pipefail
 
-BASE_DIR="/var/lib/ch-orchestrator"
+BASE_DIR="/var/lib/vquasar"
 EDK2_TAG="edk2-stable202502"
 
 while [[ $# -gt 0 ]]; do

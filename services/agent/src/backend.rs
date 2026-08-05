@@ -1,6 +1,6 @@
 //! The hypervisor backend the [`VmManager`](crate::manager::VmManager) drives.
 //!
-//! [`ManagedVmm`] extends the per-VM operations of [`ch_client::Hypervisor`]
+//! [`ManagedVmm`] extends the per-VM operations of [`vquasar_client::Hypervisor`]
 //! with process-lifecycle control (`terminate`, `pid`) that the manager needs
 //! but the pure VM-API trait deliberately omits. A [`Backend`] launches or
 //! re-attaches these handles; the real one drives Cloud Hypervisor, the fake
@@ -14,16 +14,16 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Mutex;
 
-use ch_client::config::TranslateOptions;
-use ch_client::{
+use vquasar_client::config::TranslateOptions;
+use vquasar_client::{
     CloudHypervisor, FakeHypervisor, Hypervisor, HypervisorVmInfo, LaunchConfig, ProcessConfig,
     SerialTarget, TapBinding,
 };
-use ch_model::{DiskSpec, VirtualMachineSpec, VmId};
+use vquasar_model::{DiskSpec, VirtualMachineSpec, VmId};
 
 use crate::runtime::RuntimeLayout;
 
-type Result<T> = ch_client::Result<T>;
+type Result<T> = vquasar_client::Result<T>;
 
 /// A per-VM hypervisor handle the manager can fully control, including tearing
 /// down the underlying process.
@@ -190,7 +190,7 @@ impl Backend for CloudHypervisorBackend {
         layout
             .ensure_vm_dir(id)
             .await
-            .map_err(ch_client::ChError::Io)?;
+            .map_err(vquasar_client::ChError::Io)?;
         let launch = LaunchConfig::new(
             ProcessConfig {
                 binary: self.binary.clone(),

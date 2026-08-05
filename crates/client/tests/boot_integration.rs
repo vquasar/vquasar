@@ -9,10 +9,10 @@
 //! To run it (e.g. on the `dome` lab host):
 //!
 //! ```text
-//! export CH_IT_BINARY=/var/lib/ch-orchestrator/bin/cloud-hypervisor
-//! export CH_IT_KERNEL=/var/lib/ch-orchestrator/images/vmlinuz-7.0.0-28-generic
-//! export CH_IT_INITRAMFS=/var/lib/ch-orchestrator/images/initrd.img-7.0.0-28-generic
-//! export CH_IT_ROOTFS=/var/lib/ch-orchestrator/images/ubuntu-26.04.raw
+//! export CH_IT_BINARY=/var/lib/vquasar/bin/cloud-hypervisor
+//! export CH_IT_KERNEL=/var/lib/vquasar/images/vmlinuz-7.0.0-28-generic
+//! export CH_IT_INITRAMFS=/var/lib/vquasar/images/initrd.img-7.0.0-28-generic
+//! export CH_IT_ROOTFS=/var/lib/vquasar/images/ubuntu-26.04.raw
 //! cargo test -p ch-client --test boot_integration -- --nocapture
 //! ```
 //!
@@ -22,9 +22,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ch_client::config::TranslateOptions;
-use ch_client::{CloudHypervisor, Hypervisor, LaunchConfig, ProcessConfig, SerialTarget};
-use ch_model::{
+use vquasar_client::config::TranslateOptions;
+use vquasar_client::{CloudHypervisor, Hypervisor, LaunchConfig, ProcessConfig, SerialTarget};
+use vquasar_model::{
     BootSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec, MemorySpec, PlacementSpec,
     VirtualMachineSpec,
 };
@@ -83,7 +83,7 @@ async fn boots_real_vm_and_emits_serial_output() {
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
         cloud_init: None,
-        machine_type: ch_model::MachineType::Standard,
+        machine_type: vquasar_model::MachineType::Standard,
     };
     spec.validate().expect("spec valid");
 
@@ -116,12 +116,12 @@ async fn drive(
     hv: &CloudHypervisor,
     spec: &VirtualMachineSpec,
     serial_log: &std::path::Path,
-) -> ch_client::Result<bool> {
+) -> vquasar_client::Result<bool> {
     hv.create(spec).await?;
     hv.boot().await?;
     assert_eq!(
         hv.info().await?.state,
-        ch_client::HypervisorState::Running,
+        vquasar_client::HypervisorState::Running,
         "VM should report Running after boot"
     );
 

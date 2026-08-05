@@ -1,4 +1,4 @@
-// ch-orchestrator host-agent gRPC protocol (design document, section 12).
+// vquasar host-agent gRPC protocol (design document, section 12).
 //
 // NOTE: This schema is a forward-looking artifact for Milestone 2. It is not
 // yet wired into the Cargo build (tonic/prost are not workspace dependencies in
@@ -9,7 +9,7 @@
 
 syntax = "proto3";
 
-package ch.agent.v1;
+package vquasar.agent.v1;
 
 // The host agent runs once per virtualization host and is the local authority
 // for that host.

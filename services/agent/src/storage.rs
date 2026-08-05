@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ch_model::{CloudInitSpec, DiskImageType, DiskSpec, VirtualMachineSpec, VmId};
+use vquasar_model::{CloudInitSpec, DiskImageType, DiskSpec, VirtualMachineSpec, VmId};
 use tokio::process::Command;
 use tracing::{info, warn};
 

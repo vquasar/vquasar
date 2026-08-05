@@ -101,7 +101,7 @@ mod tests {
         // a pid, and it ignores the extra arguments.
         let cfg = ProcessConfig {
             binary: "/bin/sleep".into(),
-            api_socket: "/tmp/ch-orchestrator-test.sock".into(),
+            api_socket: "/tmp/vquasar-test.sock".into(),
             log_file: None,
             extra_args: vec!["30".into()],
         };
@@ -114,7 +114,7 @@ mod tests {
         assert!(proc.pid() > 0);
         assert_eq!(
             proc.api_socket(),
-            Path::new("/tmp/ch-orchestrator-test.sock")
+            Path::new("/tmp/vquasar-test.sock")
         );
         proc.kill().await.expect("kill");
     }

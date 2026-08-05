@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use ch_proto::agent::vm_observed_state::Phase;
-use ch_proto::agent::NetworkBinding;
+use vquasar_proto::agent::vm_observed_state::Phase;
+use vquasar_proto::agent::NetworkBinding;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -24,26 +24,26 @@ use crate::store::{HostInventory, Store, Vm};
 /// Run the reconcile loop forever.
 pub async fn run(store: Store, interval: Duration) {
     loop {
-        metrics::counter!("ch_reconcile_passes_total").increment(1);
+        metrics::counter!("vquasar_reconcile_passes_total").increment(1);
         if let Err(e) = reconcile_hosts(&store).await {
             warn!(error = %e, "host reconcile pass failed");
-            metrics::counter!("ch_reconcile_errors_total", "pass" => "hosts").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "hosts").increment(1);
         }
         if let Err(e) = reconcile_migrations(&store).await {
             warn!(error = %e, "migration reconcile pass failed");
-            metrics::counter!("ch_reconcile_errors_total", "pass" => "migrations").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "migrations").increment(1);
         }
         if let Err(e) = reconcile_vms(&store).await {
             warn!(error = %e, "vm reconcile pass failed");
-            metrics::counter!("ch_reconcile_errors_total", "pass" => "vms").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "vms").increment(1);
         }
         if let Err(e) = recover_running_vms(&store).await {
             warn!(error = %e, "vm recovery pass failed");
-            metrics::counter!("ch_reconcile_errors_total", "pass" => "recovery").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "recovery").increment(1);
         }
         if let Err(e) = refresh_vm_ips(&store).await {
             warn!(error = %e, "vm ip refresh pass failed");
-            metrics::counter!("ch_reconcile_errors_total", "pass" => "ip_refresh").increment(1);
+            metrics::counter!("vquasar_reconcile_errors_total", "pass" => "ip_refresh").increment(1);
         }
         // Refresh inventory gauges from the current DB state (design M17).
         if let Err(e) = crate::metrics::update_from_store(&store).await {
@@ -107,7 +107,7 @@ pub async fn recover_running_vms(store: &Store) -> anyhow::Result<()> {
             if vm.phase != "Running"
                 || !matches!(
                     vm.spec.desired_power_state,
-                    ch_model::DesiredPowerState::Running
+                    vquasar_model::DesiredPowerState::Running
                 )
             {
                 continue;
@@ -125,7 +125,7 @@ pub async fn recover_running_vms(store: &Store) -> anyhow::Result<()> {
                         &format!("not running on {} — relaunching after host recovery", host.name),
                     )
                     .await?;
-                metrics::counter!("ch_vm_recoveries_total").increment(1);
+                metrics::counter!("vquasar_vm_recoveries_total").increment(1);
                 warn!(vm = %vm.id, host = %host.name, "VM down on its host; re-launching");
             }
         }
@@ -218,7 +218,7 @@ pub async fn reconcile_migrations(store: &Store) -> anyhow::Result<()> {
     for m in store.list_active_migrations().await? {
         if let Err(e) = advance_migration(store, &m).await {
             warn!(migration = %m.id, vm = %m.vm_id, error = %e, "migration failed");
-            metrics::counter!("ch_migrations_total", "result" => "failed").increment(1);
+            metrics::counter!("vquasar_migrations_total", "result" => "failed").increment(1);
             store
                 .update_migration(m.id, "Failed", None, Some(&e.to_string()))
                 .await?;
@@ -316,7 +316,7 @@ async fn advance_migration(store: &Store, m: &crate::store::Migration) -> anyhow
                 }
             }
             store.set_vm_host_running(vm.id, m.target_host_id).await?;
-            metrics::counter!("ch_migrations_total", "result" => "completed").increment(1);
+            metrics::counter!("vquasar_migrations_total", "result" => "completed").increment(1);
             store
                 .update_migration(m.id, "Completed", None, None)
                 .await?;
@@ -652,7 +652,7 @@ async fn resolve_bindings(
                 .await?
                 .into_iter()
                 .filter(|r| r.direction == "ingress")
-                .map(|r| ch_proto::agent::SecurityRule {
+                .map(|r| vquasar_proto::agent::SecurityRule {
                     ipv6: r.ethertype.eq_ignore_ascii_case("IPv6"),
                     protocol: r.protocol,
                     port_min: r.port_min.unwrap_or(0).max(0) as u32,

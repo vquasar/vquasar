@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use ch_model::VirtualMachineSpec;
+use vquasar_model::VirtualMachineSpec;
 
 use crate::error::{ChError, Result};
 use crate::hypervisor::{Hypervisor, HypervisorState, HypervisorVmInfo};
@@ -110,7 +110,7 @@ impl Hypervisor for FakeHypervisor {
 
 #[cfg(test)]
 mod tests {
-    use ch_model::{
+    use vquasar_model::{
         BootSpec, CpuSpec, DesiredPowerState, MemorySpec, PlacementSpec, VirtualMachineSpec,
     };
 
@@ -136,7 +136,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
-            machine_type: ch_model::MachineType::Standard,
+            machine_type: vquasar_model::MachineType::Standard,
         }
     }
 

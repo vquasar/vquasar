@@ -26,7 +26,7 @@ use aes_gcm::{AeadCore, Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 
-use ch_model::CloudInitSpec;
+use vquasar_model::CloudInitSpec;
 
 use crate::config::EncryptionConfig;
 

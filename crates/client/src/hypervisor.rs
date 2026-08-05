@@ -10,7 +10,7 @@
 //! interface (ADR-013).
 
 use async_trait::async_trait;
-use ch_model::VirtualMachineSpec;
+use vquasar_model::VirtualMachineSpec;
 
 use crate::error::Result;
 
@@ -34,7 +34,7 @@ pub trait Hypervisor: Send + Sync {
 }
 
 /// VMM-facing observed state for a VM (the orchestration model translates this
-/// into a [`ch_model::VmPhase`]).
+/// into a [`vquasar_model::VmPhase`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HypervisorVmInfo {
     pub state: HypervisorState,

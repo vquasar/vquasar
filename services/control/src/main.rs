@@ -31,12 +31,12 @@ use tracing::info;
 use crate::config::ControlConfig;
 use crate::store::Store;
 
-/// ch-orchestrator control plane.
+/// vquasar control plane.
 #[derive(Debug, Parser)]
 #[command(name = "ch-control", version, about)]
 struct Cli {
     /// Path to a TOML configuration file.
-    #[arg(short, long, env = "CH_CONTROL_CONFIG")]
+    #[arg(short, long, env = "VQUASAR_CONTROL_CONFIG")]
     config: Option<PathBuf>,
 }
 
@@ -44,7 +44,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = ControlConfig::load(cli.config.as_deref())?;
-    ch_common::telemetry::init(&config.logging.level, config.logging.format == "json", config.logging.otlp_endpoint.as_deref(), "ch-control");
+    vquasar_common::telemetry::init(&config.logging.level, config.logging.format == "json", config.logging.otlp_endpoint.as_deref(), "ch-control");
 
     // rustls 0.23 needs a process-wide crypto provider before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();

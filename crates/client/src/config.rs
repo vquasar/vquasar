@@ -7,7 +7,7 @@
 //! types are private to `ch-client` and must not leak into the domain model —
 //! [`to_vm_config`] is the one-way bridge.
 
-use ch_model::{BootSpec, DiskImageType, VirtualMachineSpec};
+use vquasar_model::{BootSpec, DiskImageType, VirtualMachineSpec};
 use serde::{Deserialize, Serialize};
 
 use crate::hypervisor::{HypervisorState, HypervisorVmInfo};
@@ -212,7 +212,7 @@ pub struct TranslateOptions {
 ///
 /// Translate one domain [`DiskSpec`] into a CH [`DiskConfig`]. Also used to
 /// hot-add a disk to a running VM (design M10).
-pub fn disk_config(d: &ch_model::DiskSpec) -> DiskConfig {
+pub fn disk_config(d: &vquasar_model::DiskSpec) -> DiskConfig {
     DiskConfig {
         path: d.path.to_string_lossy().into_owned(),
         readonly: d.readonly,
@@ -313,7 +313,7 @@ pub fn to_vm_config(spec: &VirtualMachineSpec, opts: &TranslateOptions) -> VmCon
 
 #[cfg(test)]
 mod tests {
-    use ch_model::{CpuSpec, DesiredPowerState, DiskSpec, MemorySpec, PlacementSpec};
+    use vquasar_model::{CpuSpec, DesiredPowerState, DiskSpec, MemorySpec, PlacementSpec};
 
     use super::*;
 
@@ -333,11 +333,11 @@ mod tests {
                 initramfs: Some("/var/lib/ch/images/initramfs".into()),
                 cmdline: Some("console=ttyS0".into()),
             },
-            disks: vec![DiskSpec::raw("/var/lib/ch-orchestrator/volumes/root.raw")],
+            disks: vec![DiskSpec::raw("/var/lib/vquasar/volumes/root.raw")],
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
-            machine_type: ch_model::MachineType::Standard,
+            machine_type: vquasar_model::MachineType::Standard,
         }
     }
 
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn microvm_enables_pvpanic_and_single_pci_segment() {
         let mut s = spec();
-        s.machine_type = ch_model::MachineType::MicroVm;
+        s.machine_type = vquasar_model::MachineType::MicroVm;
         let cfg = to_vm_config(&s, &TranslateOptions::default());
         assert!(cfg.pvpanic);
         assert_eq!(cfg.platform.as_ref().unwrap().num_pci_segments, 1);

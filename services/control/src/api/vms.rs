@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use ch_model::{
+use vquasar_model::{
     CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec, MemorySpec,
     NetworkInterfaceSpec, PlacementSpec, VirtualMachineSpec,
 };
@@ -171,7 +171,7 @@ pub async fn create_from_volume(
         .network_id
         .map(|network_id| {
             vec![NetworkInterfaceSpec {
-                network_id: ch_model::NetworkId::from(network_id),
+                network_id: vquasar_model::NetworkId::from(network_id),
                 mac: None,
                 addresses: Vec::new(),
                 security_groups: body.security_groups.clone(),
@@ -194,7 +194,7 @@ pub async fn create_from_volume(
         placement: PlacementSpec::default(),
         cloud_init: body.cloud_init,
         // Booting a full rootfs volume is a standard VM, not a microVM.
-        machine_type: ch_model::MachineType::Standard,
+        machine_type: vquasar_model::MachineType::Standard,
     };
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -334,7 +334,7 @@ pub async fn change_nic(
     // to the old network — and re-allocate from the new one.
     {
         let nic = &mut spec.network_interfaces[index];
-        nic.network_id = ch_model::NetworkId::from(body.network_id);
+        nic.network_id = vquasar_model::NetworkId::from(body.network_id);
         nic.addresses.clear();
         if let Some(sgs) = &body.security_groups {
             nic.security_groups = sgs.clone();
@@ -550,7 +550,7 @@ fn build_spec_from_template(
         .or(template.network_id)
         .map(|network_id| {
             vec![NetworkInterfaceSpec {
-                network_id: ch_model::NetworkId::from(network_id),
+                network_id: vquasar_model::NetworkId::from(network_id),
                 mac: None,
                 addresses: Vec::new(),
                 security_groups: ov.security_groups.clone(),
@@ -597,9 +597,9 @@ fn build_spec_from_template(
         placement: PlacementSpec::default(),
         cloud_init,
         machine_type: if template.machine_type == "microvm" {
-            ch_model::MachineType::MicroVm
+            vquasar_model::MachineType::MicroVm
         } else {
-            ch_model::MachineType::Standard
+            vquasar_model::MachineType::Standard
         },
     }
 }
@@ -699,7 +699,7 @@ pub async fn update(
     }
     if let Some(n) = &body.add_nic {
         spec.network_interfaces.push(NetworkInterfaceSpec {
-            network_id: ch_model::NetworkId::from(n.network_id),
+            network_id: vquasar_model::NetworkId::from(n.network_id),
             mac: None,
             addresses: Vec::new(),
             security_groups: Vec::new(),

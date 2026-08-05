@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Uninstall a ch-orchestrator systemd component.
+# Uninstall a vquasar systemd component.
 #
 # Stops and disables the service, removes its unit and binary. Config and state
 # are kept by default; --purge also removes the config env file (and the served
-# UI bundle for control). It never deletes /var/lib/ch-orchestrator (VM disks,
+# UI bundle for control). It never deletes /var/lib/vquasar (VM disks,
 # volumes, shared storage) — remove that by hand if you really mean to.
 #
 # Usage:
@@ -15,9 +15,9 @@
 set -euo pipefail
 
 BIN_DIR=/usr/local/bin
-CONF_DIR=/etc/ch-orchestrator
+CONF_DIR=/etc/vquasar
 UNIT_DIR=/etc/systemd/system
-UI_DEST=/usr/local/share/ch-orchestrator/ui
+UI_DEST=/usr/local/share/vquasar/ui
 
 ROLE="${1:-}"; shift || true
 case "$ROLE" in agent|control|all) ;; *) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;; esac
@@ -60,4 +60,4 @@ fi
 systemctl daemon-reload
 # Drop the config dir only if empty (i.e. everything purged).
 rmdir "$CONF_DIR" 2>/dev/null || true
-echo "==> done. State under /var/lib/ch-orchestrator was left intact."
+echo "==> done. State under /var/lib/vquasar was left intact."

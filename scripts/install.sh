@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install a ch-orchestrator component as a systemd service.
+# Install a vquasar component as a systemd service.
 #
 # Installs the binary to /usr/local/bin, writes a config env file under
-# /etc/ch-orchestrator, creates a systemd unit, and enables + starts it.
+# /etc/vquasar, creates a systemd unit, and enables + starts it.
 # Designed to be self-contained (units + config generated inline) so it can
 # later back a `curl … | sh` bootstrap installer.
 #
@@ -27,7 +27,7 @@
 # agent options:
 #   --name NAME          Agent/host name           (default: `hostname -s`)
 #   --advertise-host IP  Migration advertise addr  (default: primary IPv4; use an IP, not a hostname)
-#   --ch-binary PATH     cloud-hypervisor path     (default: /var/lib/ch-orchestrator/bin/cloud-hypervisor)
+#   --ch-binary PATH     cloud-hypervisor path     (default: /var/lib/vquasar/bin/cloud-hypervisor)
 #   --grpc-listen ADDR   gRPC listen               (default: 0.0.0.0:9500)
 #   --seccomp MODE       CH seccomp                (default: log)
 #   --phone-home-url URL Control base URL for cloud-init phone_home IP discovery
@@ -37,9 +37,9 @@
 #                        (design M13e), e.g. https://172.16.56.8:8080
 #
 # control options:
-#   --db-url URL         Postgres URL              (default: postgres://ch:ch@127.0.0.1:5432/ch_orchestrator)
+#   --db-url URL         Postgres URL              (default: postgres://ch:ch@127.0.0.1:5432/vquasar)
 #   --listen ADDR        REST/UI listen            (default: 0.0.0.0:8080)
-#   --ui-dir PATH        UI dist to serve          (default: install ./ui/dist to /usr/local/share/ch-orchestrator/ui)
+#   --ui-dir PATH        UI dist to serve          (default: install ./ui/dist to /usr/local/share/vquasar/ui)
 #   --oidc-issuer URL    OIDC issuer (enables auth; design M12b)
 #   --oidc-client-id ID  OIDC client id (for the UI login)
 #   --oidc-audience AUD  Expected token audience
@@ -53,10 +53,10 @@
 set -euo pipefail
 
 BIN_DIR=/usr/local/bin
-CONF_DIR=/etc/ch-orchestrator
+CONF_DIR=/etc/vquasar
 UNIT_DIR=/etc/systemd/system
-UI_DEST=/usr/local/share/ch-orchestrator/ui
-STATE_DIR=/var/lib/ch-orchestrator
+UI_DEST=/usr/local/share/vquasar/ui
+STATE_DIR=/var/lib/vquasar
 
 ROLE="${1:-}"; shift || true
 [[ "$ROLE" == "agent" || "$ROLE" == "control" ]] || { grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -64,7 +64,7 @@ ROLE="${1:-}"; shift || true
 BINARY=""; NO_START=0; FORCE_CONFIG=0
 NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
-DB_URL="postgres://ch:ch@127.0.0.1:5432/ch_orchestrator"; LISTEN="0.0.0.0:8080"; UI_DIR=""
+DB_URL="postgres://ch:ch@127.0.0.1:5432/vquasar"; LISTEN="0.0.0.0:8080"; UI_DIR=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
 LOG_FORMAT=""; OTLP_ENDPOINT=""
 TLS_ISSUER_CERT=""; TLS_ISSUER_KEY=""; ENROLLMENT_URL=""
@@ -125,7 +125,7 @@ if [[ "$ROLE" == "control" && -z "$OIDC_ISSUER" && $ALLOW_NO_AUTH -eq 0 ]]; then
   fi
 fi
 
-SVC="ch-$ROLE"
+SVC="vquasar-$ROLE"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Locate the binary if not given: prefer release, then debug, then repo/cwd.
@@ -147,31 +147,31 @@ ENV_FILE="$CONF_DIR/$ROLE.env"
 # Emit the mTLS env vars (design M12a) when cert paths were provided.
 tls_env() {
   local prefix="$1"
-  [[ -n "$TLS_CA" ]] && echo "CH_${prefix}_TLS__CA=$TLS_CA"
-  [[ -n "$TLS_CERT" ]] && echo "CH_${prefix}_TLS__CERT=$TLS_CERT"
-  [[ -n "$TLS_KEY" ]] && echo "CH_${prefix}_TLS__KEY=$TLS_KEY"
+  [[ -n "$TLS_CA" ]] && echo "VQUASAR_${prefix}_TLS__CA=$TLS_CA"
+  [[ -n "$TLS_CERT" ]] && echo "VQUASAR_${prefix}_TLS__CERT=$TLS_CERT"
+  [[ -n "$TLS_KEY" ]] && echo "VQUASAR_${prefix}_TLS__KEY=$TLS_KEY"
   if [[ "$prefix" == "CONTROL" ]]; then
     # Intermediate issuing CA + enrollment URL enable agent auto-enrollment (M16).
-    [[ -n "$TLS_ISSUER_CERT" ]] && echo "CH_CONTROL_TLS__ISSUER_CERT=$TLS_ISSUER_CERT"
-    [[ -n "$TLS_ISSUER_KEY" ]] && echo "CH_CONTROL_TLS__ISSUER_KEY=$TLS_ISSUER_KEY"
-    [[ -n "$ENROLLMENT_URL" ]] && echo "CH_CONTROL_ENROLLMENT__CONTROL_URL=$ENROLLMENT_URL"
+    [[ -n "$TLS_ISSUER_CERT" ]] && echo "VQUASAR_CONTROL_TLS__ISSUER_CERT=$TLS_ISSUER_CERT"
+    [[ -n "$TLS_ISSUER_KEY" ]] && echo "VQUASAR_CONTROL_TLS__ISSUER_KEY=$TLS_ISSUER_KEY"
+    [[ -n "$ENROLLMENT_URL" ]] && echo "VQUASAR_CONTROL_ENROLLMENT__CONTROL_URL=$ENROLLMENT_URL"
   fi
 }
 
 # Emit the OIDC/RBAC env vars (design M12b) for the control plane.
 auth_env() {
-  [[ -n "$OIDC_ISSUER" ]] && echo "CH_CONTROL_AUTH__ISSUER=$OIDC_ISSUER"
-  [[ -n "$OIDC_CLIENT_ID" ]] && echo "CH_CONTROL_AUTH__CLIENT_ID=$OIDC_CLIENT_ID"
-  [[ -n "$OIDC_AUDIENCE" ]] && echo "CH_CONTROL_AUTH__AUDIENCE=$OIDC_AUDIENCE"
-  [[ -n "$OIDC_CA" ]] && echo "CH_CONTROL_AUTH__CA=$OIDC_CA"
-  [[ -n "$BOOTSTRAP_ADMIN" ]] && echo "CH_CONTROL_AUTH__BOOTSTRAP_ADMIN=$BOOTSTRAP_ADMIN"
+  [[ -n "$OIDC_ISSUER" ]] && echo "VQUASAR_CONTROL_AUTH__ISSUER=$OIDC_ISSUER"
+  [[ -n "$OIDC_CLIENT_ID" ]] && echo "VQUASAR_CONTROL_AUTH__CLIENT_ID=$OIDC_CLIENT_ID"
+  [[ -n "$OIDC_AUDIENCE" ]] && echo "VQUASAR_CONTROL_AUTH__AUDIENCE=$OIDC_AUDIENCE"
+  [[ -n "$OIDC_CA" ]] && echo "VQUASAR_CONTROL_AUTH__CA=$OIDC_CA"
+  [[ -n "$BOOTSTRAP_ADMIN" ]] && echo "VQUASAR_CONTROL_AUTH__BOOTSTRAP_ADMIN=$BOOTSTRAP_ADMIN"
 }
 
 # Emit the field-encryption env vars (design M12c) for the control plane.
 enc_env() {
-  [[ -n "$ENC_KEY" ]] && echo "CH_CONTROL_ENCRYPTION__KEY=$ENC_KEY"
-  [[ -n "$ENC_KEY_ID" ]] && echo "CH_CONTROL_ENCRYPTION__KEY_ID=$ENC_KEY_ID"
-  [[ -n "$ENC_OLD_KEYS" ]] && echo "CH_CONTROL_ENCRYPTION__OLD_KEYS=$ENC_OLD_KEYS"
+  [[ -n "$ENC_KEY" ]] && echo "VQUASAR_CONTROL_ENCRYPTION__KEY=$ENC_KEY"
+  [[ -n "$ENC_KEY_ID" ]] && echo "VQUASAR_CONTROL_ENCRYPTION__KEY_ID=$ENC_KEY_ID"
+  [[ -n "$ENC_OLD_KEYS" ]] && echo "VQUASAR_CONTROL_ENCRYPTION__OLD_KEYS=$ENC_OLD_KEYS"
 }
 
 write_env() {
@@ -215,17 +215,17 @@ if [[ "$ROLE" == "agent" ]]; then
   fi
   write_env <<EOF
 # ch-agent configuration (systemd EnvironmentFile). See design section 36.
-CH_AGENT_AGENT__NAME=$NAME
-CH_AGENT_GRPC__LISTEN=$GRPC_LISTEN
-CH_AGENT_HYPERVISOR__BINARY=$CH_BINARY
-CH_AGENT_HYPERVISOR__RUNTIME_DIR=$STATE_DIR
-CH_AGENT_HYPERVISOR__SECCOMP=$SECCOMP
-CH_AGENT_MIGRATION__TRANSPORT=tcp
+VQUASAR_AGENT_AGENT__NAME=$NAME
+VQUASAR_AGENT_GRPC__LISTEN=$GRPC_LISTEN
+VQUASAR_AGENT_HYPERVISOR__BINARY=$CH_BINARY
+VQUASAR_AGENT_HYPERVISOR__RUNTIME_DIR=$STATE_DIR
+VQUASAR_AGENT_HYPERVISOR__SECCOMP=$SECCOMP
+VQUASAR_AGENT_MIGRATION__TRANSPORT=tcp
 # Advertise an IP, not a hostname: the static CH binary has no working resolver.
-CH_AGENT_MIGRATION__ADVERTISE_HOST=$ADVERTISE_HOST
-${PHONE_HOME_URL:+CH_AGENT_PHONE_HOME__URL=$PHONE_HOME_URL}
-${LOG_FORMAT:+CH_AGENT_LOGGING__FORMAT=$LOG_FORMAT}
-${OTLP_ENDPOINT:+CH_AGENT_LOGGING__OTLP_ENDPOINT=$OTLP_ENDPOINT}
+VQUASAR_AGENT_MIGRATION__ADVERTISE_HOST=$ADVERTISE_HOST
+${PHONE_HOME_URL:+VQUASAR_AGENT_PHONE_HOME__URL=$PHONE_HOME_URL}
+${LOG_FORMAT:+VQUASAR_AGENT_LOGGING__FORMAT=$LOG_FORMAT}
+${OTLP_ENDPOINT:+VQUASAR_AGENT_LOGGING__OTLP_ENDPOINT=$OTLP_ENDPOINT}
 $(tls_env AGENT)
 EOF
 
@@ -235,8 +235,8 @@ EOF
   # only the agent is signalled on stop.
   cat > "$UNIT_DIR/$SVC.service" <<EOF
 [Unit]
-Description=ch-orchestrator host agent (Cloud Hypervisor)
-Documentation=https://github.com/wrkode/ch-orchestrator
+Description=vquasar host agent (Cloud Hypervisor)
+Documentation=https://github.com/vquasar/vquasar
 Wants=network-online.target
 After=network-online.target openvswitch.service remote-fs.target
 After=openvswitch.service
@@ -266,10 +266,10 @@ EOF
   # (it is ordered After=remote-fs.target, so it stops before it), terminating
   # the VMs while their storage is still mounted. It never fires on an agent
   # restart (separate unit), so VM survival across agent restarts is preserved.
-  cat > "$UNIT_DIR/ch-vm-shutdown.service" <<EOF
+  cat > "$UNIT_DIR/vquasar-vm-shutdown.service" <<EOF
 [Unit]
-Description=Terminate Cloud Hypervisor VMs before host shutdown (ch-orchestrator)
-After=ch-agent.service remote-fs.target network-online.target
+Description=Terminate Cloud Hypervisor VMs before host shutdown (vquasar)
+After=vquasar-agent.service remote-fs.target network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
@@ -281,7 +281,7 @@ TimeoutStopSec=30
 [Install]
 WantedBy=multi-user.target
 EOF
-  echo "==> wrote unit $UNIT_DIR/ch-vm-shutdown.service"
+  echo "==> wrote unit $UNIT_DIR/vquasar-vm-shutdown.service"
 
 else # control
   if [[ -z "$UI_DIR" ]]; then
@@ -294,13 +294,13 @@ else # control
   fi
   write_env <<EOF
 # ch-control configuration (systemd EnvironmentFile). See design section 36.
-CH_CONTROL_DATABASE__URL=$DB_URL
-CH_CONTROL_SERVER__LISTEN=$LISTEN
-CH_CONTROL_RECONCILE__INTERVAL_SECS=3
-CH_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
-${UI_DIR:+CH_CONTROL_SERVER__UI_DIR=$UI_DIR}
-${LOG_FORMAT:+CH_CONTROL_LOGGING__FORMAT=$LOG_FORMAT}
-${OTLP_ENDPOINT:+CH_CONTROL_LOGGING__OTLP_ENDPOINT=$OTLP_ENDPOINT}
+VQUASAR_CONTROL_DATABASE__URL=$DB_URL
+VQUASAR_CONTROL_SERVER__LISTEN=$LISTEN
+VQUASAR_CONTROL_RECONCILE__INTERVAL_SECS=3
+VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
+${UI_DIR:+VQUASAR_CONTROL_SERVER__UI_DIR=$UI_DIR}
+${LOG_FORMAT:+VQUASAR_CONTROL_LOGGING__FORMAT=$LOG_FORMAT}
+${OTLP_ENDPOINT:+VQUASAR_CONTROL_LOGGING__OTLP_ENDPOINT=$OTLP_ENDPOINT}
 $(tls_env CONTROL)
 $(auth_env)
 $(enc_env)
@@ -308,8 +308,8 @@ EOF
 
   cat > "$UNIT_DIR/$SVC.service" <<EOF
 [Unit]
-Description=ch-orchestrator control plane
-Documentation=https://github.com/wrkode/ch-orchestrator
+Description=vquasar control plane
+Documentation=https://github.com/vquasar/vquasar
 Wants=network-online.target
 After=network-online.target postgresql.service docker.service
 
@@ -330,7 +330,7 @@ systemctl daemon-reload
 systemctl enable "$SVC" >/dev/null 2>&1 || true
 # The shutdown-hook unit must be enabled so it's active at runtime and its
 # ExecStop fires on host shutdown (design M16).
-[[ "$ROLE" == "agent" ]] && systemctl enable ch-vm-shutdown.service >/dev/null 2>&1 && systemctl start ch-vm-shutdown.service >/dev/null 2>&1 || true
+[[ "$ROLE" == "agent" ]] && systemctl enable vquasar-vm-shutdown.service >/dev/null 2>&1 && systemctl start vquasar-vm-shutdown.service >/dev/null 2>&1 || true
 if [[ $NO_START -eq 0 ]]; then
   systemctl restart "$SVC"
   sleep 1

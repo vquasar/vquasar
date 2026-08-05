@@ -7,7 +7,7 @@
 //! an agent restart without any persisted per-NIC state (section 23).
 
 use async_trait::async_trait;
-use ch_model::VmId;
+use vquasar_model::VmId;
 use tokio::process::Command;
 
 /// A failure preparing or releasing host networking.

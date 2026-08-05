@@ -25,7 +25,7 @@ export function Login() {
       <Paper sx={{ p: 4, maxWidth: 380, width: "100%", textAlign: "center" }} elevation={3}>
         <ComputerIcon color="primary" sx={{ fontSize: 48, mb: 1 }} />
         <Typography variant="h5" gutterBottom>
-          ch-orchestrator
+          vquasar
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
           Sign in to manage your Cloud Hypervisor cluster.

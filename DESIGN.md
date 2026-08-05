@@ -1,7 +1,7 @@
 # Cloud Hypervisor Orchestrator — Initial Design
 
 **Status:** Early design / bootstrap specification
-**Working name:** `ch-orchestrator`
+**Working name:** `vquasar`
 **Primary language:** Rust
 **VMM:** Cloud Hypervisor
 **Initial networking:** Open vSwitch
@@ -91,7 +91,7 @@ microservices.
 Start with a Rust Cargo workspace.
 
 ```
-ch-orchestrator/
+vquasar/
 ├── Cargo.toml / Cargo.lock / README.md / DESIGN.md / LICENSE
 ├── rust-toolchain.toml / deny.toml
 ├── .github/workflows/
@@ -180,7 +180,7 @@ devices.
 Example runtime layout:
 
 ```
-/run/ch-orchestrator/vms/<vm-uuid>/
+/run/vquasar/vms/<vm-uuid>/
   ├── api.sock  serial.sock  pid  config.json  metadata.json
 ```
 
@@ -269,7 +269,7 @@ as the cloud-management system above OVN.
 Storage must eventually be pluggable via a `StorageBackend` trait
 (`create_volume`, `delete_volume`, `prepare_volume`, `release_volume`). Do not
 implement distributed storage. Initial types: local file
-(`/var/lib/ch-orchestrator/volumes/<uuid>.raw`) and shared path
+(`/var/lib/vquasar/volumes/<uuid>.raw`) and shared path
 (`/mnt/shared/...`, assumed identically mounted on participating hosts — enough
 for early live-migration experiments). Future: LVM thin, NFS, Ceph RBD/CephFS,
 iSCSI, NVMe-oF, SPDK, vhost-user-blk.

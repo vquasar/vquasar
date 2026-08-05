@@ -11,7 +11,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use ch_model::{DiskImageType, DiskSpec};
+use vquasar_model::{DiskImageType, DiskSpec};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::authz::{AuthUser, RequireVolumeCreate, RequireVolumeUpdate};

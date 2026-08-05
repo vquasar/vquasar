@@ -12,7 +12,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: process.env.CH_CONTROL_URL ?? "http://127.0.0.1:8080",
+        target: process.env.VQUASAR_CONTROL_URL ?? "http://127.0.0.1:8080",
         changeOrigin: true,
         // Proxy the serial-console WebSocket upgrade too (section 25).
         ws: true,

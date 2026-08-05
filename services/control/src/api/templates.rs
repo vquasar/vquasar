@@ -4,7 +4,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use ch_model::CloudInitSpec;
+use vquasar_model::CloudInitSpec;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -89,7 +89,7 @@ pub async fn create(
     // A microVM needs a direct-kernel image and no cloud-init seed; fail fast
     // here rather than at every instantiation (design M15).
     if body.machine_type == "microvm" {
-        if !matches!(image.boot.0, ch_model::BootSpec::DirectKernel { .. }) {
+        if !matches!(image.boot.0, vquasar_model::BootSpec::DirectKernel { .. }) {
             return Err(ApiError::invalid(
                 "a microvm template requires a direct-kernel image",
             ));
@@ -154,7 +154,7 @@ pub async fn update(
         Some(img) => img,
     };
     if body.machine_type == "microvm" {
-        if !matches!(image.boot.0, ch_model::BootSpec::DirectKernel { .. }) {
+        if !matches!(image.boot.0, vquasar_model::BootSpec::DirectKernel { .. }) {
             return Err(ApiError::invalid(
                 "a microvm template requires a direct-kernel image",
             ));

@@ -1,12 +1,12 @@
 [package]
-name = "ch-common"
+name = "vquasar-common"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Cross-cutting types (errors, telemetry) shared across ch-orchestrator crates."
+description = "Cross-cutting types (errors, telemetry) shared across vquasar crates."
 
 [dependencies]
 opentelemetry = "0.32.0"

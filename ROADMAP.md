@@ -1,4 +1,4 @@
-# ch-orchestrator roadmap
+# vquasar roadmap
 
 Status of the platform and the backlog beyond the initial MVP. The originally
 scoped MVP (design milestones M0–M8) is complete and verified on real
@@ -195,7 +195,7 @@ Split into three shippable slices.
   auto-recovers after its host reboots: a `recover_running_vms` reconcile pass
   re-drives VMs the agent no longer reports; the NFS mount is made reboot-
   persistent + the agent waits for it (`RequiresMountsFor`); and a
-  `ch-vm-shutdown.service` terminates CH VMs before NFS unmount so reboots don't
+  `vquasar-vm-shutdown.service` terminates CH VMs before NFS unmount so reboots don't
   hang on the orphaned (KillMode=process) hypervisor processes. Verified live.
 - Control-plane HA (multiple control nodes; PostgreSQL HA).
 - Quotas, projects, multi-tenancy.

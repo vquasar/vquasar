@@ -1,5 +1,5 @@
 [package]
-name = "ch-model"
+name = "vquasar-model"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ authors.workspace = true
 description = "The stable orchestration domain model (hosts, VMs, specs, phases)."
 
 [dependencies]
-ch-common.workspace = true
+vquasar-common.workspace = true
 serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true

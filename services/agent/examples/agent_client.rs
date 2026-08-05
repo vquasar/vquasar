@@ -7,11 +7,11 @@
 
 use std::path::PathBuf;
 
-use ch_model::{
+use vquasar_model::{
     BootSpec, CpuSpec, DesiredPowerState, DiskSpec, MemorySpec, PlacementSpec, VirtualMachineSpec,
 };
-use ch_proto::agent::host_agent_client::HostAgentClient;
-use ch_proto::agent::{
+use vquasar_proto::agent::host_agent_client::HostAgentClient;
+use vquasar_proto::agent::{
     DeleteVmRequest, EnsureVmRequest, GetHostInfoRequest, GetVmRequest, ListVmsRequest,
     StartVmRequest, StopVmRequest,
 };
@@ -149,7 +149,7 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
         disks.push(DiskSpec {
             path: ro.clone(),
             readonly: true,
-            image_type: ch_model::DiskImageType::Raw,
+            image_type: vquasar_model::DiskImageType::Raw,
             source: None,
             size_bytes: None,
         });
@@ -170,6 +170,6 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
         cloud_init: None,
-        machine_type: ch_model::MachineType::Standard,
+        machine_type: vquasar_model::MachineType::Standard,
     })
 }

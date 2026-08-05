@@ -1,4 +1,4 @@
-# ch-orchestrator
+# vquasar
 
 A modern, open-source virtualization management platform built directly around
 [Cloud Hypervisor](https://www.cloudhypervisor.org/) — no libvirt, no
@@ -70,28 +70,28 @@ cargo run --bin ch-control -- --config config/control.toml
 ```
 
 Any config value can be overridden by an environment variable, e.g.
-`CH_CONTROL_SERVER__LISTEN=127.0.0.1:9000` or `CH_AGENT_AGENT__NAME=host-02`.
+`VQUASAR_CONTROL_SERVER__LISTEN=127.0.0.1:9000` or `VQUASAR_AGENT_AGENT__NAME=host-02`.
 
 ## Booting a real VM (Milestone 1)
 
 On a Linux host with `/dev/kvm`, Cloud Hypervisor, and the image assets:
 
 ```bash
-# 1. Fetch cloud-hypervisor + firmware into /var/lib/ch-orchestrator/bin (once).
+# 1. Fetch cloud-hypervisor + firmware into /var/lib/vquasar/bin (once).
 # 2. Prepare the latest Ubuntu cloud image (raw disk + its kernel/initrd + seed):
 scripts/prepare-ubuntu-image.sh --release 26.04
 
 # 3. Make a per-VM copy of the base disk and boot it through the Hypervisor trait:
-cp --reflink=auto /var/lib/ch-orchestrator/images/ubuntu-26.04.raw \
-                  /var/lib/ch-orchestrator/volumes/vm01.raw
+cp --reflink=auto /var/lib/vquasar/images/ubuntu-26.04.raw \
+                  /var/lib/vquasar/volumes/vm01.raw
 cargo run -p ch-client --example boot_vm -- \
-  --binary        /var/lib/ch-orchestrator/bin/cloud-hypervisor \
-  --kernel        /var/lib/ch-orchestrator/images/vmlinuz-<ver> \
-  --initramfs     /var/lib/ch-orchestrator/images/initrd.img-<ver> \
+  --binary        /var/lib/vquasar/bin/cloud-hypervisor \
+  --kernel        /var/lib/vquasar/images/vmlinuz-<ver> \
+  --initramfs     /var/lib/vquasar/images/initrd.img-<ver> \
   --cmdline       "root=/dev/vda1 rw console=ttyS0 systemd.mask=systemd-networkd-wait-online.service" \
-  --disk          /var/lib/ch-orchestrator/volumes/vm01.raw \
-  --readonly-disk /var/lib/ch-orchestrator/seed/seed.iso \
-  --runtime-dir   /var/lib/ch-orchestrator/vms/vm01
+  --disk          /var/lib/vquasar/volumes/vm01.raw \
+  --readonly-disk /var/lib/vquasar/seed/seed.iso \
+  --runtime-dir   /var/lib/vquasar/vms/vm01
 ```
 
 The harness reports `BOOT OK — marker observed on serial console` once cloud-init
@@ -107,7 +107,7 @@ and both are verified booting the latest Ubuntu cloud image on CH v53:
   Boot infrastructure present). No kernel extraction needed — point it at the
   disk and go. Build the firmware with
   [`scripts/build-cloudhv-firmware.sh`](scripts/build-cloudhv-firmware.sh), then
-  boot with `--firmware /var/lib/ch-orchestrator/firmware/CLOUDHV.fd` instead of
+  boot with `--firmware /var/lib/vquasar/firmware/CLOUDHV.fd` instead of
   `--kernel/--initramfs`. This is the recommended path for whole cloud images.
 * **Direct-kernel** (`DirectKernel`) — boots a kernel (bzImage/PVH `vmlinux`) +
   optional initrd with an explicit cmdline; `prepare-ubuntu-image.sh` extracts
@@ -129,19 +129,19 @@ process manager. Run it and drive it with the bundled client:
 
 ```bash
 # Start the agent (points at the lab from Milestone 1).
-CH_AGENT_GRPC__LISTEN=127.0.0.1:9500 \
-CH_AGENT_HYPERVISOR__BINARY=/var/lib/ch-orchestrator/bin/cloud-hypervisor \
-CH_AGENT_HYPERVISOR__RUNTIME_DIR=/var/lib/ch-orchestrator \
+VQUASAR_AGENT_GRPC__LISTEN=127.0.0.1:9500 \
+VQUASAR_AGENT_HYPERVISOR__BINARY=/var/lib/vquasar/bin/cloud-hypervisor \
+VQUASAR_AGENT_HYPERVISOR__RUNTIME_DIR=/var/lib/vquasar \
 cargo run -p ch-agent
 
 # In another shell — inventory, create a VM, inspect, delete:
 cargo run -p ch-agent --example agent_client -- host-info
 cargo run -p ch-agent --example agent_client -- ensure \
   --vm-id "$(cat /proc/sys/kernel/random/uuid)" --name demo \
-  --kernel /var/lib/ch-orchestrator/images/vmlinuz-<ver> \
-  --initramfs /var/lib/ch-orchestrator/images/initrd.img-<ver> \
-  --disk /var/lib/ch-orchestrator/volumes/demo.raw \
-  --readonly-disk /var/lib/ch-orchestrator/seed/seed.iso
+  --kernel /var/lib/vquasar/images/vmlinuz-<ver> \
+  --initramfs /var/lib/vquasar/images/initrd.img-<ver> \
+  --disk /var/lib/vquasar/volumes/demo.raw \
+  --readonly-disk /var/lib/vquasar/seed/seed.iso
 ```
 
 The full **restart-survival** acceptance (start a VM, stop the agent, confirm
@@ -164,11 +164,11 @@ keep builds and CI DB-free.
 ```bash
 # 1. A PostgreSQL to talk to (any will do):
 docker run -d --name ch-pg -p 5432:5432 \
-  -e POSTGRES_USER=ch -e POSTGRES_PASSWORD=ch -e POSTGRES_DB=ch_orchestrator postgres:16
+  -e POSTGRES_USER=ch -e POSTGRES_PASSWORD=ch -e POSTGRES_DB=vquasar postgres:16
 
 # 2. Start the control plane (applies migrations on boot):
-CH_CONTROL_DATABASE__URL=postgres://ch:ch@127.0.0.1:5432/ch_orchestrator \
-CH_CONTROL_SERVER__LISTEN=127.0.0.1:8080 \
+VQUASAR_CONTROL_DATABASE__URL=postgres://ch:ch@127.0.0.1:5432/vquasar \
+VQUASAR_CONTROL_SERVER__LISTEN=127.0.0.1:8080 \
 cargo run -p ch-control
 
 # 3. With a ch-agent running (Milestone 2), register it and create a VM:
@@ -179,11 +179,11 @@ curl -X POST localhost:8080/api/v1/vms -H 'content-type: application/json' -d '{
   "name":"demo",
   "spec":{"desired_power_state":"Running","cpu":{"boot_vcpus":2,"max_vcpus":2},
     "memory":{"size_mib":2048},
-    "boot":{"type":"direct_kernel","kernel":"/var/lib/ch-orchestrator/images/vmlinuz-<ver>",
-      "initramfs":"/var/lib/ch-orchestrator/images/initrd.img-<ver>",
+    "boot":{"type":"direct_kernel","kernel":"/var/lib/vquasar/images/vmlinuz-<ver>",
+      "initramfs":"/var/lib/vquasar/images/initrd.img-<ver>",
       "cmdline":"root=/dev/vda1 rw console=ttyS0 systemd.mask=systemd-networkd-wait-online.service"},
-    "disks":[{"path":"/var/lib/ch-orchestrator/volumes/demo.raw"},
-             {"path":"/var/lib/ch-orchestrator/seed/seed.iso","readonly":true}],
+    "disks":[{"path":"/var/lib/vquasar/volumes/demo.raw"},
+             {"path":"/var/lib/vquasar/seed/seed.iso","readonly":true}],
     "network_interfaces":[],"placement":{}}}'
 # -> {"vm_id":"...","task_id":"..."}; poll GET /api/v1/vms/{id} until phase=Running.
 ```
@@ -206,7 +206,7 @@ privileged dataplane (ADR-001/ADR-010).
 # On each host, install OVS and create the integration bridge (once):
 scripts/setup-ovs.sh --bridge br-int
 # The agent must run privileged to manage TAPs/OVS:
-sudo CH_AGENT_NETWORK__BRIDGE=br-int ... ch-agent
+sudo VQUASAR_AGENT_NETWORK__BRIDGE=br-int ... ch-agent
 
 # Define a network, then reference it from a VM's NIC:
 curl -X POST localhost:8080/api/v1/networks -d '{"name":"provider"}'         # flat
@@ -241,7 +241,7 @@ npm install
 npm run dev        # http://localhost:5173, proxies /api -> http://127.0.0.1:8080
 # or build a static bundle and let the control plane serve it:
 npm run build      # -> ui/dist
-CH_CONTROL_SERVER__UI_DIR=$(pwd)/dist cargo run -p ch-control   # UI at http://127.0.0.1:8080
+VQUASAR_CONTROL_SERVER__UI_DIR=$(pwd)/dist cargo run -p ch-control   # UI at http://127.0.0.1:8080
 ```
 
 > **UI framework note.** The design (§34) suggested plain React/Vite. We build

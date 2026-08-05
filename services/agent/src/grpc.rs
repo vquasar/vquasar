@@ -11,10 +11,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ch_model::{VirtualMachineSpec, VmId, VmPhase};
-use ch_proto::agent::host_agent_server::HostAgent;
-use ch_proto::agent::vm_observed_state::Phase;
-use ch_proto::agent::{
+use vquasar_model::{VirtualMachineSpec, VmId, VmPhase};
+use vquasar_proto::agent::host_agent_server::HostAgent;
+use vquasar_proto::agent::vm_observed_state::Phase;
+use vquasar_proto::agent::{
     ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DiscardVmRequest, EnsureVmRequest,
     EnsureVmResponse, FinalizeReceiveRequest, GetHostInfoRequest, GetHostInfoResponse,
     GetVmMetricsRequest, GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse,
@@ -330,7 +330,7 @@ fn to_status(err: ManagerError) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use ch_model::{
+    use vquasar_model::{
         BootSpec, CpuSpec, DesiredPowerState, MemorySpec, PlacementSpec, VirtualMachineSpec,
     };
 
@@ -380,7 +380,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
-            machine_type: ch_model::MachineType::Standard,
+            machine_type: vquasar_model::MachineType::Standard,
         }
     }
 

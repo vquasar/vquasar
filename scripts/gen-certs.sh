@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate an internal CA and mTLS certificates for ch-orchestrator (design
+# Generate an internal CA and mTLS certificates for vquasar (design
 # M12a). One CA signs the control-plane certificate and one certificate per
 # host agent. Certs carry both serverAuth and clientAuth EKUs so the control
 # cert can act as the gRPC client to agents (mutual TLS) and as the REST/TLS
@@ -40,7 +40,7 @@ mkdir -p "$OUT"; cd "$OUT"
 if [[ ! -f ca.crt ]]; then
   openssl genrsa -out ca.key 4096 2>/dev/null
   openssl req -x509 -new -key ca.key -sha256 -days 3650 -out ca.crt \
-    -subj "/CN=ch-orchestrator-ca" 2>/dev/null
+    -subj "/CN=vquasar-ca" 2>/dev/null
   echo "==> created root CA (ca.crt)"
 fi
 
@@ -50,7 +50,7 @@ fi
 # leaf->intermediate->root; everyone trusts the root (ca.crt) as anchor.
 if [[ ! -f int.crt ]]; then
   openssl genrsa -out int.key 4096 2>/dev/null
-  openssl req -new -key int.key -out int.csr -subj "/CN=ch-orchestrator-intermediate" 2>/dev/null
+  openssl req -new -key int.key -out int.csr -subj "/CN=vquasar-intermediate" 2>/dev/null
   cat > int.ext <<EOF
 basicConstraints = critical, CA:TRUE, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign

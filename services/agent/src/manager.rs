@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ch_client::{ApiClient, ChError, HypervisorState, TapBinding};
-use ch_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
+use vquasar_client::{ApiClient, ChError, HypervisorState, TapBinding};
+use vquasar_model::{DesiredPowerState, VirtualMachineSpec, VmId, VmPhase};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -34,7 +34,7 @@ pub enum ManagerError {
     InvalidSpec(String),
 
     #[error("hypervisor error: {0}")]
-    Hypervisor(#[from] ch_client::ChError),
+    Hypervisor(#[from] vquasar_client::ChError),
 
     #[error("network error: {0}")]
     Network(#[from] crate::network::NetworkError),
@@ -70,7 +70,7 @@ struct ManagedVm {
 struct PendingReceive {
     record: VmRecord,
     vmm: Box<dyn ManagedVmm>,
-    recv: JoinHandle<ch_client::Result<()>>,
+    recv: JoinHandle<vquasar_client::Result<()>>,
 }
 
 /// How the agent exposes an incoming live migration (section 28).
@@ -407,7 +407,7 @@ impl VmManager {
         } else {
             let port = pick_free_port(self.migration.port_min, self.migration.port_max)
                 .ok_or_else(|| {
-                    ManagerError::Hypervisor(ch_client::ChError::Transport(
+                    ManagerError::Hypervisor(vquasar_client::ChError::Transport(
                         "no free migration port in configured range".into(),
                     ))
                 })?;
@@ -554,7 +554,7 @@ async fn observe(managed: &ManagedVm, ipd: &IpDiscovery) -> ObservedVm {
         let mac = nic
             .mac
             .clone()
-            .unwrap_or_else(|| ch_model::allocate_mac(managed.record.id, index));
+            .unwrap_or_else(|| vquasar_model::allocate_mac(managed.record.id, index));
         if let Some(addr) = ipd.ip_for_mac(&mac).await {
             ip = Some(addr);
             break;
@@ -593,7 +593,7 @@ fn phase_of(state: HypervisorState) -> VmPhase {
 
 #[cfg(test)]
 mod tests {
-    use ch_model::{BootSpec, CpuSpec, MemorySpec, PlacementSpec};
+    use vquasar_model::{BootSpec, CpuSpec, MemorySpec, PlacementSpec};
 
     use crate::backend::FakeBackend;
 
@@ -619,7 +619,7 @@ mod tests {
             network_interfaces: vec![],
             placement: PlacementSpec::default(),
             cloud_init: None,
-            machine_type: ch_model::MachineType::Standard,
+            machine_type: vquasar_model::MachineType::Standard,
         }
     }
 

@@ -11,13 +11,13 @@
 //!
 //! ```text
 //! cargo run -p ch-client --example boot_vm -- \
-//!   --binary      /var/lib/ch-orchestrator/bin/cloud-hypervisor \
-//!   --kernel      /var/lib/ch-orchestrator/images/vmlinuz-7.0.0-28-generic \
-//!   --initramfs   /var/lib/ch-orchestrator/images/initrd.img-7.0.0-28-generic \
+//!   --binary      /var/lib/vquasar/bin/cloud-hypervisor \
+//!   --kernel      /var/lib/vquasar/images/vmlinuz-7.0.0-28-generic \
+//!   --initramfs   /var/lib/vquasar/images/initrd.img-7.0.0-28-generic \
 //!   --cmdline     "root=/dev/vda1 rw console=ttyS0 systemd.mask=systemd-networkd-wait-online.service" \
-//!   --disk        /var/lib/ch-orchestrator/volumes/dk01.raw \
-//!   --readonly-disk /var/lib/ch-orchestrator/seed/seed.iso \
-//!   --runtime-dir /var/lib/ch-orchestrator/vms/dk01 \
+//!   --disk        /var/lib/vquasar/volumes/dk01.raw \
+//!   --readonly-disk /var/lib/vquasar/seed/seed.iso \
+//!   --runtime-dir /var/lib/vquasar/vms/dk01 \
 //!   --marker      "CH-ORCHESTRATOR-BOOT-OK"
 //! ```
 
@@ -27,9 +27,9 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use tracing::{error, info};
 
-use ch_client::config::TranslateOptions;
-use ch_client::{CloudHypervisor, Hypervisor, LaunchConfig, ProcessConfig, SerialTarget};
-use ch_model::{
+use vquasar_client::config::TranslateOptions;
+use vquasar_client::{CloudHypervisor, Hypervisor, LaunchConfig, ProcessConfig, SerialTarget};
+use vquasar_model::{
     BootSpec, CpuSpec, DesiredPowerState, DiskSpec, MemorySpec, PlacementSpec, VirtualMachineSpec,
 };
 
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
         disks.push(DiskSpec {
             path: ro.clone(),
             readonly: true,
-            image_type: ch_model::DiskImageType::Raw,
+            image_type: vquasar_model::DiskImageType::Raw,
             source: None,
             size_bytes: None,
         });
@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
         network_interfaces: vec![],
         placement: PlacementSpec::default(),
         cloud_init: None,
-        machine_type: ch_model::MachineType::Standard,
+        machine_type: vquasar_model::MachineType::Standard,
     };
     spec.validate()?;
 

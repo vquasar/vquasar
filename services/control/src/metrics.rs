@@ -32,17 +32,17 @@ pub fn install() -> anyhow::Result<PrometheusHandle> {
     let handle = PrometheusBuilder::new()
         .install_recorder()
         .map_err(|e| anyhow::anyhow!("install prometheus recorder: {e}"))?;
-    describe_gauge!("ch_vms", "Virtual machines by phase");
-    describe_gauge!("ch_hosts", "Hosts by state");
-    describe_gauge!("ch_hosts_schedulable", "Hosts currently schedulable");
-    describe_gauge!("ch_tasks", "Tasks by state");
-    describe_gauge!("ch_migrations_active", "In-flight live migrations");
-    describe_counter!("ch_reconcile_passes_total", "Reconcile loop iterations");
-    describe_counter!("ch_reconcile_errors_total", "Reconcile pass errors by pass");
-    describe_counter!("ch_migrations_total", "Finished migrations by result");
-    describe_counter!("ch_vm_recoveries_total", "VMs re-launched after host recovery");
-    describe_counter!("ch_http_requests_total", "HTTP requests by method/path/status");
-    describe_histogram!("ch_http_request_duration_seconds", "HTTP request latency (s)");
+    describe_gauge!("vquasar_vms", "Virtual machines by phase");
+    describe_gauge!("vquasar_hosts", "Hosts by state");
+    describe_gauge!("vquasar_hosts_schedulable", "Hosts currently schedulable");
+    describe_gauge!("vquasar_tasks", "Tasks by state");
+    describe_gauge!("vquasar_migrations_active", "In-flight live migrations");
+    describe_counter!("vquasar_reconcile_passes_total", "Reconcile loop iterations");
+    describe_counter!("vquasar_reconcile_errors_total", "Reconcile pass errors by pass");
+    describe_counter!("vquasar_migrations_total", "Finished migrations by result");
+    describe_counter!("vquasar_vm_recoveries_total", "VMs re-launched after host recovery");
+    describe_counter!("vquasar_http_requests_total", "HTTP requests by method/path/status");
+    describe_histogram!("vquasar_http_request_duration_seconds", "HTTP request latency (s)");
     Ok(handle)
 }
 
@@ -53,7 +53,7 @@ pub async fn update_from_store(store: &Store) -> anyhow::Result<()> {
         *vms.entry_or_other(&v.phase, VM_PHASES) += 1.0;
     }
     for (phase, n) in &vms {
-        gauge!("ch_vms", "phase" => *phase).set(*n);
+        gauge!("vquasar_vms", "phase" => *phase).set(*n);
     }
 
     let mut hosts: HashMap<&str, f64> = HOST_STATES.iter().map(|s| (*s, 0.0)).collect();
@@ -65,19 +65,19 @@ pub async fn update_from_store(store: &Store) -> anyhow::Result<()> {
         }
     }
     for (state, n) in &hosts {
-        gauge!("ch_hosts", "state" => *state).set(*n);
+        gauge!("vquasar_hosts", "state" => *state).set(*n);
     }
-    gauge!("ch_hosts_schedulable").set(schedulable);
+    gauge!("vquasar_hosts_schedulable").set(schedulable);
 
     let mut tasks: HashMap<&str, f64> = TASK_STATES.iter().map(|s| (*s, 0.0)).collect();
     for t in store.list_tasks().await? {
         *tasks.entry_or_other(&t.state, TASK_STATES) += 1.0;
     }
     for (state, n) in &tasks {
-        gauge!("ch_tasks", "state" => *state).set(*n);
+        gauge!("vquasar_tasks", "state" => *state).set(*n);
     }
 
-    gauge!("ch_migrations_active").set(store.list_active_migrations().await?.len() as f64);
+    gauge!("vquasar_migrations_active").set(store.list_active_migrations().await?.len() as f64);
     Ok(())
 }
 
@@ -106,8 +106,8 @@ pub async fn track_http(req: Request, next: Next) -> Response {
     let resp = next.run(req).await;
     let elapsed = start.elapsed().as_secs_f64();
     let status = resp.status().as_u16().to_string();
-    counter!("ch_http_requests_total", "method" => method, "path" => path.clone(), "status" => status)
+    counter!("vquasar_http_requests_total", "method" => method, "path" => path.clone(), "status" => status)
         .increment(1);
-    histogram!("ch_http_request_duration_seconds", "path" => path).record(elapsed);
+    histogram!("vquasar_http_request_duration_seconds", "path" => path).record(elapsed);
     resp
 }

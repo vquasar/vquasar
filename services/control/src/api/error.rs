@@ -7,7 +7,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use ch_common::ErrorCode;
+use vquasar_common::ErrorCode;
 use serde::Serialize;
 use uuid::Uuid;
 

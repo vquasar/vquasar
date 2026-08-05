@@ -6,7 +6,7 @@
 # built workspace. Run on a host with /dev/kvm.
 set -euo pipefail
 
-BASE_DIR="${BASE_DIR:-/var/lib/ch-orchestrator}"
+BASE_DIR="${BASE_DIR:-/var/lib/vquasar}"
 KVER="${KVER:-7.0.0-28-generic}"
 LISTEN="127.0.0.1:9500"
 ENDPOINT="http://${LISTEN}"
@@ -18,10 +18,10 @@ cargo build -q -p ch-agent --example agent_client
 AGENT="$ROOT/target/debug/ch-agent"
 CLIENT="$ROOT/target/debug/examples/agent_client"
 
-export CH_AGENT_AGENT__NAME="dome"
-export CH_AGENT_GRPC__LISTEN="$LISTEN"
-export CH_AGENT_HYPERVISOR__BINARY="$BASE_DIR/bin/cloud-hypervisor"
-export CH_AGENT_HYPERVISOR__RUNTIME_DIR="$BASE_DIR"
+export VQUASAR_AGENT_AGENT__NAME="dome"
+export VQUASAR_AGENT_GRPC__LISTEN="$LISTEN"
+export VQUASAR_AGENT_HYPERVISOR__BINARY="$BASE_DIR/bin/cloud-hypervisor"
+export VQUASAR_AGENT_HYPERVISOR__RUNTIME_DIR="$BASE_DIR"
 
 start_agent() {
   "$AGENT" >>"$BASE_DIR/agent.log" 2>&1 &

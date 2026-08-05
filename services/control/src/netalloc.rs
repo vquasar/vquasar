@@ -9,7 +9,7 @@ use uuid::Uuid;
 /// Allocate the MAC for a VM's `index`-th NIC. Delegates to the shared model
 /// allocator so the agent can re-derive the same MAC for IP discovery (M11).
 pub fn allocate_mac(vm_id: Uuid, index: usize) -> String {
-    ch_model::allocate_mac(ch_model::VmId::from_uuid(vm_id), index)
+    vquasar_model::allocate_mac(vquasar_model::VmId::from_uuid(vm_id), index)
 }
 
 #[cfg(test)]

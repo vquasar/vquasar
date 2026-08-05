@@ -80,7 +80,7 @@ fn otlp_layer(
         )
         .build();
 
-    let tracer = provider.tracer("ch-orchestrator");
+    let tracer = provider.tracer("vquasar");
     // Keep the provider installed globally so spans flush for the process life.
     opentelemetry::global::set_tracer_provider(provider);
 

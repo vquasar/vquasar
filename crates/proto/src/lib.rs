@@ -6,5 +6,5 @@
 //! publicly (design document, section 12).
 
 pub mod agent {
-    tonic::include_proto!("ch.agent.v1");
+    tonic::include_proto!("vquasar.agent.v1");
 }

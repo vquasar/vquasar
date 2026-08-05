@@ -1,6 +1,6 @@
 # Example ch-agent configuration.
 # Override any value with an environment variable, e.g.
-#   CH_AGENT_AGENT__NAME=host-02
+#   VQUASAR_AGENT_AGENT__NAME=host-02
 
 [agent]
 name = "host-01"
@@ -8,13 +8,13 @@ control_plane = "http://10.0.0.10:9443"
 
 [hypervisor]
 binary = "/usr/bin/cloud-hypervisor"
-runtime_dir = "/run/ch-orchestrator"
+runtime_dir = "/run/vquasar"
 # Serial console target: "socket" (interactive console) or "file" (log only).
 serial_mode = "socket"
 
 [migration]
 # Directory for live-migration sockets (design section 28).
-socket_dir = "/var/lib/ch-orchestrator/migrations"
+socket_dir = "/var/lib/vquasar/migrations"
 
 [network]
 backend = "ovs"
@@ -22,7 +22,7 @@ bridge = "br-int"
 
 [storage]
 backend = "local"
-path = "/var/lib/ch-orchestrator"
+path = "/var/lib/vquasar"
 
 [logging]
 level = "info"
