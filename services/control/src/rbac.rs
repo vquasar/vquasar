@@ -16,6 +16,10 @@ pub const CATALOG: &[&str] = &[
     "host:read",
     "host:manage",
     "network:create",
+    // Attaching a network to physical infrastructure (an uplink, a VLAN tag) is
+    // a platform decision: the tag determines which provider segment you land
+    // on. Held by `admin` only — deliberately not by `operator` (ADR-016).
+    "network:create:provider",
     "network:read",
     "network:update",
     "network:delete",
@@ -55,11 +59,14 @@ fn ends_with_read(p: &str) -> bool {
 pub fn builtin_roles() -> Vec<BuiltinRole> {
     let all: Vec<&str> = CATALOG.to_vec();
 
-    // operator: manage workloads and their resources, but not identity or hosts.
+    // operator: manage workloads and their resources, but not identity, hosts,
+    // or attachment to physical infrastructure.
     let operator: Vec<&str> = CATALOG
         .iter()
         .copied()
-        .filter(|p| !p.starts_with("iam:") && *p != "host:manage")
+        .filter(|p| {
+            !p.starts_with("iam:") && *p != "host:manage" && *p != "network:create:provider"
+        })
         .collect();
 
     // viewer: read-only across resources, plus console access.
@@ -120,6 +127,11 @@ mod tests {
         let operator = roles.iter().find(|r| r.name == "operator").unwrap();
         assert!(!operator.permissions.contains(&"iam:manage"));
         assert!(!operator.permissions.contains(&"host:manage"));
+        // Physical attachment is platform-only (ADR-016).
+        assert!(!operator.permissions.contains(&"network:create:provider"));
+        assert!(operator.permissions.contains(&"network:create"));
+        let admin = roles.iter().find(|r| r.name == "admin").unwrap();
+        assert!(admin.permissions.contains(&"network:create:provider"));
         assert!(operator.permissions.contains(&"vm:create"));
         let viewer = roles.iter().find(|r| r.name == "viewer").unwrap();
         assert!(viewer.permissions.contains(&"vm:console"));

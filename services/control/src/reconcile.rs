@@ -47,6 +47,14 @@ pub async fn run(store: Store, interval: Duration) {
             metrics::counter!("vquasar_reconcile_errors_total", "pass" => "ip_refresh")
                 .increment(1);
         }
+        // Free segments whose quarantine has elapsed (ADR-016).
+        match crate::segments::sweep_quarantine(store.pool(), &store.network_policy().segments())
+            .await
+        {
+            Ok(n) if n > 0 => tracing::info!(freed = n, "released quarantined network segments"),
+            Ok(_) => {}
+            Err(e) => warn!(error = %e, "segment quarantine sweep failed"),
+        }
         // Refresh inventory gauges from the current DB state (design M17).
         if let Err(e) = crate::metrics::update_from_store(&store).await {
             warn!(error = %e, "metrics refresh failed");
@@ -647,13 +655,24 @@ async fn resolve_bindings(
             None => (0, Vec::new()),
         };
 
-        // Security groups (design M13c): a NIC with groups is filtered — collect
-        // the union of their ingress rules as the allow-list.
-        let (filtered, ingress_rules) = if nic.security_groups.is_empty() {
+        // Effective policy is the network's default group unioned with the NIC's
+        // own (ADR-017). An empty NIC set therefore means "the network's
+        // default applies" — never "unfiltered". A network with no default is
+        // one created before migration 0017; it keeps the old opt-in behaviour
+        // so an upgrade changes nothing.
+        let mut groups = nic.security_groups.clone();
+        if store.network_policy().policy_enforced() {
+            if let Some(default) = network.default_security_group_id {
+                if !groups.contains(&default) {
+                    groups.push(default);
+                }
+            }
+        }
+        let (filtered, ingress_rules) = if groups.is_empty() {
             (false, Vec::new())
         } else {
             let rules = store
-                .rules_for_groups(&nic.security_groups)
+                .rules_for_groups(&groups)
                 .await?
                 .into_iter()
                 .filter(|r| r.direction == "ingress")
