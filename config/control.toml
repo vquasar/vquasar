@@ -22,6 +22,27 @@ url = "postgres://ch:ch@localhost/vquasar"
 # a read primitive over the host filesystem (design §30).
 allowed_paths = ["/var/lib/vquasar"]
 
+[network]
+# How per-NIC policy is resolved (ADR-017). "legacy" = a NIC with no security
+# groups is unfiltered, which is what deployed clusters do today. "enforced" =
+# the network's default group is unioned with the NIC's own, so every NIC
+# carries a policy. Migration 0017 seeds each network a permissive default, so
+# switching does not change reachability — but it does move every NIC from no
+# flows to conntrack flows, so it is an operator decision.
+policy_mode = "legacy"
+# 802.1Q tags a `vlan` network may use, e.g. "100-200,300". Empty = none: a tag
+# must match what the physical switch trunks, so it is stated, not guessed.
+provider_vlans = ""
+# Uplinks a provider/vlan network may attach to.
+physical_networks = ["default"]
+# VXLAN VNI range the control plane allocates from; below the start is left to
+# hand-configured and pre-existing overlays.
+vni_start = 4096
+vni_end = 16777215
+# How long a released VNI is withheld before reuse — long enough for hosts to
+# tear down the overlay bridge and its tunnel mesh (ADR-016).
+segment_quarantine_secs = 3600
+
 [grpc]
 listen = "0.0.0.0:9443"
 

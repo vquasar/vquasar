@@ -88,6 +88,15 @@ pub async fn delete(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("network:delete")?;
+    // A managed group is a network's policy object, not a user-created one:
+    // deleting it would leave that network with no default and every NIC on it
+    // silently unpoliced (ADR-017). Delete or re-default the network instead.
+    if store.security_group_is_managed(id).await? {
+        return Err(ApiError::invalid(
+            "this is a network's default policy group and cannot be deleted on its own; \
+             delete the network, or point it at a different default",
+        ));
+    }
     if store.delete_security_group(id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {

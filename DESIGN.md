@@ -489,6 +489,69 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-013** Cloud Hypervisor-specific types do not form the public orchestration API.
 * **ADR-014** Host fencing is mandatory before automatic HA restart is introduced.
 * **ADR-015** The web UI never becomes the authoritative source of infrastructure state.
+* **ADR-016** A network's type declares its isolation guarantee, and the platform
+  owns segment identifiers.
+* **ADR-017** Every guest port carries an explicit dataplane policy.
+
+### ADR-016 — A network's type declares its isolation guarantee
+
+*Status:* Accepted.
+
+*Context.* A `Network` row was an IPAM record. Every network without a VLAN or
+VNI shared one untagged L2 domain on `br-int`, so two "different" networks were
+the same broadcast domain; and any caller holding `network:create` could choose
+its own 802.1Q tag or VXLAN VNI — reaching whatever provider segment the trunk
+carried, or joining an existing overlay. Yet some networks legitimately *are*
+the physical LAN and must not claim to isolate anything.
+
+*Decision.* Every network declares a `kind`. `provider` (untagged) and `vlan`
+(tagged) attach to physical infrastructure, are created by platform
+administrators only, and guarantee nothing beyond what that infrastructure
+provides. `tenant` is a VXLAN overlay and is the only kind that guarantees a
+distinct broadcast domain. One network corresponds to exactly one L2 segment,
+enforced by a unique `segment_key` (`uplink:tag` or `vxlan:vni`).
+
+Segment identifiers are allocated by the control plane and are never
+caller-selectable. VLAN tags may be chosen only by platform administrators and
+only from a configured allowlist, because a tag must match what the physical
+switch trunks. A released VNI is quarantined before reuse, so a host returning
+with a stale `vxbr<vni>` and a live tunnel mesh can never have it adopted by a
+different network.
+
+*Consequences.* Isolation claims exist only where they can be enforced; a
+provider network says out loud that it guarantees nothing. Networks predating
+this ADR are grandfathered with a NULL segment key — excluded from the unique
+index, flagged `legacy_segment` — so a running cluster is untouched and
+consolidating them stays an operator action rather than something a migration
+does to live workloads. A `tenant` network is L2-only: nothing routes off it
+until an L3 gateway exists. Rejected: overlay-only networking (breaks provider
+connectivity on day one); caller-chosen VNIs; and `max(vni)+1` allocation, whose
+release-then-reuse is the stale-mesh bug this replaces.
+
+### ADR-017 — Every guest port carries an explicit dataplane policy
+
+*Status:* Accepted.
+
+*Context.* A NIC with no security group was unfiltered: control sent
+`filtered=false` and the agent cleared every OpenFlow rule for that TAP. Absence
+of configuration meant absence of enforcement, which is indistinguishable from a
+misconfiguration and leaves nothing to audit.
+
+*Decision.* Effective policy for a NIC is its network's default security group
+unioned with the NIC's own groups. An empty NIC group set therefore means "the
+network's default applies", never "unfiltered". "Open" is expressed as an
+explicit allow-any rule inside a real security group — an object that can be
+read, audited and tightened — never as the absence of one. A network's default
+group is `managed`: it cannot be deleted on its own, because that would leave
+every NIC on that network silently unpoliced.
+
+*Consequences.* Migration seeds every existing network a permissive default, so
+reachability on upgrade is unchanged, and tightening becomes a visible,
+reversible, per-network action. Because moving a NIC from no flows to conntrack
+flows is still a real dataplane change, enforcement is gated on
+`[network] policy_mode`, which defaults to the previous behaviour. Rejected: a
+cluster-wide default-deny flag — a flag day for every VM at once, invisible in
+the API, and unable to express "this network stays open while that one closes".
 
 ## 45. Longer-term architecture
 

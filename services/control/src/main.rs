@@ -18,6 +18,7 @@ mod netalloc;
 mod rbac;
 mod reconcile;
 mod scheduler;
+mod segments;
 mod store;
 
 use std::path::PathBuf;
@@ -95,7 +96,8 @@ async fn main() -> anyhow::Result<()> {
     }
     let store = Store::new(pool, config.storage.shared_volumes_dir.clone())
         .with_crypto(cryptor.clone())
-        .with_allowed_paths(config.storage.allowed_paths.clone());
+        .with_allowed_paths(config.storage.allowed_paths.clone())
+        .with_network_policy(config.network.clone());
     info!(
         roots = ?config.storage.allowed_paths,
         "caller-supplied disk/kernel/firmware paths confined to these roots"
