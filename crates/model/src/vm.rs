@@ -266,7 +266,7 @@ impl DiskSpec {
 }
 
 /// The on-disk format of a volume. (Translation to Cloud Hypervisor's own
-/// `image_type` enum lives in `ch-client`, per ADR-013.)
+/// `image_type` enum lives in `vquasar-client`, per ADR-013.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiskImageType {

@@ -234,7 +234,7 @@ if [[ "$ROLE" == "agent" ]]; then
     ADVERTISE_HOST="${ADVERTISE_HOST:-127.0.0.1}"
   fi
   write_env <<EOF
-# ch-agent configuration (systemd EnvironmentFile). See design section 36.
+# vquasar-agent configuration (systemd EnvironmentFile). See design section 36.
 VQUASAR_AGENT_AGENT__NAME=$NAME
 VQUASAR_AGENT_GRPC__LISTEN=$GRPC_LISTEN
 VQUASAR_AGENT_HYPERVISOR__BINARY=$CH_BINARY
@@ -313,7 +313,7 @@ else # control
     fi
   fi
   write_env <<EOF
-# ch-control configuration (systemd EnvironmentFile). See design section 36.
+# vquasar-control configuration (systemd EnvironmentFile). See design section 36.
 VQUASAR_CONTROL_DATABASE__URL=$DB_URL
 VQUASAR_CONTROL_SERVER__LISTEN=$LISTEN
 VQUASAR_CONTROL_RECONCILE__INTERVAL_SECS=3

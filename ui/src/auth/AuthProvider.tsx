@@ -1,6 +1,6 @@
 // OIDC authentication context (design M12b).
 //
-// ch-control is a resource server: this SPA obtains an access token from the
+// vquasar-control is a resource server: this SPA obtains an access token from the
 // external OIDC provider (Authorization Code + PKCE) and sends it as a bearer
 // token on every API call. The control plane's public `/auth-config` tells us
 // whether auth is enabled and, if so, the issuer + client id to log in with.

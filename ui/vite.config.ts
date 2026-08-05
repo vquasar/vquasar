@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 // The UI is API-only (design section 34). In dev, proxy /api to the running
 // control plane so the app is same-origin (no CORS). The production bundle is
-// served by ch-control from the same origin.
+// served by vquasar-control from the same origin.
 export default defineConfig({
   plugins: [react()],
   server: {

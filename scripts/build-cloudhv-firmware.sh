@@ -60,7 +60,7 @@ cp "$FD" "$BASE_DIR/firmware/CLOUDHV.fd"
 echo
 echo "Done: $BASE_DIR/firmware/CLOUDHV.fd"
 echo "Boot a cloud image with it (no kernel extraction needed):"
-echo "  cargo run -p ch-client --example boot_vm -- \\"
+echo "  cargo run -p vquasar-client --example boot_vm -- \\"
 echo "    --binary        $BASE_DIR/bin/cloud-hypervisor \\"
 echo "    --firmware      $BASE_DIR/firmware/CLOUDHV.fd \\"
 echo "    --disk          $BASE_DIR/volumes/<vm>.raw \\"

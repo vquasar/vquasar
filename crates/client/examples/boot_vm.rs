@@ -10,7 +10,7 @@
 //! Example (direct-kernel boot of an Ubuntu cloud image):
 //!
 //! ```text
-//! cargo run -p ch-client --example boot_vm -- \
+//! cargo run -p vquasar-client --example boot_vm -- \
 //!   --binary      /var/lib/vquasar/bin/cloud-hypervisor \
 //!   --kernel      /var/lib/vquasar/images/vmlinuz-7.0.0-28-generic \
 //!   --initramfs   /var/lib/vquasar/images/initrd.img-7.0.0-28-generic \
@@ -18,7 +18,7 @@
 //!   --disk        /var/lib/vquasar/volumes/dk01.raw \
 //!   --readonly-disk /var/lib/vquasar/seed/seed.iso \
 //!   --runtime-dir /var/lib/vquasar/vms/dk01 \
-//!   --marker      "CH-ORCHESTRATOR-BOOT-OK"
+//!   --marker      "VQUASAR-BOOT-OK"
 //! ```
 
 use std::path::PathBuf;
@@ -79,7 +79,7 @@ struct Cli {
     #[arg(long, default_value_t = 180)]
     wait_secs: u64,
     /// Serial marker string that signals a successful boot.
-    #[arg(long, default_value = "CH-ORCHESTRATOR-BOOT-OK")]
+    #[arg(long, default_value = "VQUASAR-BOOT-OK")]
     marker: String,
     /// Leave the VM running on success instead of shutting it down.
     #[arg(long)]

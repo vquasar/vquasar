@@ -83,7 +83,7 @@ Primary principles:
       Hypervisor
 ```
 
-Two Rust executables initially: `ch-control` and `ch-agent`. Avoid unnecessary
+Two Rust executables initially: `vquasar-control` and `vquasar-agent`. Avoid unnecessary
 microservices.
 
 ## 4. Repository layout
@@ -96,7 +96,7 @@ vquasar/
 ├── rust-toolchain.toml / deny.toml
 ├── .github/workflows/
 ├── crates/
-│   ├── common/  model/  ch-client/  host/  network/
+│   ├── common/  model/  client/  host/  network/
 │   ├── storage/ scheduler/ api/ proto/
 ├── services/control/  services/agent/
 ├── ui/
@@ -154,7 +154,7 @@ Persist desired state first, then reconcile — do not model the control plane a
 
 ## 8. Control-plane responsibilities
 
-`ch-control` owns global intent: persistent API objects, public REST API,
+`vquasar-control` owns global intent: persistent API objects, public REST API,
 scheduling, desired VM state, network/storage definitions, host registration
 and availability, task lifecycle, events, orchestration workflows (auth later).
 
@@ -164,7 +164,7 @@ remotely. Those are host-agent responsibilities.
 
 ## 9. Host agent
 
-`ch-agent` runs once on every virtualization host and is the local authority.
+`vquasar-agent` runs once on every virtualization host and is the local authority.
 
 **Host discovery** reports: hostname, machine UUID, architecture, kernel
 version, Cloud Hypervisor version, logical CPUs, CPU topology/model/features,
@@ -188,7 +188,7 @@ Persistent host state should not depend solely on `/run`.
 
 ## 10. Cloud Hypervisor integration
 
-Dedicated crate `crates/ch-client` exposes a `Hypervisor` trait for testing,
+Dedicated crate `crates/client` exposes a `Hypervisor` trait for testing,
 mocking and isolating CH version changes (not for supporting QEMU). The real
 implementation talks directly to the CH API socket; CH processes are launched by
 the agent. Do not shell out to `ch-remote` for normal operation.
@@ -198,7 +198,7 @@ the agent. Do not shell out to `ch-remote` for normal operation.
 The agent must recover its VM inventory after restart: inspect runtime state and
 running CH processes, connect to known API sockets, compare with control-plane
 assignments, reconstruct and report observed state. **VM processes must survive
-agent restarts** — restarting `ch-agent` must not kill VMs.
+agent restarts** — restarting `vquasar-agent` must not kill VMs.
 
 ## 12. Agent/control-plane protocol
 
@@ -306,8 +306,8 @@ Direct-kernel boot is the initial developer workflow; disk boot follows shortly.
 
 ## 25. Serial console
 
-A usable console is required early: browser terminal → WebSocket → ch-control →
-gRPC → ch-agent → VM serial socket. No graphical console initially; frontend
+A usable console is required early: browser terminal → WebSocket → vquasar-control →
+gRPC → vquasar-agent → VM serial socket. No graphical console initially; frontend
 uses `xterm.js`. Console auth may initially reuse the UI/API identity.
 
 ## 26. Heartbeats
@@ -362,7 +362,7 @@ conflicting updates.
 
 ## 32. Controllers
 
-Explicit controllers in `ch-control`: `HostController`, `VmController` (later
+Explicit controllers in `vquasar-control`: `HostController`, `VmController` (later
 `NetworkController`, `VolumeController`, `MigrationController`, `HaController`).
 A controller loop finds resources needing reconciliation and reconciles each.
 Correctness must not depend exclusively on receiving an event — a periodic
@@ -412,7 +412,7 @@ is available.
 ## 39. Development environment
 
 Primary target: Linux x86_64, KVM, Cloud Hypervisor v53+, Open vSwitch,
-PostgreSQL. Developer mode runs `ch-control`, `ch-agent` and PostgreSQL on one
+PostgreSQL. Developer mode runs `vquasar-control`, `vquasar-agent` and PostgreSQL on one
 machine; a two-host lab is the next environment.
 
 ## 40. Explicit MVP scope
@@ -435,7 +435,7 @@ federation. Architect for these where appropriate; do not implement them.
 
 ## 42. Initial development milestones
 
-* **M0 — Rust workspace:** workspace, `common`/`model`/`ch-client` crates, agent
+* **M0 — Rust workspace:** workspace, `common`/`model`/`client` crates, agent
   and control services, CI (fmt, clippy, tests). Acceptance: `cargo build`,
   `cargo test`, `cargo clippy` all succeed on the workspace.
 * **M1 — Cloud Hypervisor adapter:** launch VMM, connect socket, create/boot/
@@ -458,19 +458,19 @@ federation. Architect for these where appropriate; do not implement them.
 ## 43. First implementation task
 
 Start with Milestone 0 and the foundation for Milestone 1 only. Create the
-workspace with `crates/common`, `crates/model`, `crates/ch-client`,
+workspace with `crates/common`, `crates/model`, `crates/client`,
 `services/agent`, `services/control`. Compiles without PostgreSQL, OVS, Tonic or
 the frontend. Define initial domain types (`VmId`, `HostId`,
 `VirtualMachineSpec`, `CpuSpec`, `MemorySpec`, `BootSpec`, `VmPhase`,
 `DesiredPowerState`).
 
-In `ch-client`, define the `Hypervisor` trait (`create`, `boot`, `shutdown`,
+In `vquasar-client`, define the `Hypervisor` trait (`create`, `boot`, `shutdown`,
 `info`) with `CloudHypervisor` and `FakeHypervisor` implementations, separated
 into process management, API client and configuration translation. Unit-test VM
 spec validation, CH config translation and fake state transitions. Add CI
 (rustfmt, clippy, cargo test, cargo deny). Model the CH client against the real
 Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
-`ch-client` (they must not leak into the domain model).
+`vquasar-client` (they must not leak into the domain model).
 
 ## 44. Architectural invariants (ADRs)
 
@@ -500,7 +500,7 @@ hardware, networking and isolation capabilities as schedulable primitives.
 
 ## 46. Success criterion
 
-Three physical Linux hosts (Cloud Hypervisor + ch-agent + OVS) under ch-control
+Three physical Linux hosts (Cloud Hypervisor + vquasar-agent + OVS) under vquasar-control
 with a web UI, from which one can: discover all three hosts; see CPU/memory;
 create a Linux VM; have the scheduler choose a host; connect it to a virtual
 network; access its serial console; stop and restart it; migrate it to another

@@ -13,7 +13,7 @@
 //! export CH_IT_KERNEL=/var/lib/vquasar/images/vmlinuz-7.0.0-28-generic
 //! export CH_IT_INITRAMFS=/var/lib/vquasar/images/initrd.img-7.0.0-28-generic
 //! export CH_IT_ROOTFS=/var/lib/vquasar/images/ubuntu-26.04.raw
-//! cargo test -p ch-client --test boot_integration -- --nocapture
+//! cargo test -p vquasar-client --test boot_integration -- --nocapture
 //! ```
 //!
 //! The root disk is attached **read-only** and we only wait for the kernel

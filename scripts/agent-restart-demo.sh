@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Milestone 2 acceptance: drive ch-agent over gRPC to run a real VM, then prove
+# Milestone 2 acceptance: drive vquasar-agent over gRPC to run a real VM, then prove
 # the VM survives an agent restart (design document, section 11, milestone 2).
 #
 # Requires a prepared lab (scripts/prepare-ubuntu-image.sh) under BASE_DIR and a
@@ -13,9 +13,9 @@ ENDPOINT="http://${LISTEN}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> Building agent + client"
-cargo build -q -p ch-agent
-cargo build -q -p ch-agent --example agent_client
-AGENT="$ROOT/target/debug/ch-agent"
+cargo build -q -p vquasar-agent
+cargo build -q -p vquasar-agent --example agent_client
+AGENT="$ROOT/target/debug/vquasar-agent"
 CLIENT="$ROOT/target/debug/examples/agent_client"
 
 export VQUASAR_AGENT_AGENT__NAME="dome"

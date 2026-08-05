@@ -8,7 +8,7 @@ top.
 ## Done
 
 ### MVP (M0–M8)
-- **M0/M1** — Cargo workspace, stable domain model, `ch-client` Cloud Hypervisor
+- **M0/M1** — Cargo workspace, stable domain model, `vquasar-client` Cloud Hypervisor
   adapter; boots real Ubuntu VMs via direct-kernel and UEFI firmware.
 - **M2** — Host agent: `HostAgent` gRPC, CH process manager, restart survival.
 - **M3** — Control plane: PostgreSQL, REST API, scheduler, reconcile loop.
@@ -53,7 +53,7 @@ Split into three shippable slices.
   IdP, but code to standard OIDC): the API is an OAuth2 resource server
   validating JWTs (JWKS discovery + caching, iss/aud/exp); the UI does OIDC
   Authorization Code + PKCE. **Authorization — roles → permissions over our
-  resources — lives in `ch-control`**, mapping OIDC identity + groups to our
+  resources — lives in `vquasar-control`**, mapping OIDC identity + groups to our
   roles; every endpoint is permission-gated, the console WS authorizes via a
   query-param token, and the SPA hides actions the caller lacks. A **mandatory
   first-admin bootstrap is set at install time** (solves air-gap and the
