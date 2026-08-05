@@ -24,3 +24,4 @@ config/local.toml
 # UI (added in Milestone 5)
 /ui/node_modules
 /ui/dist
+brand_*

@@ -233,7 +233,7 @@ if [[ "$ROLE" == "agent" ]]; then
     install -m 0644 "$BOOTSTRAP_CA" "$bca"
     echo "==> enrolling (CN=$NAME): generating key + CSR"
     openssl genrsa -out "$bkey" 2048 2>/dev/null; chmod 600 "$bkey"
-    openssl req -new -key "$bkey" -out "$bcsr" -subj "/CN=$NAME" 2>/dev/null
+    openssl req -new -key "$bkey" -out "$bcsr" -subj "/O=vquasar/CN=$NAME" 2>/dev/null
     echo "==> requesting certificate from $BOOTSTRAP_URL"
     code=$(curl -sS --cacert "$bca" -H "X-Enrollment-Token: $BOOTSTRAP_TOKEN" \
       -H "Content-Type: application/x-pem-file" --data-binary @"$bcsr" \

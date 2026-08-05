@@ -139,13 +139,23 @@ Split into three shippable slices.
     a new value: enabling IPsec first leaves every existing overlay VM 34 bytes
     over, and the resulting blackhole is silent (ARP, ping and the TCP handshake
     all succeed). Control warns at every start while tunnels are cleartext.
-  - **Remaining:** OVS-native IPsec (portable across libreswan and strongSwan,
-    unlike a swanctl-specific integration), one anchor tunnel port per host pair
-    rather than per VNI — the IPsec selector is `(peer_ip, udp/4789)` and has no
-    VNI in it — and CA-signed mode reusing the internal PKI. Note the certificate
-    subject must have a second RDN after the CN (`/O=vquasar/CN=…`), because
-    `ovs-monitor-ipsec` extracts the CN with a regex that requires a trailing
-    comma, and the CN must also appear as a `DNS:` SAN.
+  - **IPsec** ✅ **Implemented, not yet exercised on hardware.** OVS-native, so
+    the same OVSDB configuration works with libreswan on RHEL-family hosts and
+    strongSwan on Debian-family ones — a swanctl-specific integration would have
+    been strongSwan-only. One anchor tunnel port per **host pair** on a
+    dedicated `br-vxipsec` bridge, not per VNI: the IPsec selector is
+    `(peer_ip, udp/4789)` and carries no VNI, so one association protects every
+    overlay between two hosts, and keeping it off the per-VNI bridges stops
+    overlay GC from tearing down the host's protection. Peers are identity-
+    pinned via `options:remote_name` using the peer certificate's CN, which
+    enrollment now records on the host row; a peer whose CN is unknown is not
+    pinned and the agent warns. Certificate subjects gained a second RDN
+    (`/O=vquasar/CN=…`) and the CN as a `DNS:` SAN — verified against the exact
+    regex `ovs-monitor-ipsec` uses, which a single-RDN subject silently fails.
+    See [`docs/overlay-encryption.md`](docs/overlay-encryption.md).
+    **Still required before this can be called done:** install
+    `openvswitch-ipsec` on the lab hosts and verify ESP on the wire, since none
+    of the OVS/IKE interaction has been exercised against a real installation.
 - **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
   VXLAN packet from an unconfigured source IP matches no policy and is still
   delivered. Needs a host firewall rule accepting only ESP-protected traffic —

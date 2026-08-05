@@ -137,6 +137,15 @@ impl HostAgent for AgentService {
                 vlan: n.vlan as u16,
                 vni: n.vni,
                 overlay_peers: n.overlay_peers,
+                encrypt_underlay: n.encrypt_underlay,
+                overlay_peer_identities: n
+                    .overlay_peer_identities
+                    .into_iter()
+                    .map(|p| crate::network::OverlayPeerId {
+                        underlay_ip: p.underlay_ip,
+                        cert_cn: p.cert_cn,
+                    })
+                    .collect(),
                 filtered: n.filtered,
                 ingress_rules: n
                     .ingress_rules

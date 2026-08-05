@@ -635,14 +635,23 @@ async fn resolve_bindings(
     // Exclude this VM's assigned host (passed in, since `vm.host_id` may still be
     // stale on the tick it was first scheduled) so no host tunnels to itself.
     let mut overlay_peers: Vec<String> = Vec::new();
+    let mut overlay_identities: Vec<vquasar_proto::agent::OverlayPeer> = Vec::new();
     for h in store.list_hosts().await? {
         if h.id == this_host {
             continue;
         }
         if let Some(ip) = resolve_underlay(&h.endpoint).await {
-            overlay_peers.push(ip);
+            overlay_peers.push(ip.clone());
+            // The CN pins who the agent accepts on the other end of a tunnel
+            // (M18b). Unknown for a host enrolled before it was recorded — the
+            // agent then falls back to CA-only trust and says so.
+            overlay_identities.push(vquasar_proto::agent::OverlayPeer {
+                underlay_ip: ip,
+                cert_cn: h.cert_cn.clone().unwrap_or_default(),
+            });
         }
     }
+    let encrypt_underlay = store.network_policy().overlay_encryption.is_encrypted();
 
     for (index, nic) in vm.spec.network_interfaces.iter().enumerate() {
         let Some(network) = store.get_network(nic.network_id.as_uuid()).await? else {
@@ -652,9 +661,9 @@ async fn resolve_bindings(
             .mac
             .clone()
             .unwrap_or_else(|| allocate_mac(vm.id, index));
-        let (vni, peers) = match network.vni {
-            Some(v) => (v as u32, overlay_peers.clone()),
-            None => (0, Vec::new()),
+        let (vni, peers, identities) = match network.vni {
+            Some(v) => (v as u32, overlay_peers.clone(), overlay_identities.clone()),
+            None => (0, Vec::new(), Vec::new()),
         };
 
         // Effective policy is the network's default group unioned with the NIC's
@@ -694,6 +703,8 @@ async fn resolve_bindings(
             vlan: network.vlan.unwrap_or(0) as u32,
             vni,
             overlay_peers: peers,
+            overlay_peer_identities: identities,
+            encrypt_underlay: encrypt_underlay && vni != 0,
             filtered,
             ingress_rules,
         });

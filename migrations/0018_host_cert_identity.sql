@@ -1,0 +1,12 @@
+-- The certificate identity of a host's agent (design §18, M18b).
+--
+-- IPsec between hosts authenticates with the internal CA, but chaining to the
+-- CA is not identity: every agent's certificate does. `ovs-monitor-ipsec` pins
+-- the peer with `options:remote_name`, which is the peer certificate's Common
+-- Name — so the control plane has to know it in order to tell each agent who it
+-- should expect on the other end of a tunnel.
+--
+-- Recorded at enrollment from the CSR subject. NULL for a host whose
+-- certificate was issued by hand before this column existed; such a host's
+-- tunnels cannot be identity-pinned until it is set or the host re-enrolls.
+ALTER TABLE hosts ADD COLUMN cert_cn TEXT;

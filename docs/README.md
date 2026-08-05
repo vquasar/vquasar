@@ -21,6 +21,9 @@ Guides for running and developing vquasar. Start at the
   review (an agent certificate that was also a control credential, cloud-init
   secrets returned to any reader, unconfined host paths in a VM spec), what
   changed, and what to check when upgrading.
+* [**Encrypting the VXLAN underlay**](overlay-encryption.md) — why tenant
+  networks are not isolated until this is on, the two-step MTU-then-IPsec
+  rollout, and how to verify encryption is actually happening.
 * [**Encrypting the connection to PostgreSQL**](postgres-tls.md) — why the
   driver's default silently accepts plaintext, and how to make TLS mandatory
   and verified.

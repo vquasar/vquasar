@@ -88,9 +88,13 @@ san_from() {
 gen_cert() {
   local name="$1" sans="$2" eku="${3:-serverAuth}"
   openssl genrsa -out "$name.key" 2048 2>/dev/null
-  openssl req -new -key "$name.key" -out "$name.csr" -subj "/CN=$name" 2>/dev/null
+  # The subject carries an O= before the CN deliberately: ovs-monitor-ipsec
+  # reads the CN from RFC2253 output with a regex that requires a trailing
+  # comma, so a single-RDN subject silently fails to parse and every IPsec
+  # tunnel then reports a misleading "certificate not set" (design §18, M18b).
+  openssl req -new -key "$name.key" -out "$name.csr" -subj "/O=vquasar/CN=$name" 2>/dev/null
   cat > "$name.ext" <<EOF
-subjectAltName = $sans
+subjectAltName = $sans,DNS:$name
 extendedKeyUsage = $eku
 keyUsage = digitalSignature, keyEncipherment
 EOF
