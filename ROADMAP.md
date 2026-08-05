@@ -163,9 +163,17 @@ Split into three shippable slices.
     `dst <peer> proto udp dport 4789` — **with no VNI**, which is the empirical
     confirmation that one association per host pair protects every overlay
     between them, and therefore that the anchor belongs per peer.
-    **Still required:** ESP confirmed on the wire between two real hosts, which
-    needs `openvswitch-ipsec` installed on the agent hosts (dome is the control
-    plane and carries no overlays).
+    **ESP confirmed on the wire between two real hosts**, cross-distro: Ubuntu
+    24.04 / OVS 3.3.4 / strongSwan 5.9.13 ↔ Rocky 10 / OVS 3.5.3 / libreswan
+    5.3.2, which is the portability case OVS-native was chosen for. An overlay
+    ping produced `ESP(spi=…)` in both directions on the receiver's physical NIC
+    with no cleartext VXLAN, and the transport-mode SA counters advanced with
+    the traffic. Three things the packages do not set up, all found by running
+    it and now handled or documented: RHEL-family firewalld permits 4789/udp but
+    not IKE/ESP; AppArmor confines charon to `/etc/ipsec.d/**`, so credentials
+    elsewhere fail as a bare "no private key found" (the agent now stages copies
+    there); and strongSwan will not build a trust chain from OVS's `ca_cert`
+    alone — the CA must be in `/etc/ipsec.d/cacerts/`.
 - **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
   VXLAN packet from an unconfigured source IP matches no policy and is still
   delivered. Needs a host firewall rule accepting only ESP-protected traffic —
