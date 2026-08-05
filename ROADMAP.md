@@ -208,8 +208,16 @@ Split into three shippable slices.
   OTLP/gRPC (`logging.otlp_endpoint`, `install.sh --otlp-endpoint`) verified
   against a real OTel collector. Cross-service (control→agent) trace-context
   propagation over gRPC is a follow-up.
-- Automated integration/e2e tests against a cluster. (The flaky parallel
-  tempdir-teardown unit test is fixed — `RuntimeLayout::remove_vm_dir` retries
-  on `DirectoryNotEmpty`, a real serial-console-vs-delete TOCTOU.)
+- **Automated e2e tests + CI.** ✅ **Done.** `services/control/tests/e2e.rs`
+  runs the real `vquasar-control` binary against a throwaway PostgreSQL, with
+  the test acting as the host agent (in-process tonic `HostAgent`) — exercising
+  REST → reconcile → gRPC end to end (lifecycle; scheduling/migration/drain),
+  no hardware. GitHub Actions (`.github/workflows/ci.yml`) runs fmt + clippy
+  (-D warnings) + unit tests + e2e (Postgres service) + the web-UI build on
+  push/PR (toolchain pinned to match local). (The earlier flaky tempdir-
+  teardown unit test was fixed via `RuntimeLayout::remove_vm_dir` retrying on
+  `DirectoryNotEmpty`.)
+- **Project renamed ch-orchestrator → vquasar**, published to
+  github.com/vquasar/vquasar (Apache-2.0); live cluster migrated.
 - `curl | sh` bootstrap installer (the install scripts are structured for it).
 - Keep DESIGN.md and API reference docs current with M9–M17.
