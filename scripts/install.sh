@@ -38,6 +38,12 @@
 #
 # control options:
 #   --db-url URL         Postgres URL              (default: postgres://ch:ch@127.0.0.1:5432/vquasar)
+#   --db-ssl-mode MODE   TLS to Postgres: disable|allow|prefer|require|verify-ca|
+#                        verify-full. Unset ⇒ prefer, which silently accepts an
+#                        unencrypted connection. Use verify-full in production.
+#   --db-ca PATH         CA that signed the Postgres server certificate
+#   --db-cert PATH       Client certificate for Postgres cert authentication
+#   --db-key PATH        Client key matching --db-cert (0600)
 #   --listen ADDR        REST/UI listen            (default: 0.0.0.0:8080)
 #   --ui-dir PATH        UI dist to serve          (default: install ./ui/dist to /usr/local/share/vquasar/ui)
 #   --oidc-issuer URL    OIDC issuer (enables auth; design M12b)
@@ -65,6 +71,7 @@ BINARY=""; NO_START=0; FORCE_CONFIG=0
 NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
 DB_URL="postgres://ch:ch@127.0.0.1:5432/vquasar"; LISTEN="0.0.0.0:8080"; UI_DIR=""
+DB_SSL_MODE=""; DB_CA=""; DB_CERT=""; DB_KEY=""
 TLS_CA=""; TLS_CERT=""; TLS_KEY=""
 LOG_FORMAT=""; OTLP_ENDPOINT=""
 TLS_ISSUER_CERT=""; TLS_ISSUER_KEY=""; ENROLLMENT_URL=""
@@ -84,6 +91,10 @@ while [[ $# -gt 0 ]]; do
     --seccomp) SECCOMP="$2"; shift 2 ;;
     --phone-home-url) PHONE_HOME_URL="$2"; shift 2 ;;
     --db-url) DB_URL="$2"; shift 2 ;;
+    --db-ssl-mode) DB_SSL_MODE="$2"; shift 2 ;;
+    --db-ca) DB_CA="$2"; shift 2 ;;
+    --db-cert) DB_CERT="$2"; shift 2 ;;
+    --db-key) DB_KEY="$2"; shift 2 ;;
     --listen) LISTEN="$2"; shift 2 ;;
     --ui-dir) UI_DIR="$2"; shift 2 ;;
     --tls-ca) TLS_CA="$2"; shift 2 ;;
@@ -165,6 +176,15 @@ auth_env() {
   [[ -n "$OIDC_AUDIENCE" ]] && echo "VQUASAR_CONTROL_AUTH__AUDIENCE=$OIDC_AUDIENCE"
   [[ -n "$OIDC_CA" ]] && echo "VQUASAR_CONTROL_AUTH__CA=$OIDC_CA"
   [[ -n "$BOOTSTRAP_ADMIN" ]] && echo "VQUASAR_CONTROL_AUTH__BOOTSTRAP_ADMIN=$BOOTSTRAP_ADMIN"
+}
+
+# Emit the database TLS env vars for the control plane. Absent ⇒ the driver's
+# `prefer`, which falls back to plaintext without complaining.
+db_tls_env() {
+  [[ -n "$DB_SSL_MODE" ]] && echo "VQUASAR_CONTROL_DATABASE__SSL_MODE=$DB_SSL_MODE"
+  [[ -n "$DB_CA" ]] && echo "VQUASAR_CONTROL_DATABASE__CA=$DB_CA"
+  [[ -n "$DB_CERT" ]] && echo "VQUASAR_CONTROL_DATABASE__CERT=$DB_CERT"
+  [[ -n "$DB_KEY" ]] && echo "VQUASAR_CONTROL_DATABASE__KEY=$DB_KEY"
 }
 
 # Emit the field-encryption env vars (design M12c) for the control plane.
@@ -301,6 +321,7 @@ VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR=$STATE_DIR/shared/volumes
 ${UI_DIR:+VQUASAR_CONTROL_SERVER__UI_DIR=$UI_DIR}
 ${LOG_FORMAT:+VQUASAR_CONTROL_LOGGING__FORMAT=$LOG_FORMAT}
 ${OTLP_ENDPOINT:+VQUASAR_CONTROL_LOGGING__OTLP_ENDPOINT=$OTLP_ENDPOINT}
+$(db_tls_env)
 $(tls_env CONTROL)
 $(auth_env)
 $(enc_env)

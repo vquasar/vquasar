@@ -67,10 +67,23 @@ async fn main() -> anyhow::Result<()> {
         info!("agent connections use mutual TLS");
     }
 
+    // Database connection, including TLS to PostgreSQL. Unset ⇒ libpq's
+    // `prefer`, which silently accepts plaintext — warn rather than fail so
+    // existing deployments keep working, but make the exposure visible.
+    let db_ssl_mode = config.database.effective_ssl_mode();
+    if config.database.tls_is_optional() {
+        tracing::warn!(
+            ssl_mode = %db_ssl_mode,
+            "database connection is NOT required to be encrypted — set \
+             [database] ssl_mode = \"verify-full\" (and ca) to enforce TLS"
+        );
+    } else {
+        info!(ssl_mode = %db_ssl_mode, "database connection requires TLS");
+    }
     info!(database = %redact(&config.database.url), "connecting to PostgreSQL");
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&config.database.url)
+        .connect_with(config.database.connect_options()?)
         .await?;
     // Field encryption at rest (design M12c). Disabled -> plaintext.
     let cryptor = crate::crypto::Cryptor::from_config(&config.encryption)
