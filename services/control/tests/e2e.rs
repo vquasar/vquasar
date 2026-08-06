@@ -85,6 +85,7 @@ impl HostAgent for FakeAgent {
     ) -> Result<Response<GetHostInfoResponse>, Status> {
         let vm_count = self.state.lock().unwrap().vms.len() as u32;
         Ok(Response::new(GetHostInfoResponse {
+            overlay_vnis: vec![],
             host_id: self.host_id.clone(),
             hostname: self.host_id.clone(),
             architecture: "x86_64".into(),

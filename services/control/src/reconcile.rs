@@ -52,7 +52,19 @@ pub async fn run(store: Store, interval: Duration) {
             .await
         {
             Ok(n) if n > 0 => tracing::info!(freed = n, "released quarantined network segments"),
-            Ok(_) => {}
+            Ok(_) => {
+                // A segment that never clears is a host that still carries the
+                // bridge — say which, rather than leaving a VNI mysteriously
+                // unavailable.
+                if let Ok(held) = crate::segments::held_by_hosts(store.pool()).await {
+                    for (segment, host) in held {
+                        tracing::debug!(
+                            %segment, %host,
+                            "segment stays quarantined: host still reports the overlay bridge"
+                        );
+                    }
+                }
+            }
             Err(e) => warn!(error = %e, "segment quarantine sweep failed"),
         }
         // Refresh inventory gauges from the current DB state (design M17).
@@ -163,6 +175,7 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
         match agent.get_host_info().await {
             Ok(info) => {
                 let inv = HostInventory {
+                    overlay_vnis: info.overlay_vnis.iter().map(|v| *v as i32).collect(),
                     hostname: none_if_empty(info.hostname),
                     architecture: none_if_empty(info.architecture),
                     kernel_version: none_if_empty(info.kernel_version),

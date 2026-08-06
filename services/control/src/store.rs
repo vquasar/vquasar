@@ -28,6 +28,9 @@ pub struct Host {
     /// CN of this host's agent certificate, for IPsec peer pinning (M18b).
     #[sqlx(default)]
     pub cert_cn: Option<String>,
+    /// VNIs this host currently carries an overlay bridge for (design §18).
+    #[sqlx(default)]
+    pub overlay_vnis: Vec<i32>,
     #[sqlx(default)]
     pub cpu_features: Vec<String>,
     pub total_memory_bytes: Option<i64>,
@@ -299,6 +302,8 @@ pub struct Event {
 /// Inventory reported by an agent's `GetHostInfo`, used to refresh a host row.
 #[derive(Debug, Clone, Default)]
 pub struct HostInventory {
+    /// VNIs the host reports carrying an overlay bridge for (design §18).
+    pub overlay_vnis: Vec<i32>,
     pub hostname: Option<String>,
     pub architecture: Option<String>,
     pub kernel_version: Option<String>,
@@ -598,7 +603,7 @@ impl Store {
             "UPDATE hosts SET state='Ready', hostname=$2, architecture=$3, kernel_version=$4,
                 cloud_hypervisor_version=$5, logical_cpus=$6, cpu_model=$7, total_memory_bytes=$8,
                 available_memory_bytes=$9, vm_count=$10, last_heartbeat=$11, updated_at=$11,
-                cpu_vendor=$12, cpu_features=$13
+                cpu_vendor=$12, cpu_features=$13, overlay_vnis=$14
              WHERE id=$1",
         )
         .bind(id)
@@ -614,6 +619,7 @@ impl Store {
         .bind(now)
         .bind(&inv.cpu_vendor)
         .bind(&inv.cpu_features)
+        .bind(&inv.overlay_vnis)
         .execute(&self.pool)
         .await
         .map(|_| ())
