@@ -961,6 +961,35 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Give a grandfathered network a real L2 segment (design §18, ADR-016).
+    ///
+    /// Only ever called for a network whose `segment_key` is NULL. The unique
+    /// index is what makes this meaningful: if another network already occupies
+    /// the segment, this fails, which is the correct answer — they are the same
+    /// broadcast domain and only one row can describe it.
+    pub async fn adopt_network_segment(
+        &self,
+        id: Uuid,
+        physical_network: &str,
+        vlan: Option<i32>,
+        segment_key: &str,
+    ) -> Result<Option<Network>> {
+        sqlx::query_as::<_, Network>(
+            "UPDATE networks
+                SET physical_network = $2, vlan = $3, segment_key = $4,
+                    legacy_segment = false, updated_at = $5
+              WHERE id = $1 AND segment_key IS NULL
+              RETURNING *",
+        )
+        .bind(id)
+        .bind(physical_network)
+        .bind(vlan)
+        .bind(segment_key)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     pub async fn update_network(
         &self,
         id: Uuid,

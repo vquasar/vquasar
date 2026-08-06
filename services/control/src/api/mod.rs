@@ -76,6 +76,7 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
                 .delete(networks::delete),
         )
         .route("/networks/:id/allocations", get(networks::allocations))
+        .route("/networks/:id/adopt-segment", post(networks::adopt_segment))
         .route(
             "/security-groups",
             get(security_groups::list).post(security_groups::create),
