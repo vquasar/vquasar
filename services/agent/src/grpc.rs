@@ -68,6 +68,7 @@ impl HostAgent for AgentService {
             logical_cpus: host.logical_cpus.unwrap_or_default(),
             cpu_model: host.cpu_model.unwrap_or_default(),
             cpu_vendor: host.cpu_vendor.unwrap_or_default(),
+            overlay_vnis: crate::network::overlay_vnis().await,
             cpu_features: host.cpu_features,
             total_memory_bytes: host.total_memory_bytes.unwrap_or_default(),
             available_memory_bytes: host.available_memory_bytes.unwrap_or_default(),
