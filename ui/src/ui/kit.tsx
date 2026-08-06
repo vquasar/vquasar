@@ -268,13 +268,19 @@ export function Pagination({
 
 /// The row overflow menu. Entries already filtered by permission at the call
 /// site; an empty list renders nothing.
-export function RowMenu({ items }: { items: { label: string; onClick: () => void; danger?: boolean }[] }) {
+export function RowMenu({
+  items,
+  inline,
+}: {
+  items: { label: string; onClick: () => void; danger?: boolean }[];
+  inline?: boolean;
+}) {
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
   if (items.length === 0) return <span />;
   return (
     <>
       <button
-        className="vq-rowmenu"
+        className={`vq-rowmenu${inline ? " inline" : ""}`}
         aria-label="Actions"
         onClick={(e) => {
           e.stopPropagation();

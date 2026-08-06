@@ -137,9 +137,25 @@ export interface Host {
   generation: number;
 }
 
+/// What a network is, and therefore what it isolates (design §18, ADR-016).
+/// `provider` and `vlan` attach to physical infrastructure and are
+/// platform-only; `tenant` is a self-contained VXLAN overlay.
+export type NetworkKind = "provider" | "vlan" | "tenant";
+
 export interface Network {
   id: string;
   name: string;
+  kind: NetworkKind;
+  /// Uplink a physical (provider/vlan) network attaches to.
+  physical_network: string | null;
+  /// The L2 segment this network occupies, unique fleet-wide.
+  segment_key: string | null;
+  /// Predates the kind model: its segment is not guaranteed distinct, so it may
+  /// share a broadcast domain with another network.
+  legacy_segment: boolean;
+  /// Policy applied to every NIC on this network, unioned with the NIC's own
+  /// groups (ADR-017).
+  default_security_group_id: string | null;
   vlan: number | null;
   // VXLAN overlay (M13b): set ⇒ VNI-isolated overlay spanning hosts.
   vni: number | null;
@@ -286,10 +302,16 @@ export interface Template {
 
 export interface CreateNetworkRequest {
   name: string;
+  /// Declares the isolation guarantee. Omitting it defaults to `provider`
+  /// server-side, so a VLAN network must say so explicitly or its tag is
+  /// rejected (ADR-016).
+  kind?: NetworkKind;
+  /// Uplink for a physical network. Defaults to `default`.
+  physical_network?: string | null;
   vlan?: number | null;
-  // VXLAN overlay (M13b): overlay=true auto-allocates a VNI (mutually exclusive
-  // with vlan); vni overrides the auto-allocation.
+  // Deprecated spelling of kind = "tenant"; kept for older callers.
   overlay?: boolean;
+  // Rejected by the control plane — a VNI is never caller-supplied.
   vni?: number | null;
   // IPAM (M13a); omit a family's cidr to leave it on DHCP.
   cidr_v4?: string | null;

@@ -6,6 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Me } from "../api/types";
+import type { Permission } from "./perm";
 
 export function useMe() {
   return useQuery({
@@ -16,11 +17,18 @@ export function useMe() {
 }
 
 /** Returns `can(permission)` for the current user. Fails closed while loading. */
-export function usePermissions(): { can: (perm: string) => boolean; loading: boolean } {
+export function usePermissions(): {
+  can: (perm: Permission) => boolean;
+  loading: boolean;
+} {
   const { data, isLoading } = useMe();
   const perms = data?.permissions;
   return {
     loading: isLoading,
-    can: (perm: string) => !!perms?.includes(perm),
+    // Exact match only. The catalog carries no wildcards — a superuser is
+    // expanded to the full catalog server-side before it reaches us — so
+    // treating "*" as a match here would invent authority the server never
+    // granted.
+    can: (perm: Permission) => !!perms?.includes(perm),
   };
 }

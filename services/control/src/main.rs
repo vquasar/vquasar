@@ -25,7 +25,6 @@ mod store;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::response::IntoResponse;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use tracing::info;
@@ -157,9 +156,11 @@ async fn main() -> anyhow::Result<()> {
         "reconcile loop started"
     );
 
-    // Public REST API, optionally serving the built web UI. Static assets are
-    // served from `/assets`; every other non-API path falls back to
-    // `index.html` (200) so the single-page router handles deep links.
+    // Public REST API, optionally serving the built web UI. Every file in the
+    // UI directory is served from its own path (hashed bundles under /assets,
+    // but also the favicons and brand marks that sit at the root); anything
+    // that matches no file falls back to `index.html` so the single-page router
+    // handles deep links like /hosts/:id.
     // Agent auto-enrollment (design M16): active only when the intermediate
     // issuing CA is configured.
     let enrollment = if config.tls.can_issue() {
@@ -192,24 +193,21 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ui_dir) = &config.server.ui_dir {
         let dir = std::path::PathBuf::from(ui_dir);
         let index = dir.join("index.html");
+        // ServeDir resolves a real file when one exists and otherwise serves
+        // the SPA shell. Path traversal is ServeDir's problem, and it rejects
+        // `..` before touching the filesystem.
+        let spa = tower_http::services::ServeDir::new(dir)
+            .fallback(tower_http::services::ServeFile::new(index));
+        // The console fetches OIDC metadata and tokens straight from the
+        // identity provider, so its origin is the one cross-origin destination
+        // the policy has to allow.
+        let idp_origin = origin_of(&config.auth.issuer);
         app = app
-            .nest_service(
-                "/assets",
-                tower_http::services::ServeDir::new(dir.join("assets")),
-            )
-            .fallback(move || {
-                let index = index.clone();
-                async move {
-                    match tokio::fs::read_to_string(&index).await {
-                        Ok(html) => axum::response::Html(html).into_response(),
-                        Err(e) => (
-                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("web UI not found: {e}"),
-                        )
-                            .into_response(),
-                    }
-                }
-            });
+            .fallback_service(spa)
+            .layer(axum::middleware::from_fn(move |req, next| {
+                let idp = idp_origin.clone();
+                async move { security_headers(idp, req, next).await }
+            }));
         info!(ui_dir = %ui_dir, "serving web UI");
     }
     if config.tls.enabled() {
@@ -257,4 +255,71 @@ fn redact(url: &str) -> String {
         Some((_creds, host)) => format!("postgres://***@{host}"),
         None => url.to_string(),
     }
+}
+
+/// Scheme + host of a URL, for use in a CSP source list. Returns `None` for an
+/// empty or unparseable issuer (auth disabled), which simply leaves the policy
+/// same-origin.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host = rest.split('/').next()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
+/// Baseline security headers for everything this server hands out (design
+/// section 30: a browser holding an operator's token is part of the trust
+/// boundary).
+///
+/// The console is entirely first-party — fonts, styles and scripts all ship in
+/// the bundle — so the policy is `'self'` with two deliberate exceptions:
+/// `style-src` allows inline styles because the component library injects them
+/// at runtime, and `connect-src` allows the OIDC provider's origin because the
+/// sign-in flow talks to it directly.
+async fn security_headers(
+    idp_origin: Option<String>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::{HeaderName, HeaderValue};
+
+    let mut res = next.run(req).await;
+    let connect = match &idp_origin {
+        Some(o) => format!("'self' {o}"),
+        None => "'self'".to_string(),
+    };
+    let csp = format!(
+        "default-src 'self'; \
+         script-src 'self'; \
+         style-src 'self' 'unsafe-inline'; \
+         font-src 'self'; \
+         img-src 'self' data:; \
+         connect-src {connect}; \
+         frame-ancestors 'none'; \
+         base-uri 'self'; \
+         form-action 'self'; \
+         object-src 'none'"
+    );
+    let headers = res.headers_mut();
+    for (name, value) in [
+        ("content-security-policy", csp.as_str()),
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("x-frame-options", "DENY"),
+        // The console needs no device APIs at all.
+        (
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=(), payment=()",
+        ),
+    ] {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            headers.insert(n, v);
+        }
+    }
+    res
 }

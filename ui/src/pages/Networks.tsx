@@ -14,6 +14,7 @@ import {
   useVms,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Card,
@@ -35,11 +36,16 @@ import {
   THead,
   TRow,
 } from "../ui/kit";
-import type { CreateNetworkRequest, Network } from "../api/types";
+import type {
+  CreateNetworkRequest,
+  Network,
+  NetworkKind,
+  SecurityGroupRule,
+} from "../api/types";
 
 const COLS = "1.2fr 110px 1.2fr 1fr 1.4fr 1fr 70px";
 const RULE_COLS = "90px 90px 1fr 1fr";
-const POOL_CELLS = 96;
+const POOL_CELLS = 16;
 
 const empty = (s: string) => (s.trim() === "" ? null : s.trim());
 
@@ -56,6 +62,23 @@ function v4ToInt(ip: string | null): number | null {
     n = n * 256 + b;
   }
   return n;
+}
+
+/// Whether a network's default policy lets anything in from anywhere. Every NIC
+/// on the network inherits this group (ADR-017), so an unrestricted default is
+/// a property of the network, not of one guest — worth saying out loud.
+function allowsAllIngress(
+  n: Network,
+  groups: { id: string; rules: SecurityGroupRule[] }[],
+): boolean {
+  const g = groups.find((x) => x.id === n.default_security_group_id);
+  if (!g) return false;
+  return g.rules.some(
+    (r) =>
+      r.direction === "ingress" &&
+      (r.remote_cidr === null || r.remote_cidr === "0.0.0.0/0" || r.remote_cidr === "::/0") &&
+      (r.protocol === "any" || (r.port_min === null && r.port_max === null)),
+  );
 }
 
 function poolSize(n: Network): number | null {
@@ -76,10 +99,16 @@ function tail(ip: string | null): string | null {
 function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => void }) {
   const create = useCreateNetwork();
   const update = useUpdateNetwork();
+  const { can } = usePermissions();
+  // Attaching to physical infrastructure is a platform decision: a VLAN tag is
+  // a fact about the switch, and picking one picks which provider segment you
+  // land on (ADR-016). An operator without it can still create tenant overlays.
+  const platform = can(ACTION.networkCreateProvider);
   const [name, setName] = useState(edit?.name ?? "");
-  const [mode, setMode] = useState<"flat" | "vlan" | "vxlan">(
-    edit?.vni != null ? "vxlan" : edit?.vlan != null ? "vlan" : "flat",
+  const [kind, setKind] = useState<NetworkKind>(
+    edit?.kind ?? (edit?.vni != null ? "tenant" : edit?.vlan != null ? "vlan" : platform ? "provider" : "tenant"),
   );
+  const [uplink, setUplink] = useState(edit?.physical_network ?? "");
   const [vlan, setVlan] = useState(edit?.vlan != null ? String(edit.vlan) : "");
   const [cidr4, setCidr4] = useState(edit?.cidr_v4 ?? "");
   const [gw4, setGw4] = useState(edit?.gateway_v4 ?? "");
@@ -90,8 +119,11 @@ function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => vo
   const submit = () => {
     const body: CreateNetworkRequest = {
       name,
-      vlan: mode === "vlan" && vlan ? Number(vlan) : null,
-      overlay: mode === "vxlan",
+      kind,
+      // Only a physical network carries an uplink or a tag; sending either on a
+      // tenant network is rejected.
+      physical_network: kind === "tenant" ? null : empty(uplink),
+      vlan: kind === "vlan" && vlan ? Number(vlan) : null,
       cidr_v4: empty(cidr4),
       gateway_v4: empty(gw4),
       cidr_v6: empty(cidr6),
@@ -116,31 +148,41 @@ function EditDialog({ edit, onClose }: { edit: Network | null; onClose: () => vo
           <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field
-          label="Isolation"
+          label="Kind"
           help={
-            mode === "vxlan"
-              ? "VXLAN overlay: an isolated L2 spanning hosts, VNI auto-allocated."
-              : mode === "vlan"
-                ? "802.1Q VLAN on the integration bridge."
-                : "Flat, untagged provider network."
+            kind === "tenant"
+              ? "A VXLAN overlay with a platform-allocated VNI — the only kind that isolates by itself."
+              : kind === "vlan"
+                ? "802.1Q tag on the uplink. Isolated only as far as the switch honours the tag."
+                : platform
+                  ? "Untagged, attached to the uplink. Guarantees nothing by itself — its security is the physical network's."
+                  : "Physical kinds need network:create:provider; you can create tenant overlays."
           }
         >
-          <Select
-            value={mode}
-            onChange={(e) => setMode(e.target.value as "flat" | "vlan" | "vxlan")}
-          >
-            <option value="flat">flat (untagged)</option>
-            <option value="vlan">vlan (802.1Q)</option>
-            <option value="vxlan">vxlan overlay</option>
+          <Select value={kind} onChange={(e) => setKind(e.target.value as NetworkKind)}>
+            <option value="provider" disabled={!platform}>
+              provider (untagged, physical)
+            </option>
+            <option value="vlan" disabled={!platform}>
+              vlan (802.1Q, physical)
+            </option>
+            <option value="tenant">tenant (VXLAN overlay)</option>
           </Select>
         </Field>
-        {mode === "vlan" && (
-          <Field label="VLAN tag (1–4094)">
-            <Input value={vlan} onChange={(e) => setVlan(e.target.value)} />
-          </Field>
+        {kind !== "tenant" && (
+          <Grid cols="1fr 1fr">
+            <Field label="Uplink" help="Physical network to attach to. Blank means `default`.">
+              <Input value={uplink} placeholder="default" onChange={(e) => setUplink(e.target.value)} />
+            </Field>
+            {kind === "vlan" && (
+              <Field label="VLAN tag (1–4094)" help="Must be in the fleet's permitted range.">
+                <Input value={vlan} onChange={(e) => setVlan(e.target.value)} />
+              </Field>
+            )}
+          </Grid>
         )}
-        {mode === "vxlan" && edit?.vni != null && (
-          <Field label="VNI">
+        {kind === "tenant" && edit?.vni != null && (
+          <Field label="VNI" help="Allocated by the control plane; never caller-supplied.">
             <Input value={String(edit.vni)} disabled />
           </Field>
         )}
@@ -193,8 +235,8 @@ function IpAllocations({ network }: { network: Network }) {
   const used = list.length;
   const pct = size ? Math.min(100, (used / size) * 100) : 0;
 
-  // The grid is a sample of the pool, not one cell per address — a /22 would
-  // be a thousand squares.
+  // Sixteen cells sample the pool; one cell per address would be a thousand
+  // squares on a /22.
   const cells = Array.from({ length: POOL_CELLS }, (_, i) => {
     const allocated = size ? i < Math.round((used / size) * POOL_CELLS) : i < used;
     const reserved = allocated && list[i]?.vm_id == null;
@@ -280,7 +322,7 @@ export function Networks() {
           overlayCount === 1 ? "" : "s"
         } · IPAM managed where a CIDR is set`}
         actions={
-          can("network:create") && (
+          (can(ACTION.networkCreate) || can(ACTION.networkCreateProvider)) && (
             <Btn kind="primary" onClick={() => setDialog({ edit: null })}>
               Create network
             </Btn>
@@ -322,10 +364,10 @@ export function Networks() {
                 : "external";
           const menu = [
             { label: "IP allocations", onClick: () => setSelected(n.id) },
-            ...(can("network:update")
+            ...(can(ACTION.networkUpdate)
               ? [{ label: "Edit", onClick: () => setDialog({ edit: n }) }]
               : []),
-            ...(can("network:delete")
+            ...(can(ACTION.networkDelete)
               ? [{ label: "Delete", danger: true, onClick: () => del.mutate(n.id) }]
               : []),
           ];
@@ -335,7 +377,25 @@ export function Networks() {
                 <button className="vq-btn link vq-name" onClick={() => setSelected(n.id)}>
                   {n.name}
                 </button>
-                <RowMenu items={menu} />
+                {allowsAllIngress(n, sgs.data ?? []) && (
+                  <span
+                    className="vq-pill t-red"
+                    title="This network's default security group admits traffic from any address on any port. Every NIC on it inherits that (ADR-017)."
+                    style={{ borderColor: "var(--vq-red-line)" }}
+                  >
+                    allows all ingress
+                  </span>
+                )}
+                {n.legacy_segment && (
+                  <span
+                    className="vq-pill t-amber"
+                    title="Predates the network-kind model: its L2 segment is not guaranteed distinct, so it may share a broadcast domain with another network."
+                    style={{ borderColor: "var(--vq-amber-line)" }}
+                  >
+                    legacy segment
+                  </span>
+                )}
+                <RowMenu inline items={menu} />
               </div>
               {/* Overlays are the thing that spans hosts — cyan earns its place. */}
               <div className={`vq-mono-sm ${n.vni != null ? "t-cyan" : "t-2"}`} style={{ fontSize: 10.5 }}>

@@ -20,6 +20,8 @@ import {
   useVolumes,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
+import { useCrumb } from "../components/Breadcrumb";
 import {
   Btn,
   Card,
@@ -106,15 +108,20 @@ function useHistory(value: number | undefined, len = 12): number[] {
 
 function Spark({ values, cyan }: { values: number[]; cyan?: boolean }) {
   const max = Math.max(1, ...values);
-  const bars = [...Array(12 - values.length).fill(0), ...values];
+  const pad = Math.max(0, 12 - values.length);
   return (
     <div className={`vq-spark${cyan ? " cyan" : ""}`}>
-      {bars.map((v, i) => (
+      {/* Slots we have no sample for stay empty — a flat bar would claim a
+          reading that was never taken. */}
+      {Array.from({ length: pad }, (_, i) => (
+        <i key={`pad${i}`} className="empty" />
+      ))}
+      {values.map((v, i) => (
         <i
           key={i}
           style={{
-            height: `${Math.max(6, (v / max) * 100)}%`,
-            opacity: cyan && i < bars.length - 6 ? 0.5 : 1,
+            height: `${Math.max(8, (v / max) * 100)}%`,
+            opacity: cyan && i < values.length - 6 ? 0.5 : 1,
           }}
         />
       ))}
@@ -438,6 +445,8 @@ export function VmDetail() {
   const [nicIdx, setNicIdx] = useState<number | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
+  useCrumb(vm.data?.name);
+
   const m = metrics.data;
   const cpuHistory = useHistory(m?.running ? m.cpu_pct : undefined);
   const txHistory = useHistory(m?.running ? m.net_tx_bytes : undefined);
@@ -488,7 +497,7 @@ export function VmDetail() {
           </div>
         )}
         {v.spec.network_interfaces.map((nic, i) => (
-          <TRow key={i} cols={NIC_COLS} onClick={can("vm:update") ? () => setNicIdx(i) : undefined}>
+          <TRow key={i} cols={NIC_COLS} onClick={can(ACTION.vmUpdate) ? () => setNicIdx(i) : undefined}>
             <div className="vq-cell">
               <Link className="vq-name" to="/networks">
                 {networkName(nic.network_id)}
@@ -583,30 +592,31 @@ export function VmDetail() {
         subline={`${v.id} · generation ${v.generation} · observed ${v.observed_generation}`}
         actions={
           <>
-            {can("vm:console") && (
+            {can(ACTION.vmConsole) && (
               <Link to={`/vms/${v.id}/console`}>
                 <Btn>Console</Btn>
               </Link>
             )}
-            {can("vm:update") && <Btn onClick={() => setEditOpen(true)}>Edit</Btn>}
-            {can("vm:migrate") && (
+            {can(ACTION.vmUpdate) && <Btn onClick={() => setEditOpen(true)}>Edit</Btn>}
+            {can(ACTION.vmMigrate) && (
               <Btn onClick={() => setMigrateOpen(true)} disabled={v.phase !== "Running"}>
                 Migrate
               </Btn>
             )}
-            {can("vm:power") && (
-              <Btn
-                onClick={() =>
-                  action.mutate({
-                    id: v.id,
-                    action: v.phase === "Running" ? "stop" : "start",
-                  })
-                }
-              >
-                {v.phase === "Running" ? "Stop" : "Start"}
-              </Btn>
-            )}
-            {can("vm:delete") && (
+            {can(ACTION.vmPower) &&
+              (() => {
+                // A migrating guest is running — offering "Start" would be a lie.
+                const up = v.phase === "Running" || v.phase === "Migrating";
+                return (
+                  <Btn
+                    disabled={v.phase === "Migrating"}
+                    onClick={() => action.mutate({ id: v.id, action: up ? "stop" : "start" })}
+                  >
+                    {up ? "Stop" : "Start"}
+                  </Btn>
+                );
+              })()}
+            {can(ACTION.vmDelete) && (
               <Btn kind="destructive" onClick={() => setDeleteOpen(true)}>
                 Delete
               </Btn>

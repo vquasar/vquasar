@@ -9,6 +9,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useCreateVmFromTemplate, useImages, useNetworks, useTemplates } from "../api/hooks";
+import { useCrumb } from "../components/Breadcrumb";
 import {
   Btn,
   Card,
@@ -58,6 +59,7 @@ export function CreateVmFromTemplate() {
 
   const tpl = (templates.data ?? []).find((t) => t.id === id);
 
+  useCrumb(tpl ? `${tpl.name} → new VM` : "Create VM");
   const [name, setName] = useState("");
   const [touched, setTouched] = useState(false);
   const [networkId, setNetworkId] = useState("");

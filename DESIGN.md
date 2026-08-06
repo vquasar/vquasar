@@ -352,6 +352,21 @@ control plane ──mTLS──▶ privileged host agent ──▶ OVS / storage 
 The API service must never accept arbitrary host shell commands. The agent
 protocol exposes typed operations only — no `POST /agent/exec`.
 
+The browser is inside this boundary too: it holds an operator's bearer token and
+talks to the control plane as that operator. So the control plane serves the
+console itself, from its own origin, under a content-security policy that is
+`'self'` throughout — the one cross-origin destination is the OIDC issuer, which
+the sign-in flow contacts directly. Fonts, styles and scripts all ship in the
+bundle; the console loads nothing from a third party, which keeps it working in
+an air-gapped lab and keeps a CDN from observing an operator at work. Responses
+also carry `nosniff`, `no-referrer`, `frame-ancestors 'none'` and a blanket
+denial of device permissions.
+
+The console's permission checks are UX, never enforcement: every endpoint is
+guarded server-side regardless. What the UI owes is honesty — it hides an action
+the caller cannot perform, and issues no query for a resource the caller cannot
+read, so a scoped role sees a coherent console instead of a wall of 403s.
+
 ## 31. Database
 
 PostgreSQL. Initial tables: `hosts`, `virtual_machines`, `networks`, `volumes`,
@@ -372,6 +387,17 @@ reconciliation pass repairs missed events.
 
 Use WebSocket or SSE for live state (`GET /api/v1/events/stream`). The UI
 subscribes rather than polling aggressively (initial implementation may poll).
+
+Until the stream exists, polling is tiered rather than flat. The console shell
+carries live counts for every resource, so every open browser holds a query on
+every list: a single interval for all of them means fetching the entire
+inventory every few seconds, per operator, forever. Instead, hosts, VMs, tasks
+and events poll at 2s only while a task is running or a VM is in a transitional
+phase and at 10s otherwise; images speed up only during an import; and resources
+that change only when somebody acts poll at 60s and are invalidated by their own
+mutations. This is a stopgap with the right shape — when the event stream lands
+it replaces the fast tier, and the slow tier stays as the reconciliation
+backstop.
 
 ## 34. Web UI
 

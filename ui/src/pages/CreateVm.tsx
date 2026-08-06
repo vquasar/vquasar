@@ -5,6 +5,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCreateVm, useIsos, useNetworks, useSecurityGroups } from "../api/hooks";
+import { useCrumb } from "../components/Breadcrumb";
 import {
   Btn,
   Card,
@@ -47,6 +48,7 @@ export function CreateVm() {
   const securityGroups = useSecurityGroups();
   const isos = useIsos();
 
+  useCrumb("Create VM");
   const [name, setName] = useState("");
   const [touched, setTouched] = useState(false);
   const [machineType, setMachineType] = useState<MachineType>("standard");

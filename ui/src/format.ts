@@ -7,7 +7,9 @@ export function formatBytes(bytes: number | null | undefined): string {
     v /= 1024;
     i++;
   }
-  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+  // One decimal only when it carries information: "8 GiB", not "8.0 GiB".
+  const dp = v >= 10 || i === 0 || Number.isInteger(v) ? 0 : 1;
+  return `${v.toFixed(dp)} ${units[i]}`;
 }
 
 export function formatMib(mib: number): string {

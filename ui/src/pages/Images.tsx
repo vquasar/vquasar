@@ -16,6 +16,7 @@ import {
   useUploadImage,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Card,
@@ -419,7 +420,7 @@ export function Images() {
           inFlight ? ` · ${inFlight} importing` : ""
         } · managed images are reference-counted`}
         actions={
-          can("image:create") && (
+          can(ACTION.imageCreate) && (
             <>
               <Btn onClick={() => setUploading(true)}>Upload</Btn>
               <Btn onClick={() => setDialog({ edit: null })}>Register</Btn>
@@ -458,14 +459,14 @@ export function Images() {
               key={img.id}
               img={img}
               derived={derivedCount(img.id)}
-              menu={
-                can("image:create")
-                  ? [
-                      { label: "Edit", onClick: () => setDialog({ edit: img }) },
-                      { label: "Delete", danger: true, onClick: () => del.mutate(img.id) },
-                    ]
-                  : []
-              }
+              menu={[
+                ...(can(ACTION.imageUpdate)
+                  ? [{ label: "Edit", onClick: () => setDialog({ edit: img }) }]
+                  : []),
+                ...(can(ACTION.imageDelete)
+                  ? [{ label: "Delete", danger: true, onClick: () => del.mutate(img.id) }]
+                  : []),
+              ]}
             />
           ))}
         </Grid>

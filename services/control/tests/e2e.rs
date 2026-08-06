@@ -774,3 +774,124 @@ async fn network_kinds_and_platform_allocated_segments() {
         .await;
     assert!(st.as_u16() == 400 || st.as_u16() == 405, "{body}");
 }
+
+/// An unknown path under `/api/v1` must answer with the error envelope, not the
+/// single-page shell. The control plane serves the console from the same origin
+/// and falls back to `index.html` so deep links work; without a router fallback
+/// on the API that fallback would swallow a typo'd endpoint and hand a client
+/// an HTML page with status 200 — the worst possible answer.
+#[tokio::test]
+async fn unknown_api_route_returns_the_error_envelope() {
+    let h = Harness::start().await;
+
+    let r = h
+        .client
+        .get(format!("{}/api/v1/no-such-endpoint", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
+    let ct = r
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.starts_with("application/json"), "content-type was {ct}");
+
+    let body: Value = r.json().await.unwrap();
+    assert!(
+        body["error"]["code"].is_string() && body["error"]["request_id"].is_string(),
+        "not the standard envelope: {body}"
+    );
+}
+
+/// Serving the console is part of the product, not a convenience: the control
+/// plane is the only origin an operator's browser talks to. Three things have
+/// to hold at once — a real file wins over the SPA shell (favicons and brand
+/// marks live at the root, not under /assets), an unmatched path falls back to
+/// the shell so deep links like /hosts/:id work, and every response carries the
+/// baseline security headers.
+#[tokio::test]
+async fn serves_the_console_with_deep_links_and_security_headers() {
+    let ui = tempfile::tempdir().unwrap();
+    std::fs::create_dir(ui.path().join("assets")).unwrap();
+    std::fs::write(
+        ui.path().join("index.html"),
+        "<!doctype html><title>vQuasar</title>",
+    )
+    .unwrap();
+    std::fs::write(ui.path().join("assets/app.js"), "export default 1;").unwrap();
+    std::fs::write(ui.path().join("favicon.svg"), "<svg/>").unwrap();
+
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_SERVER__UI_DIR",
+        ui.path().to_str().unwrap(),
+    )])
+    .await;
+
+    // A real file at the root is served as itself. Before the SPA fallback
+    // covered the whole directory this returned index.html, so every favicon
+    // and brand asset silently came back as an HTML page.
+    let r = h
+        .client
+        .get(format!("{}/favicon.svg", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+    assert!(
+        r.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .contains("image/svg"),
+        "favicon.svg was not served as an image"
+    );
+    // Security headers ride on everything this server hands out.
+    let csp = r
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(csp.contains("default-src 'self'"), "CSP was {csp:?}");
+    assert!(csp.contains("frame-ancestors 'none'"), "CSP was {csp:?}");
+    assert_eq!(
+        r.headers()
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert!(r.text().await.unwrap().contains("<svg"));
+
+    // A hashed bundle under /assets still resolves.
+    let r = h
+        .client
+        .get(format!("{}/assets/app.js", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+
+    // A client-side route matches no file and gets the shell, so a bookmarked
+    // deep link loads the app instead of 404ing.
+    let r = h
+        .client
+        .get(format!("{}/hosts/some-uuid", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+    assert!(r.text().await.unwrap().contains("vQuasar"));
+
+    // The API keeps its own 404 — the SPA fallback must not swallow it.
+    let r = h
+        .client
+        .get(format!("{}/api/v1/no-such-endpoint", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
+    assert!(r.json::<Value>().await.unwrap()["error"]["code"].is_string());
+}
