@@ -147,11 +147,17 @@ at once, so tie renewal to the same flow that renews the gRPC identity.
 
 ## What this does not solve
 
-* **Injection.** A VXLAN packet from an *unconfigured* source IP matches no
-  IPsec policy and is delivered normally. Encryption protects the pairs you have
-  configured; it does not stop a stranger. That needs a host ingress filter
-  accepting only ESP-protected traffic on UDP/4789 — tracked as M18c, and the
-  one piece that differs between distributions.
+* **Injection is narrower than it first appears, and is now filtered anyway.**
+  The kernel does hand a cleartext VXLAN packet from an unconfigured source to
+  the VXLAN socket — but OVS demultiplexes tunnels by `(remote_ip, key)`, and
+  vquasar always sets an explicit `remote_ip` per peer, so a packet from a host
+  that is not a configured peer matches no tunnel port and is dropped there.
+  Measured on the lab: six injected packets arrived on the wire and none of them
+  reached the overlay bridge. The residual case is a *spoofed* source claiming
+  to be a configured peer, which the inbound IPsec policy drops once encryption
+  is on. The agent additionally installs a host ingress filter (nftables, table
+  `vquasar`) accepting only ESP-protected VXLAN, so the guarantee does not rest
+  on OVS's demultiplexing alone.
 * **Performance.** Expect roughly 2–6 Gbit/s per flow on AES-NI x86. Because one
   association carries all VNIs between a host pair, a single hot VM-to-VM flow
   across two hosts is single-SA and effectively single-core on the crypto path.

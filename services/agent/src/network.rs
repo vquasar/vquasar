@@ -157,6 +157,15 @@ impl OvsNetworkBackend {
     /// on one decision made in the control plane, instead of drifting per host.
     async fn apply_underlay_ipsec(&self, binding: &NicBinding) -> Result<()> {
         if !binding.encrypt_underlay {
+            // Encryption was turned off. The ingress filter must come down with
+            // it: without IPsec no VXLAN packet carries a secpath, so leaving
+            // the filter installed would drop every overlay frame on the host.
+            if let Err(e) = crate::hostfw::clear().await {
+                tracing::warn!(error = %e, "could not remove the VXLAN ingress filter");
+            }
+            if let Err(e) = crate::ipsec::clear().await {
+                tracing::debug!(error = %e, "could not remove IPsec anchors");
+            }
             return Ok(());
         }
         let Some((cert, key, ca)) = self.ipsec_credentials.as_ref() else {
@@ -166,6 +175,12 @@ impl OvsNetworkBackend {
             );
             return Ok(());
         };
+        // IPsec protects configured peers; it does not stop injection from an
+        // unconfigured source (design §18, M18c).
+        if let Err(e) = crate::hostfw::apply().await {
+            tracing::warn!(error = %e, "could not install the VXLAN ingress filter — \
+                 cleartext VXLAN from an unconfigured source is still accepted");
+        }
         let peers: Vec<crate::ipsec::Peer> = binding
             .overlay_peer_identities
             .iter()

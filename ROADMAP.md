@@ -177,10 +177,21 @@ Split into three shippable slices.
     elsewhere fail as a bare "no private key found" (the agent now stages copies
     there); and strongSwan will not build a trust chain from OVS's `ca_cert`
     alone — the CA must be in `/etc/ipsec.d/cacerts/`.
-- **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
-  VXLAN packet from an unconfigured source IP matches no policy and is still
-  delivered. Needs a host firewall rule accepting only ESP-protected traffic —
-  the one piece that is distro-specific (iptables/nftables).
+- **M18c — UDP/4789 ingress filter.** ✅ **Done and verified on the lab.** The
+  agent installs an nftables ruleset in its own `vquasar` table (never touching
+  the operator's rules, removable as a unit) accepting VXLAN that arrived under
+  IPsec and dropping the rest, at a negative hook priority so it runs ahead of
+  firewalld. nftables rather than iptables because RHEL-family hosts are moving
+  off the latter; the ruleset parses on nft 1.0.9 and 1.1.5.
+  **Measured, and it corrects the original finding:** injection from an
+  *unconfigured* source was already dead — OVS demultiplexes tunnels by
+  `(remote_ip, key)` and vquasar always sets an explicit per-peer `remote_ip`,
+  so six injected packets arrived on chnode1's wire and none reached the overlay
+  bridge. The filter is therefore defence in depth rather than the hole-closer
+  it was scoped as, and the real residual case is a spoofed source claiming to
+  be a configured peer, which IPsec's inbound policy drops. With the filter
+  installed: 5 ESP-protected packets accepted, 6 cleartext dropped, overlay
+  unaffected.
 - **M18d — UI for network kinds.** ✅ **Done.** The create/edit dialog selects a
   kind (`provider` | `vlan` | `tenant`) and sends it explicitly — previously the
   console omitted `kind`, so the server resolved a VLAN request to `provider`
