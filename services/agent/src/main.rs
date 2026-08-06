@@ -10,6 +10,7 @@ mod config;
 mod console;
 mod firewall;
 mod grpc;
+mod hostfw;
 mod inventory;
 mod ipdiscovery;
 mod ipsec;

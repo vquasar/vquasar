@@ -174,7 +174,6 @@ pub async fn apply(cert: &str, key: &str, ca: &str, peers: &[Peer]) -> Result<()
 }
 
 /// Remove every IPsec anchor, for a host reverting to cleartext tunnels.
-#[allow(dead_code)] // reachable once `overlay_encryption` can be lowered live
 pub async fn clear() -> Result<()> {
     let _ = crate::network::run("ovs-vsctl", &["--if-exists", "del-br", ANCHOR_BRIDGE]).await;
     Ok(())
