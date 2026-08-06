@@ -64,8 +64,27 @@ pub async fn console_ws(
             return (StatusCode::FORBIDDEN, "missing permission: vm:console").into_response();
         }
     }
+
+    // Resolve the VM before upgrading. Previously any id was accepted and the
+    // socket was upgraded regardless, so a caller learned nothing from the
+    // status code but still got a session against whatever the id resolved to
+    // later. Checking here means an unknown VM is a plain 404 and no stream is
+    // ever opened. When projects land, the ownership predicate goes here too —
+    // the lookup is already in the right place for it.
+    if store.get_vm(id).await.ok().flatten().is_none() {
+        return (StatusCode::NOT_FOUND, "virtual machine not found").into_response();
+    }
+
     ws.on_upgrade(move |socket| handle(store, id, socket))
 }
+
+/// How long a single console session may stay open.
+///
+/// The token is validated once, at upgrade. Without a cap the session outlives
+/// the token's expiry, a role change, or the user's removal — a WebSocket has
+/// no natural point at which authorization is rechecked, so the bound has to be
+/// wall-clock. Reconnecting is cheap; the UI does it transparently.
+const MAX_SESSION: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 async fn handle(store: Store, id: Uuid, socket: WebSocket) {
     // Resolve the VM's host and agent endpoint.
@@ -114,8 +133,19 @@ async fn handle(store: Store, id: Uuid, socket: WebSocket) {
         }
     });
 
-    // Browser keystrokes -> guest.
-    while let Some(Ok(frame)) = ws_rx.next().await {
+    // Browser keystrokes -> guest, bounded by MAX_SESSION so the session cannot
+    // outlive the token that authorized it.
+    let deadline = tokio::time::sleep(MAX_SESSION);
+    tokio::pin!(deadline);
+    loop {
+        let frame = tokio::select! {
+            frame = ws_rx.next() => frame,
+            _ = &mut deadline => {
+                debug!(vm = %id, "console session reached its time limit; closing");
+                break;
+            }
+        };
+        let Some(Ok(frame)) = frame else { break };
         let input = match frame {
             Message::Binary(b) => b,
             Message::Text(t) => t.into_bytes(),
