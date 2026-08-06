@@ -78,3 +78,86 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  # The OIDC path was verified by hand against a real Keycloak; this keeps it
+  # verified. It exercises the API side end to end — discovery, JWKS, issuer and
+  # audience validation, JIT user provisioning, group→role mapping, and the
+  # console WebSocket's token gate. The browser redirect (Authorization Code +
+  # PKCE) is deliberately out of scope here; it needs a headless browser and is
+  # still checked by hand.
+  oidc:
+    name: OIDC authn + RBAC
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ch
+          POSTGRES_PASSWORD: ch
+          POSTGRES_DB: vquasar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc (tonic-build needs it)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: Swatinem/rust-cache@v2
+
+      # Keycloak needs `start-dev` as its command, which GitHub service
+      # containers cannot express, so run it directly.
+      - name: Start Keycloak
+        run: |
+          docker run -d --name keycloak -p 8081:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            quay.io/keycloak/keycloak:26.0 start-dev --http-enabled=true
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8081/realms/master >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8081/realms/master >/dev/null
+
+      - name: Configure the realm
+        env:
+          KEYCLOAK_ADMIN_PASSWORD: admin
+        run: |
+          scripts/keycloak-setup.sh --url http://127.0.0.1:8081 \
+            --demo-users --ui-origin http://127.0.0.1:8080
+
+      - name: Start the control plane with auth enabled
+        env:
+          VQUASAR_CONTROL_DATABASE__URL: postgres://ch:ch@127.0.0.1:5432/vquasar
+          VQUASAR_CONTROL_SERVER__LISTEN: 127.0.0.1:8080
+          VQUASAR_CONTROL_AUTH__ISSUER: http://127.0.0.1:8081/realms/vquasar
+          VQUASAR_CONTROL_AUTH__CLIENT_ID: vquasar
+          VQUASAR_CONTROL_AUTH__AUDIENCE: vquasar
+          VQUASAR_CONTROL_AUTH__BOOTSTRAP_ADMIN: alice
+          RUST_LOG: warn
+        run: |
+          cargo build -p vquasar-control
+          ./target/debug/vquasar-control &
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/vms || true)
+            [ "$code" = "401" ] && break   # 401 means it is up *and* enforcing
+            sleep 2
+          done
+          [ "$code" = "401" ]
+
+      - name: Verify authn + RBAC
+        env:
+          API: http://127.0.0.1:8080/api/v1
+          KC: http://127.0.0.1:8081
+          CURL_OPTS: -s
+        run: scripts/verify-oidc.sh
+
+      - name: Keycloak logs on failure
+        if: failure()
+        run: docker logs keycloak | tail -50

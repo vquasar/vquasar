@@ -12,6 +12,9 @@ Helper scripts (design document, section 39).
 - `setup-ovs.sh` — install Open vSwitch and create the integration bridge.
 - `gen-certs.sh` — internal CA + control and per-agent certificates for the
   mutual TLS between the control plane and the agents (design M12a).
+- `verify-oidc.sh` — run the authentication/RBAC matrix against a running
+  control plane (401/403/200 across identities, group→role mapping, the console
+  WebSocket token gate). Used by CI and on real installs.
 - `keycloak-setup.sh` — create the Keycloak realm, PKCE client, protocol mappers
   and role groups the control plane's OIDC authentication expects (design M12b).
   Idempotent; reads the admin password from `$KEYCLOAK_ADMIN_PASSWORD`. See
