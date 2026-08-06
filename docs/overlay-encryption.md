@@ -68,6 +68,25 @@ one anchor tunnel per peer — **not** per VNI, because the IPsec traffic select
 is `(peer_ip, udp/4789)` and carries no VNI, so a single association protects
 every overlay between two hosts.
 
+## Host prerequisites the packages do not set up for you
+
+Three things were found the hard way, verified between an Ubuntu 24.04 host
+(strongSwan 5.9.13) and a Rocky 10 host (libreswan 5.3.2):
+
+* **Open IKE and ESP on the host firewall.** A default RHEL-family firewalld
+  permits `4789/udp` but not IKE or ESP, so negotiation never completes:
+  `firewall-cmd --add-service=ipsec --permanent && firewall-cmd --reload`.
+* **Key material must live under `/etc/ipsec.d/`.** With AppArmor, charon's
+  profile permits `/etc/ipsec.d/**` and denies everything else, so a
+  certificate in `/etc/vquasar/tls/` yields `apparmor="DENIED"` in `dmesg` and
+  an authentication failure reporting only `no private key found` — naming
+  neither the path nor the reason. The agent stages copies into
+  `/etc/ipsec.d/{certs,private,cacerts}/` for you.
+* **The CA must be in `/etc/ipsec.d/cacerts/`.** strongSwan does not build a
+  trust chain from OVS's `other_config:ca_cert` alone: the peer's certificate
+  authenticates and is then rejected with `no issuer certificate found for ...`.
+  The agent handles this as part of the same staging step.
+
 ## Verifying it is actually on
 
 The control plane logs its state at every start, and warns while tunnels are
@@ -83,9 +102,10 @@ ovs-appctl -t ovs-monitor-ipsec tunnels/show
 ip xfrm policy
 ip -s xfrm state | grep -A3 'proto esp'    # counters must climb under load
 
-# The decisive test, on the receiver
-tcpdump -nni <underlay-nic> host <peer> and proto esp       # must show ESP
-tcpdump -nni <underlay-nic> host <peer> and udp port 4789   # must show nothing
+# The decisive test, on the receiver's *physical* NIC (not the OVS bridge)
+tcpdump -nni <underlay-nic> host <peer>
+#   expect: IP a > b: ESP(spi=0x...,seq=0x...), length N
+#   and no  IP a > b: ... 4789 ... VXLAN
 ```
 
 `nstat -az | grep -i Xfrm` shows the drop counters (`XfrmInNoPols`,
@@ -104,6 +124,12 @@ are easy to get wrong:
 * **The CN must also appear as a `DNS:` SAN**, because the peer identity is sent
   as a bare string that strongSwan treats as `ID_FQDN`, and an `ID_FQDN` can only
   match a `dNSName` SAN.
+
+This failure has been reproduced against `openvswitch-ipsec` 3.3.4: the daemon
+logs `No CN in the certificate subject`, marks the whole credential
+configuration invalid, and then reports every tunnel as
+`must set 'certificate' as local certificate` — pointing at a setting that is
+in fact correct.
 
 `gen-certs.sh` and the enrollment endpoint both do this. Enrollment additionally
 records the CN on the host record and **rejects a CSR with a single-RDN subject**

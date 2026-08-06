@@ -27,6 +27,17 @@ use crate::network::NetworkError;
 
 type Result<T> = std::result::Result<T, NetworkError>;
 
+/// Where the IKE daemon expects to find key material.
+///
+/// This is not a preference. On a distribution with AppArmor, charon's profile
+/// permits reading `/etc/ipsec.d/**` and denies everything else — pointing OVS
+/// at `/etc/vquasar/tls/agent.key` produces `apparmor="DENIED"` and an
+/// authentication failure that reports only "no private key found", naming
+/// neither the path nor the reason. Verified on Ubuntu 24.04 with strongSwan
+/// 5.9.13. Staging copies here keeps the same layout working under SELinux on
+/// RHEL-family hosts too.
+const IPSEC_DIR: &str = "/etc/ipsec.d";
+
 /// The bridge carrying one IPsec anchor tunnel per peer.
 pub const ANCHOR_BRIDGE: &str = "br-vxipsec";
 
@@ -90,6 +101,36 @@ pub fn anchor_port_args(peer: &Peer) -> Vec<String> {
     args
 }
 
+/// Stage certificate material where the IKE daemon is allowed to read it,
+/// returning the paths to hand to OVS.
+///
+/// The CA additionally *must* land in `cacerts/`: strongSwan does not load it
+/// from OVS's `other_config:ca_cert`, so without this the peer authenticates
+/// and is then rejected with "no issuer certificate found" — the chain cannot
+/// be built even though the CA is configured. Verified against strongSwan
+/// 5.9.13.
+fn stage_credentials(cert: &str, key: &str, ca: &str) -> std::io::Result<(String, String, String)> {
+    let staged_cert = format!("{IPSEC_DIR}/certs/vquasar-agent.crt");
+    let staged_key = format!("{IPSEC_DIR}/private/vquasar-agent.key");
+    let staged_ca = format!("{IPSEC_DIR}/cacerts/vquasar-ca.crt");
+    for (src, dst, mode) in [
+        (cert, &staged_cert, 0o644),
+        (key, &staged_key, 0o600),
+        (ca, &staged_ca, 0o644),
+    ] {
+        if let Some(parent) = std::path::Path::new(dst).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dst, std::fs::Permissions::from_mode(mode))?;
+        }
+    }
+    Ok((staged_cert, staged_key, staged_ca))
+}
+
 /// Configure IPsec anchors for exactly `peers`, removing any that are stale.
 pub async fn apply(cert: &str, key: &str, ca: &str, peers: &[Peer]) -> Result<()> {
     crate::network::run("ovs-vsctl", &["--may-exist", "add-br", ANCHOR_BRIDGE]).await?;
@@ -101,7 +142,12 @@ pub async fn apply(cert: &str, key: &str, ca: &str, peers: &[Peer]) -> Result<()
     )
     .await;
 
-    let creds = credentials_args(cert, key, ca);
+    // Copy into the IKE daemon's own directories first — see IPSEC_DIR.
+    let (cert, key, ca) = stage_credentials(cert, key, ca).map_err(|e| NetworkError::Command {
+        cmd: format!("staging IPsec credentials into {IPSEC_DIR}"),
+        stderr: e.to_string(),
+    })?;
+    let creds = credentials_args(&cert, &key, &ca);
     crate::network::run(
         "ovs-vsctl",
         &creds.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -199,5 +245,29 @@ mod tests {
         ] {
             assert!(args.iter().any(|a| a == expect), "missing {expect}");
         }
+    }
+
+    /// Key material has to be staged where the IKE daemon may read it: on a
+    /// host with AppArmor, charon can only open `/etc/ipsec.d/**`, and pointing
+    /// it elsewhere fails as "no private key found" with no mention of the path.
+    #[test]
+    fn credentials_are_staged_under_the_ipsec_directory() {
+        let (c, k, a) = (
+            format!("{IPSEC_DIR}/certs/vquasar-agent.crt"),
+            format!("{IPSEC_DIR}/private/vquasar-agent.key"),
+            format!("{IPSEC_DIR}/cacerts/vquasar-ca.crt"),
+        );
+        let args = credentials_args(&c, &k, &a);
+        for expect in [
+            format!("other_config:certificate={c}"),
+            format!("other_config:private_key={k}"),
+            format!("other_config:ca_cert={a}"),
+        ] {
+            assert!(args.contains(&expect), "missing {expect}");
+        }
+        // The CA must be in cacerts/ specifically: strongSwan does not build a
+        // chain from OVS's ca_cert alone.
+        assert!(a.contains("/cacerts/"), "CA must land in cacerts: {a}");
+        assert!(k.contains("/private/"), "key must land in private: {k}");
     }
 }

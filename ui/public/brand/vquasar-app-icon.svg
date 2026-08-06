@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="vQuasar">
+  <title>vQuasar app icon</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#1B2740"></stop>
+      <stop offset="0.7" stop-color="#0B0F16"></stop>
+    </linearGradient>
+    <mask id="core-app">
+      <rect width="512" height="512" fill="#fff"></rect>
+      <circle cx="256" cy="256" r="25.6" fill="#000"></circle>
+    </mask>
+  </defs>
+  <rect width="512" height="512" rx="114" fill="url(#bg)"></rect>
+  <rect x="1" y="1" width="510" height="510" rx="113" fill="none" stroke="#2A3441" stroke-width="2"></rect>
+  <g mask="url(#core-app)" transform="translate(96 96) scale(5)">
+    <g transform="rotate(-14 32 32)">
+      <path d="M52 25.5A26 9 0 1 0 52 38.5" fill="none" stroke="#4F9CF9" stroke-width="4" stroke-linecap="round"></path>
+    </g>
+    <polygon points="25,36 37,31.5 45,4" fill="#58D6F5"></polygon>
+    <polygon points="39,28 27,32.5 19,60" fill="#58D6F5"></polygon>
+    <circle cx="32" cy="32" r="7.5" fill="#4F9CF9"></circle>
+  </g>
+</svg>

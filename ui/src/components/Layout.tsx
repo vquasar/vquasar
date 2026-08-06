@@ -1,133 +1,246 @@
-import { ReactNode, useState } from "react";
-import { Link as RouterLink, useLocation } from "react-router-dom";
-import AppBar from "@mui/material/AppBar";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Drawer from "@mui/material/Drawer";
-import List from "@mui/material/List";
-import ListItemButton from "@mui/material/ListItemButton";
-import ListItemIcon from "@mui/material/ListItemIcon";
-import ListItemText from "@mui/material/ListItemText";
+// The app shell: a 224px grouped sidebar with live counts, a 48px top bar, and
+// the content column (handoff, "App shell").
+//
+// The navigation is text-only on purpose. The functional icon family has not
+// been designed yet, and the brand guidelines are explicit that a generic icon
+// set must not stand in for it.
+
+import { useState, type ReactNode } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
-import Toolbar from "@mui/material/Toolbar";
-import Typography from "@mui/material/Typography";
-import DashboardIcon from "@mui/icons-material/Dashboard";
-import DnsIcon from "@mui/icons-material/Dns";
-import ComputerIcon from "@mui/icons-material/Computer";
-import LanIcon from "@mui/icons-material/Lan";
-import ShieldIcon from "@mui/icons-material/Shield";
-import TaskAltIcon from "@mui/icons-material/TaskAlt";
-import NotificationsIcon from "@mui/icons-material/Notifications";
-import AlbumIcon from "@mui/icons-material/Album";
-import StorageIcon from "@mui/icons-material/Storage";
-import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
-import SecurityIcon from "@mui/icons-material/Security";
-import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import {
+  useHosts,
+  useImages,
+  useNetworks,
+  useSecurityGroups,
+  useTasks,
+  useTemplates,
+  useVms,
+  useVolumes,
+} from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { usePermissions } from "../auth/permissions";
+import { useThemeMode } from "../theme/ThemeMode";
+import { Logo } from "../ui/Mark";
+import { Segmented } from "../ui/kit";
+import { initials, relTime } from "../format";
 
-const DRAWER_WIDTH = 220;
+interface NavItem {
+  to: string;
+  label: string;
+  count?: number;
+}
 
-const NAV = [
-  { to: "/", label: "Dashboard", icon: <DashboardIcon /> },
-  { to: "/hosts", label: "Hosts", icon: <DnsIcon /> },
-  { to: "/vms", label: "Virtual Machines", icon: <ComputerIcon /> },
-  { to: "/images", label: "Images", icon: <AlbumIcon /> },
-  { to: "/volumes", label: "Volumes", icon: <StorageIcon /> },
-  { to: "/templates", label: "Templates", icon: <ViewQuiltIcon /> },
-  { to: "/networks", label: "Networks", icon: <LanIcon /> },
-  { to: "/security-groups", label: "Security Groups", icon: <ShieldIcon /> },
-  { to: "/tasks", label: "Tasks", icon: <TaskAltIcon /> },
-  { to: "/events", label: "Events", icon: <NotificationsIcon /> },
-];
+function NavGroup({ label, items }: { label: string; items: NavItem[] }) {
+  const { pathname } = useLocation();
+  // A detail route keeps its parent active: /vms/:id highlights Virtual machines.
+  const isActive = (to: string) =>
+    to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
+
+  return (
+    <div className="vq-navgroup">
+      <div className="vq-navlabel">{label}</div>
+      {items.map((it) => (
+        <Link key={it.to} to={it.to} className={`vq-navitem${isActive(it.to) ? " active" : ""}`}>
+          <span>{it.label}</span>
+          <span className="vq-navcount">{it.count != null ? it.count : "—"}</span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function AgentStatus() {
+  const hosts = useHosts();
+  const list = hosts.data ?? [];
+  const connected = list.filter((h) => h.state === "Ready").length;
+  // The freshest heartbeat is the closest thing the API gives us to "when did
+  // the fleet last check in".
+  const newest = list
+    .map((h) => h.last_heartbeat)
+    .filter((t): t is string => !!t)
+    .sort()
+    .at(-1);
+
+  return (
+    <div className="vq-sidefoot">
+      <div className="vq-sidefoot-agents">
+        <span
+          className="vq-pulse"
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: connected === list.length && list.length > 0 ? "var(--vq-cyan)" : "var(--vq-amber)",
+          }}
+        />
+        {connected} / {list.length} agents connected
+      </div>
+      <div className="vq-sidefoot-meta">
+        {newest ? `last heartbeat ${relTime(newest)}` : "awaiting first heartbeat"}
+      </div>
+    </div>
+  );
+}
+
+function Sidebar() {
+  const { can } = usePermissions();
+  const hosts = useHosts();
+  const vms = useVms();
+  const images = useImages();
+  const templates = useTemplates();
+  const networks = useNetworks();
+  const sgs = useSecurityGroups();
+  const volumes = useVolumes();
+  const tasks = useTasks();
+
+  const openTasks = (tasks.data ?? []).filter(
+    (t) => t.state === "Pending" || t.state === "Running",
+  ).length;
+
+  const operations: NavItem[] = [
+    { to: "/tasks", label: "Tasks", count: tasks.data ? openTasks : undefined },
+    { to: "/events", label: "Events" },
+    ...(can("iam:read") ? [{ to: "/iam", label: "Access control" }] : []),
+    { to: "/settings", label: "Settings" },
+  ];
+
+  return (
+    <nav className="vq-sidebar">
+      <Link to="/" className="vq-brand">
+        <Logo size={22} />
+      </Link>
+      <div className="vq-nav">
+        <NavGroup
+          label="Fleet"
+          items={[
+            { to: "/", label: "Overview" },
+            { to: "/hosts", label: "Hosts", count: hosts.data?.length },
+          ]}
+        />
+        <NavGroup
+          label="Compute"
+          items={[
+            { to: "/vms", label: "Virtual machines", count: vms.data?.length },
+            { to: "/images", label: "Images", count: images.data?.length },
+            { to: "/templates", label: "Templates", count: templates.data?.length },
+          ]}
+        />
+        <NavGroup
+          label="Network & storage"
+          items={[
+            { to: "/networks", label: "Networks", count: networks.data?.length },
+            { to: "/security-groups", label: "Security groups", count: sgs.data?.length },
+            { to: "/volumes", label: "Volumes", count: volumes.data?.length },
+          ]}
+        />
+        <NavGroup label="Operations" items={operations} />
+      </div>
+      {can("host:read") && <AgentStatus />}
+    </nav>
+  );
+}
+
+const CRUMB: Record<string, string> = {
+  "": "Overview",
+  hosts: "Hosts",
+  vms: "Virtual machines",
+  images: "Images",
+  templates: "Templates",
+  networks: "Networks",
+  "security-groups": "Security groups",
+  volumes: "Volumes",
+  tasks: "Tasks",
+  events: "Events",
+  iam: "Access control",
+  settings: "Settings",
+};
+
+function Breadcrumb() {
+  const { pathname } = useLocation();
+  const segs = pathname.split("/").filter(Boolean);
+  // A detail route names the resource, not the collection.
+  const current = segs.length > 1 ? segs[segs.length - 1] : CRUMB[segs[0] ?? ""] ?? segs[0];
+  return (
+    <div className="vq-crumb">
+      <span>{window.location.hostname}</span>
+      <span className="sep">/</span>
+      <span className="cur">{current}</span>
+    </div>
+  );
+}
+
+function ThemeSwitch() {
+  const { mode, setMode } = useThemeMode();
+  return (
+    <Segmented
+      value={mode}
+      size="mini"
+      mono
+      onChange={setMode}
+      options={[
+        { value: "dark", label: "DARK" },
+        { value: "light", label: "LIGHT" },
+      ]}
+    />
+  );
+}
 
 function UserMenu() {
   const { enabled, profile, logout } = useAuth();
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
-  if (!enabled) {
-    return (
-      <Typography variant="caption" color="text.secondary">
-        auth disabled (dev)
-      </Typography>
-    );
-  }
   const name =
     (profile?.preferred_username as string) ||
     (profile?.name as string) ||
     (profile?.email as string) ||
-    "account";
+    (enabled ? "account" : "dev");
+
   return (
     <>
-      <Button
-        color="inherit"
-        size="small"
-        startIcon={<AccountCircleIcon />}
-        onClick={(e) => setAnchor(e.currentTarget)}
-      >
+      <button className="vq-user" onClick={(e) => setAnchor(e.currentTarget)}>
+        <span className="vq-avatar">{initials(name)}</span>
         {name}
-      </Button>
+      </button>
       <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
-        <MenuItem
-          onClick={() => {
-            setAnchor(null);
-            logout();
-          }}
-        >
-          Sign out
-        </MenuItem>
+        {enabled ? (
+          <MenuItem
+            onClick={() => {
+              setAnchor(null);
+              logout();
+            }}
+          >
+            Sign out
+          </MenuItem>
+        ) : (
+          <MenuItem disabled>Authentication disabled</MenuItem>
+        )}
       </Menu>
     </>
   );
 }
 
 export function Layout({ children }: { children: ReactNode }) {
-  const location = useLocation();
-  const { can } = usePermissions();
-  const nav = can("iam:read")
-    ? [...NAV, { to: "/iam", label: "Access control", icon: <SecurityIcon /> }]
-    : NAV;
-  const isActive = (to: string) =>
-    to === "/" ? location.pathname === "/" : location.pathname.startsWith(to);
-
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
   return (
-    <Box sx={{ display: "flex" }}>
-      <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }} color="default">
-        <Toolbar variant="dense">
-          <ComputerIcon sx={{ mr: 1 }} color="primary" />
-          <Typography variant="h6" noWrap>
-            vquasar
-          </Typography>
-          <Box sx={{ flexGrow: 1 }} />
+    <div className="vq-app">
+      <Sidebar />
+      <div className="vq-body">
+        <header className="vq-topbar">
+          <Breadcrumb />
+          <div className="vq-spacer" />
+          {/* The palette itself is not designed yet — the affordance is wired to
+              the search that does exist. */}
+          <button className="vq-cmdk" onClick={() => navigate("/vms")}>
+            <kbd>⌘K</kbd>
+            Search or run a command
+          </button>
+          <ThemeSwitch />
           <UserMenu />
-        </Toolbar>
-      </AppBar>
-      <Drawer
-        variant="permanent"
-        sx={{
-          width: DRAWER_WIDTH,
-          flexShrink: 0,
-          [`& .MuiDrawer-paper`]: { width: DRAWER_WIDTH, boxSizing: "border-box" },
-        }}
-      >
-        <Toolbar variant="dense" />
-        <List>
-          {nav.map((item) => (
-            <ListItemButton
-              key={item.to}
-              component={RouterLink}
-              to={item.to}
-              selected={isActive(item.to)}
-            >
-              <ListItemIcon sx={{ minWidth: 40 }}>{item.icon}</ListItemIcon>
-              <ListItemText primary={item.label} />
-            </ListItemButton>
-          ))}
-        </List>
-      </Drawer>
-      <Box component="main" sx={{ flexGrow: 1, p: 3, mt: 6, minWidth: 0 }}>
-        {children}
-      </Box>
-    </Box>
+        </header>
+        <main className={`vq-main${pathname === "/" ? " wide-gap" : ""}`}>{children}</main>
+      </div>
+    </div>
   );
 }
