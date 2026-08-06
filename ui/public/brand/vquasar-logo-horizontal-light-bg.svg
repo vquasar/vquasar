@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" width="360" height="96" role="img" aria-label="vQuasar">
+  <title>vQuasar</title>
+  <mask id="core-l1">
+    <rect width="360" height="96" fill="#fff"></rect>
+    <circle cx="40" cy="48" r="3.2" fill="#000"></circle>
+  </mask>
+  <g mask="url(#core-l1)" transform="translate(8 16) scale(1)">
+    <g transform="rotate(-14 32 32)">
+      <path d="M52 25.5A26 9 0 1 0 52 38.5" fill="none" stroke="#4F9CF9" stroke-width="4" stroke-linecap="round"></path>
+      <path d="M52 38.5 60 42" fill="none" stroke="#4F9CF9" stroke-width="4" stroke-linecap="round"></path>
+    </g>
+    <polygon points="25,36 37,31.5 45,4" fill="#4F9CF9"></polygon>
+    <polygon points="39,28 27,32.5 19,60" fill="#4F9CF9"></polygon>
+    <circle cx="32" cy="32" r="7.5" fill="#4F9CF9"></circle>
+  </g>
+  <text x="95.03999999999999" y="62.08" font-family="Inter Tight, Inter, Helvetica, Arial, sans-serif" letter-spacing="-0.92" fill="#0B0F16"><tspan font-size="34" font-weight="400" opacity="0.65">v</tspan><tspan font-size="46" font-weight="600">Quasar</tspan></text>
+</svg>

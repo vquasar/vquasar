@@ -153,9 +153,27 @@ Split into three shippable slices.
     (`/O=vquasar/CN=…`) and the CN as a `DNS:` SAN — verified against the exact
     regex `ovs-monitor-ipsec` uses, which a single-RDN subject silently fails.
     See [`docs/overlay-encryption.md`](docs/overlay-encryption.md).
-    **Still required before this can be called done:** install
-    `openvswitch-ipsec` on the lab hosts and verify ESP on the wire, since none
-    of the OVS/IKE interaction has been exercised against a real installation.
+    **Verified against a real `openvswitch-ipsec` 3.3.4 + strongSwan 5.9.13
+    install** (on dome, then reverted): our exact `ovs-vsctl` argument vectors
+    are accepted; a pre-fix single-RDN certificate produces
+    `No CN in the certificate subject` and makes every tunnel report the
+    misleading `must set 'certificate' as local certificate` even though it is
+    set; the fixed `/O=vquasar/CN=…` subject yields `CONFIGURED` with the CN
+    extracted; and the kernel installs policies whose selector is
+    `dst <peer> proto udp dport 4789` — **with no VNI**, which is the empirical
+    confirmation that one association per host pair protects every overlay
+    between them, and therefore that the anchor belongs per peer.
+    **ESP confirmed on the wire between two real hosts**, cross-distro: Ubuntu
+    24.04 / OVS 3.3.4 / strongSwan 5.9.13 ↔ Rocky 10 / OVS 3.5.3 / libreswan
+    5.3.2, which is the portability case OVS-native was chosen for. An overlay
+    ping produced `ESP(spi=…)` in both directions on the receiver's physical NIC
+    with no cleartext VXLAN, and the transport-mode SA counters advanced with
+    the traffic. Three things the packages do not set up, all found by running
+    it and now handled or documented: RHEL-family firewalld permits 4789/udp but
+    not IKE/ESP; AppArmor confines charon to `/etc/ipsec.d/**`, so credentials
+    elsewhere fail as a bare "no private key found" (the agent now stages copies
+    there); and strongSwan will not build a trust chain from OVS's `ca_cert`
+    alone — the CA must be in `/etc/ipsec.d/cacerts/`.
 - **M18c — UDP/4789 ingress filter.** IPsec alone does not stop injection: a
   VXLAN packet from an unconfigured source IP matches no policy and is still
   delivered. Needs a host firewall rule accepting only ESP-protected traffic —
