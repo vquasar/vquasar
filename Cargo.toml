@@ -18,11 +18,13 @@ repository = "https://github.com/vquasar/vquasar"
 authors = ["vquasar contributors"]
 
 [workspace.dependencies]
-# Internal crates
-vquasar-common = { path = "crates/common" }
-vquasar-model = { path = "crates/model" }
-vquasar-client = { path = "crates/client" }
-vquasar-proto = { path = "crates/proto" }
+# Internal crates. The explicit version alongside the path is what keeps these
+# from reading as wildcard dependencies to cargo-deny (a wildcard is
+# unresolvable for anyone consuming the crate from a registry).
+vquasar-common = { path = "crates/common", version = "0.1.0" }
+vquasar-model = { path = "crates/model", version = "0.1.0" }
+vquasar-client = { path = "crates/client", version = "0.1.0" }
+vquasar-proto = { path = "crates/proto", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", default-features = false }

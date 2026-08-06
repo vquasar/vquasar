@@ -47,6 +47,13 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Supply chain: advisories, licences, duplicate/wildcard bans. Config in
+      # deny.toml, which records why each ignored advisory is ignored.
+      - name: Supply-chain audit
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
       - name: Unit tests
         run: cargo test --workspace --lib --bins
 
