@@ -43,7 +43,7 @@ import type {
   SecurityGroupRule,
 } from "../api/types";
 
-const COLS = "1.2fr 110px 1.2fr 1fr 1.4fr 1fr 70px";
+const COLS = "1.2fr 110px 1.2fr 1fr 1.4fr 1fr 70px 40px";
 const RULE_COLS = "90px 90px 1fr 1fr";
 const POOL_CELLS = 16;
 
@@ -342,6 +342,7 @@ export function Networks() {
           <div>Pool</div>
           <div>DNS</div>
           <div>NICs</div>
+          <div />
         </THead>
 
         {networks.isLoading && <SkeletonRows cols={COLS} />}
@@ -395,7 +396,6 @@ export function Networks() {
                     legacy segment
                   </span>
                 )}
-                <RowMenu inline items={menu} />
               </div>
               {/* Overlays are the thing that spans hosts — cyan earns its place. */}
               <div className={`vq-mono-sm ${n.vni != null ? "t-cyan" : "t-2"}`} style={{ fontSize: 10.5 }}>
@@ -410,6 +410,7 @@ export function Networks() {
                 {n.dns.length ? n.dns.join(", ") : <Dash />}
               </div>
               <div className="vq-mono-sm">{nicCounts.get(n.id) ?? 0}</div>
+              <RowMenu items={menu} />
             </TRow>
           );
         })}

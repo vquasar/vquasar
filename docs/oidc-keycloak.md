@@ -126,6 +126,15 @@ tok() { curl -sk -X POST \
 | `GET /vms/{id}/console` (WS) with no `access_token`  | 401      |
 | `GET /vms/{id}/console` (WS) with an invalid token   | 401      |
 
+Run them with [`scripts/verify-oidc.sh`](../scripts/verify-oidc.sh) rather than
+by hand — CI runs the same script against a throwaway Keycloak, so what is
+checked automatically and what you can check on a real install stay identical:
+
+```bash
+API=https://control.lab:8080/api/v1 KC=https://keycloak.lab:8443 \
+  scripts/verify-oidc.sh
+```
+
 Decode a token to confirm the mappers are doing their job — `aud` must contain
 the client id and `groups` must list the user's groups:
 

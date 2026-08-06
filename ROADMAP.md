@@ -64,8 +64,11 @@ Split into three shippable slices.
   verification matrix (no/malformed/foreign-realm token ⇒ 401; unmapped or
   ungrouped user ⇒ 403; group→role mapping grants exactly the role's
   permissions; console WS rejects a missing or invalid `access_token`) passes.
-  See [`docs/oidc-keycloak.md`](docs/oidc-keycloak.md). Remaining: the browser
-  Authorization Code + PKCE redirect is exercised only by hand, not in CI.
+  See [`docs/oidc-keycloak.md`](docs/oidc-keycloak.md). The matrix now runs in
+  CI (`scripts/verify-oidc.sh` against a throwaway Keycloak) — the same script
+  operators run against a real install, so the check cannot drift from what is
+  actually deployed. Remaining: the browser Authorization Code + PKCE redirect
+  is still exercised only by hand; it needs a headless browser.
 - **M12c — Encryption of sensitive data at rest.** ✅ **Done.** Application-level
   field encryption of the secret-bearing cloud-init fields (password, user-data,
   SSH keys) in VM specs and templates: **AES-256-GCM** with a fresh nonce per
