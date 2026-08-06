@@ -11,11 +11,13 @@ import { useVm } from "../api/hooks";
 import { authToken } from "../api/client";
 import { PageHeader } from "../ui/kit";
 import { useThemeMode } from "../theme/ThemeMode";
+import { useCrumb } from "../components/Breadcrumb";
 
 export function Console() {
   const { id } = useParams();
   const vm = useVm(id);
   const { mode } = useThemeMode();
+  useCrumb(vm.data ? `${vm.data.name} · console` : "console");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

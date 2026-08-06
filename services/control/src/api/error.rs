@@ -44,6 +44,17 @@ impl ApiError {
         }
     }
 
+    /// No such route under `/api/v1`. Distinct from a missing resource: it
+    /// keeps an unknown API path on the JSON envelope instead of letting it
+    /// fall through to the single-page shell.
+    pub fn route_not_found() -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: ErrorCode::Internal,
+            message: "no such API route".into(),
+        }
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,

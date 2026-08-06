@@ -6,6 +6,7 @@ import { useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useEvents, useHosts, useNetworks, useTasks, useVms } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Card,
   Dash,
@@ -125,7 +126,7 @@ export function Overview() {
         </div>
         <div className="vq-actions">
           <Btn onClick={() => navigate("/tasks")}>View tasks</Btn>
-          {can("vm:create") && (
+          {can(ACTION.vmCreate) && (
             <Btn kind="primary" onClick={() => navigate("/vms/new")}>
               Create VM
             </Btn>

@@ -1,8 +1,27 @@
 // React Query hooks. Live state is polled on an interval until the event stream
 // exists (design section 33: "Initial implementation may poll").
+//
+// Two rules keep the polling honest at fleet scale:
+//
+//   * Poll fast only while something is actually moving. The console shell
+//     mounts every list (the sidebar carries live counts), so a flat interval
+//     meant one full fetch of hosts + VMs + volumes + images + templates +
+//     networks + security groups + tasks every few seconds, from every open
+//     browser, forever. Hosts, VMs and tasks drop to 2s while a task is running
+//     or a VM is in a transitional phase, and back to 10s when the fleet is
+//     idle. Everything an operator changes by hand polls at 60s and is
+//     invalidated by its own mutations.
+//   * Never issue a query the caller has no permission to read. Without this a
+//     `viewer` scoped to vm:read generates a 403 for volumes, images and
+//     templates on every tick.
+//
+// React Query does not refetch on an interval while the tab is in the
+// background, so a console left open on another desktop costs nothing.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, uploadImage } from "./client";
+import { usePermissions } from "../auth/permissions";
+import { READ } from "../auth/perm";
 import type {
   Accepted,
   CreateImageRequest,
@@ -23,65 +42,114 @@ import type {
   UpdateVmRequest,
   Vm,
   VmMetrics,
+  VmPhase,
 } from "./types";
 
-const POLL_MS = 3000;
+/// Something is in flight — match the progress bars an operator is watching.
+const FAST_MS = 2_000;
+/// The fleet is idle; these still drift on their own (heartbeats, guest IPs).
+const STEADY_MS = 10_000;
+/// Changes only when somebody acts, and every action invalidates its own key.
+const SLOW_MS = 60_000;
+
+/// Phases that mean the control plane is mid-operation on a guest.
+const BUSY_PHASES = new Set<VmPhase>([
+  "Pending",
+  "Scheduling",
+  "Creating",
+  "Starting",
+  "Stopping",
+  "Migrating",
+  "Deleting",
+]);
+
+function tasksBusy(tasks: Task[] | undefined): boolean {
+  return !!tasks?.some((t) => t.state === "Running" || t.state === "Pending");
+}
+
+/// Tasks drive their own cadence: a running task is exactly the thing whose
+/// progress bar must not lie.
+function taskInterval(data: Task[] | undefined): number {
+  return tasksBusy(data) ? FAST_MS : STEADY_MS;
+}
+
+/// Hosts have no busy flag of their own, so they follow the task queue — a
+/// drain or a migration is what makes host state worth watching closely.
+function busyFromCache(qc: QueryClient): boolean {
+  return tasksBusy(qc.getQueryData<Task[]>(["tasks"]));
+}
 
 export function useHosts() {
+  const { can } = usePermissions();
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ["hosts"],
     queryFn: () => api.get<Host[]>("/hosts"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.hosts),
+    refetchInterval: () => (busyFromCache(qc) ? FAST_MS : STEADY_MS),
   });
 }
 
 export function useHost(id: string | undefined) {
+  const { can } = usePermissions();
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ["hosts", id],
     queryFn: () => api.get<Host>(`/hosts/${id}`),
-    refetchInterval: POLL_MS,
-    enabled: !!id,
+    refetchInterval: () => (busyFromCache(qc) ? FAST_MS : STEADY_MS),
+    enabled: !!id && can(READ.hosts),
   });
 }
 
 export function useVms() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["vms"],
     queryFn: () => api.get<Vm[]>("/vms"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.vms),
+    refetchInterval: (q) =>
+      q.state.data?.some((v) => BUSY_PHASES.has(v.phase)) ? FAST_MS : STEADY_MS,
   });
 }
 
 export function useVm(id: string | undefined) {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["vms", id],
     queryFn: () => api.get<Vm>(`/vms/${id}`),
-    refetchInterval: POLL_MS,
-    enabled: !!id,
+    refetchInterval: (q) => (q.state.data && BUSY_PHASES.has(q.state.data.phase) ? FAST_MS : STEADY_MS),
+    enabled: !!id && can(READ.vms),
   });
 }
 
 export function useNetworks() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["networks"],
     queryFn: () => api.get<Network[]>("/networks"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.networks),
+    refetchInterval: SLOW_MS,
   });
 }
 
 export function useTasks() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["tasks"],
     queryFn: () => api.get<Task[]>("/tasks"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.tasks),
+    refetchInterval: (q) => taskInterval(q.state.data),
   });
 }
 
 export function useEvents() {
+  const { can } = usePermissions();
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ["events"],
     queryFn: () => api.get<Event[]>("/events?limit=200"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.events),
+    refetchInterval: () => (busyFromCache(qc) ? FAST_MS : STEADY_MS),
   });
 }
 
@@ -123,17 +191,24 @@ export function useUpdateVm() {
 // ---- images & templates (design M9) --------------------------------------
 
 export function useImages() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["images"],
     queryFn: () => api.get<Image[]>("/images"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.images),
+    // An import in flight is the one thing here worth watching closely.
+    refetchInterval: (q) =>
+      q.state.data?.some((i) => i.status === "importing") ? FAST_MS : SLOW_MS,
   });
 }
 
 export function useIsos() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["isos"],
     queryFn: () => api.get<IsoEntry[]>("/isos"),
+    enabled: can(READ.images),
+    staleTime: SLOW_MS,
   });
 }
 
@@ -181,10 +256,12 @@ export function useDeleteImage() {
 }
 
 export function useTemplates() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["templates"],
     queryFn: () => api.get<Template[]>("/templates"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.templates),
+    refetchInterval: SLOW_MS,
   });
 }
 
@@ -296,11 +373,12 @@ export function useDeleteNetwork() {
 }
 
 export function useNetworkAllocations(id: string | undefined) {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["networks", id, "allocations"],
     queryFn: () => api.get<IpAllocation[]>(`/networks/${id}/allocations`),
-    enabled: !!id,
-    refetchInterval: POLL_MS,
+    enabled: !!id && can(READ.networks),
+    refetchInterval: SLOW_MS,
   });
 }
 
@@ -308,10 +386,12 @@ export function useNetworkAllocations(id: string | undefined) {
 import type { CreateRuleRequest, SecurityGroup } from "./types";
 
 export function useSecurityGroups() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["security-groups"],
     queryFn: () => api.get<SecurityGroup[]>("/security-groups"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.securityGroups),
+    refetchInterval: SLOW_MS,
   });
 }
 
@@ -376,10 +456,12 @@ export function useChangeNic() {
 import type { Volume } from "./types";
 
 export function useVolumes() {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["volumes"],
     queryFn: () => api.get<Volume[]>("/volumes"),
-    refetchInterval: POLL_MS,
+    enabled: can(READ.volumes),
+    refetchInterval: SLOW_MS,
   });
 }
 
@@ -451,10 +533,11 @@ export function useDetachVolume() {
 import type { VolumeSnapshot } from "./types";
 
 export function useVolumeSnapshots(volumeId: string | undefined) {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["volumes", volumeId, "snapshots"],
     queryFn: () => api.get<VolumeSnapshot[]>(`/volumes/${volumeId}/snapshots`),
-    enabled: !!volumeId,
+    enabled: !!volumeId && can(READ.volumes),
   });
 }
 
@@ -484,11 +567,14 @@ export function useRevertSnapshot() {
 }
 
 // --- Per-VM metrics (M15a) ---
+/// Only mounted on an open VM detail page, so a short interval here costs one
+/// request per watching operator rather than one per VM in the fleet.
 export function useVmMetrics(id: string | undefined) {
+  const { can } = usePermissions();
   return useQuery({
     queryKey: ["vms", id, "metrics"],
     queryFn: () => api.get<VmMetrics>(`/vms/${id}/metrics`),
-    enabled: !!id,
-    refetchInterval: POLL_MS,
+    enabled: !!id && can(READ.vms),
+    refetchInterval: FAST_MS,
   });
 }

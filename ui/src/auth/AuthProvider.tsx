@@ -37,6 +37,22 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/// OIDC Authorization Code + PKCE needs `crypto.subtle` to hash the code
+/// verifier, and browsers expose it only in a secure context — HTTPS, or
+/// localhost. Over plain HTTP to any other host it is simply absent, and the
+/// failure surfaces as an opaque "Crypto.subtle is available only in secure
+/// contexts" deep inside the OIDC library. Detect it up front and say what is
+/// actually wrong.
+function insecureContextError(): string | null {
+  if (window.isSecureContext) return null;
+  return (
+    `This page is served over plain HTTP from ${window.location.host}, which the ` +
+    `browser treats as an insecure context. Sign-in needs Web Crypto, which is ` +
+    `only available over HTTPS (or on localhost). Open the console over HTTPS — ` +
+    `the control plane serves it directly — or use a localhost tunnel.`
+  );
+}
+
 async function fetchAuthConfig(): Promise<AuthConfigView> {
   const res = await fetch("/api/v1/auth-config");
   if (!res.ok) throw new Error(`auth-config: HTTP ${res.status}`);
@@ -87,6 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setEnabled(true);
         setIssuer(cfg.issuer);
+        const insecure = insecureContextError();
+        if (insecure && !cancelled) {
+          setError(insecure);
+        }
         const mgr = buildManager(cfg);
         managerRef.current = mgr;
         mgr.events.addUserLoaded((u) => setUser(u));
@@ -144,6 +164,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile: user?.profile,
       error,
       login: () => {
+        const insecure = insecureContextError();
+        if (insecure) {
+          setError(insecure);
+          return;
+        }
         setError(undefined);
         managerRef.current?.signinRedirect().catch((e) =>
           setError(

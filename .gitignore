@@ -25,3 +25,6 @@ config/local.toml
 /ui/node_modules
 /ui/dist
 design_*
+# Brand-guideline archives are design source, not repo content — the exported
+# assets that the console actually uses live in ui/public/.
+*.zip

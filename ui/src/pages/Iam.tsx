@@ -19,6 +19,7 @@ import {
 } from "../api/iam";
 import { useAuth } from "../auth/AuthProvider";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Card,
@@ -250,7 +251,7 @@ export function Iam() {
   const remove = useRemoveGroupMapping();
   const { can } = usePermissions();
   const { enabled } = useAuth();
-  const canManage = can("iam:manage");
+  const canManage = can(ACTION.iamManage);
   const [roleDialog, setRoleDialog] = useState<{ edit: RoleView | null } | null>(null);
   const [assign, setAssign] = useState<UserView | null>(null);
   const [mapping, setMapping] = useState(false);
@@ -308,6 +309,7 @@ export function Iam() {
                 <div className="vq-cell" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span className="vq-name">{r.name}</span>
                   <RowMenu
+                    inline
                     items={
                       canManage && !r.builtin
                         ? [
@@ -356,6 +358,7 @@ export function Iam() {
                 <div className="vq-cell" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span className="vq-name vq-mono-sm">{m.role}</span>
                   <RowMenu
+                    inline
                     items={
                       canManage
                         ? [
@@ -409,6 +412,7 @@ export function Iam() {
                 ))}
               </div>
               <RowMenu
+                inline
                 items={
                   canManage && roles.data
                     ? [{ label: "Assign roles…", onClick: () => setAssign(u) }]

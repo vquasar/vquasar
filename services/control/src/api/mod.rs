@@ -144,7 +144,13 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
             .layer(Extension(en));
     }
 
-    let v1 = v1.layer(Extension(auth)).with_state(store);
+    // An unmatched /api/v1 path answers with the error envelope. Without this
+    // it would reach the outer SPA fallback and a typo'd endpoint would return
+    // an HTML page with status 200 — the worst possible answer for a client.
+    let v1 = v1
+        .fallback(|| async { error::ApiError::route_not_found() })
+        .layer(Extension(auth))
+        .with_state(store);
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))

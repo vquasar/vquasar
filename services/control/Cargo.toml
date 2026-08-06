@@ -51,3 +51,4 @@ metrics-exporter-prometheus = "0.18.3"
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
+tempfile = "3"

@@ -13,6 +13,7 @@ import {
   useUpdateTemplate,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Dash,
@@ -191,7 +192,7 @@ export function Templates() {
           list.length === 1 ? "" : "s"
         } · a template pins an image, a size and a network so a VM is one form`}
         actions={
-          can("template:create") && (
+          can(ACTION.templateCreate) && (
             <Btn kind="primary" onClick={() => setDialog({ edit: null })}>
               Create template
             </Btn>
@@ -231,14 +232,15 @@ export function Templates() {
                 {t.name}
               </Link>
               <RowMenu
-                items={
-                  can("template:create")
-                    ? [
-                        { label: "Edit", onClick: () => setDialog({ edit: t }) },
-                        { label: "Delete", danger: true, onClick: () => del.mutate(t.id) },
-                      ]
-                    : []
-                }
+                inline
+                items={[
+                  ...(can(ACTION.templateUpdate)
+                    ? [{ label: "Edit", onClick: () => setDialog({ edit: t }) }]
+                    : []),
+                  ...(can(ACTION.templateDelete)
+                    ? [{ label: "Delete", danger: true, onClick: () => del.mutate(t.id) }]
+                    : []),
+                ]}
               />
             </div>
             <div className="vq-cell vq-mono-sm">{imageName(t.image_id)}</div>

@@ -11,6 +11,7 @@ import {
   useSecurityGroups,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Card,
@@ -168,7 +169,7 @@ export function SecurityGroups() {
           list.length === 1 ? "" : "s"
         } · rules are enforced per NIC by the host agent`}
         actions={
-          can("network:create") && (
+          can(ACTION.networkCreate) && (
             <Btn kind="primary" onClick={() => setCreating(true)}>
               Create group
             </Btn>
@@ -227,10 +228,10 @@ export function SecurityGroups() {
               desc={selected.description}
               actions={
                 <div style={{ display: "flex", gap: 8 }}>
-                  {can("network:update") && (
+                  {can(ACTION.networkUpdate) && (
                     <Btn onClick={() => setAddingTo(selected.id)}>Add rule</Btn>
                   )}
-                  {can("network:delete") && (
+                  {can(ACTION.networkDelete) && (
                     <Btn kind="destructive" onClick={() => del.mutate(selected.id)}>
                       Delete group
                     </Btn>
@@ -277,7 +278,7 @@ export function SecurityGroups() {
                     <div className="vq-cell vq-mono-sm">{r.remote_cidr ?? "0.0.0.0/0"}</div>
                     <RowMenu
                       items={
-                        can("network:update")
+                        can(ACTION.networkUpdate)
                           ? [
                               {
                                 label: "Delete rule",

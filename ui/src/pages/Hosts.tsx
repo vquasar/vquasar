@@ -13,6 +13,7 @@ import {
   useSetHostSchedulable,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Dash,
@@ -23,6 +24,7 @@ import {
   ErrorPanel,
   Field,
   Input,
+  Pagination,
   PageHeader,
   ProgressCell,
   QueryError,
@@ -37,6 +39,7 @@ import { ageSecs, formatBytes, relTime } from "../format";
 import type { DrainResult, EnrollResponse, Host } from "../api/types";
 
 const COLS = "1.3fr 110px 130px 1fr 1.3fr 70px 1fr 110px 40px";
+const PAGE_SIZE = 25;
 
 // The control plane marks a host NotReady after this long without a heartbeat;
 // the column turns red at the same threshold so the UI never looks calmer than
@@ -207,9 +210,13 @@ export function Hosts() {
   const setSchedulable = useSetHostSchedulable();
   const drain = useDrainHost();
   const [drainResult, setDrainResult] = useState<DrainResult | null>(null);
-  const manage = can("host:manage");
+  const [page, setPage] = useState(1);
+  const manage = can(ACTION.hostCordon);
 
   const list = hosts.data ?? [];
+  // A fleet is hundreds of hosts; render a page of them.
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const shown = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const ready = list.filter((h) => h.state === "Ready").length;
   const cordoned = list.filter((h) => !h.schedulable).length;
   const chVersions = [
@@ -271,7 +278,7 @@ export function Hosts() {
           </div>
         )}
 
-        {list.map((h) => {
+        {shown.map((h) => {
           const total = h.total_memory_bytes;
           const avail = h.available_memory_bytes;
           const used = total != null && avail != null ? total - avail : null;
@@ -341,6 +348,16 @@ export function Hosts() {
             </TRow>
           );
         })}
+
+        {list.length > 0 && (
+          <Pagination
+            page={page}
+            pages={pages}
+            shown={shown.length}
+            total={list.length}
+            onPage={setPage}
+          />
+        )}
       </Table>
 
       <RegisterDialog open={registerOpen} onClose={() => setRegisterOpen(false)} />
