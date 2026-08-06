@@ -80,6 +80,7 @@ mod tests {
         let now = Utc::now();
         Host {
             cert_cn: None,
+            overlay_vnis: vec![],
             id: Uuid::new_v4(),
             name: name.into(),
             endpoint: "http://x:9500".into(),

@@ -127,23 +127,52 @@ pub async fn release(pool: &PgPool, segment_key: &str) -> Result<(), SegmentErro
     Ok(())
 }
 
-/// Free segments whose quarantine has elapsed. Returns how many were freed.
+/// Free segments whose quarantine has elapsed **and** which no host still
+/// carries. Returns how many were freed.
 ///
-/// Time-based for now. Gating this on every host confirming the overlay bridge
-/// is gone is stronger and is the follow-up (it needs a desired-set RPC to the
-/// agents); the grace period is what stops the immediate-reuse bug today.
+/// Both conditions matter, and neither alone is enough. Time on its own is a
+/// guess at when teardown finished — a host that was down during the grace
+/// period comes back with a live `vxbr<vni>` mesh that a new network would
+/// silently adopt. Host reports on their own would free a VNI the instant a
+/// bridge is GC'd, with no margin for a host that has not reported yet.
+///
+/// A host that is not `Ready` blocks release of whatever it last reported: we
+/// cannot see what it is carrying, so we do not assume it is nothing. That
+/// leaks VNI space while a host is down, which is the safe direction — the
+/// space is 24 bits and the alternative is cross-network traffic.
 pub async fn sweep_quarantine(pool: &PgPool, policy: &SegmentPolicy) -> Result<u64, SegmentError> {
     let cutoff =
         Utc::now() - Duration::from_std(policy.quarantine).unwrap_or_else(|_| Duration::hours(1));
     let n = sqlx::query(
-        "DELETE FROM network_segments
-          WHERE state = 'quarantined' AND released_at IS NOT NULL AND released_at < $1",
+        "DELETE FROM network_segments s
+          WHERE s.state = 'quarantined'
+            AND s.released_at IS NOT NULL
+            AND s.released_at < $1
+            AND NOT EXISTS (
+                SELECT 1 FROM hosts h WHERE s.value = ANY(h.overlay_vnis)
+            )",
     )
     .bind(cutoff)
     .execute(pool)
     .await?
     .rows_affected();
     Ok(n)
+}
+
+/// Quarantined segments still held by a host, for operator visibility.
+///
+/// A VNI that never clears means a host still has the bridge — usually one that
+/// is down, or one whose overlay GC did not run.
+pub async fn held_by_hosts(pool: &PgPool) -> Result<Vec<(String, String)>, SegmentError> {
+    Ok(sqlx::query_as::<_, (String, String)>(
+        "SELECT s.segment_key, h.name
+           FROM network_segments s
+           JOIN hosts h ON s.value = ANY(h.overlay_vnis)
+          WHERE s.state = 'quarantined'
+          ORDER BY s.segment_key",
+    )
+    .fetch_all(pool)
+    .await?)
 }
 
 #[cfg(test)]

@@ -92,6 +92,11 @@ message GetHostInfoResponse {
   // cross-CPU live migration (design M15).
   string cpu_vendor = 11;
   repeated string cpu_features = 12;
+  // VXLAN VNIs this host currently carries an overlay bridge for (design §18).
+  // Reported so the control plane can confirm a released segment is really gone
+  // everywhere before handing the VNI to a different network — a host returning
+  // with a stale vxbr<vni> and a live tunnel mesh must never have it adopted.
+  repeated uint32 overlay_vnis = 13;
 }
 
 // ---- VM lifecycle --------------------------------------------------------

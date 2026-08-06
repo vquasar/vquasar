@@ -54,6 +54,22 @@ fn overlay_bridge(vni: u32) -> String {
     format!("vxbr{vni}")
 }
 
+/// The VNI an overlay bridge name refers to, if it is one.
+pub fn vni_of_bridge(name: &str) -> Option<u32> {
+    name.strip_prefix("vxbr")?.parse().ok()
+}
+
+/// VNIs this host currently carries an overlay bridge for (design §18).
+///
+/// Reported in inventory so the control plane can confirm a released segment is
+/// gone from every host before reusing its VNI.
+pub async fn overlay_vnis() -> Vec<u32> {
+    match run_stdout("ovs-vsctl", &["list-br"]).await {
+        Ok(out) => out.lines().filter_map(vni_of_bridge).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// A prepared host interface ready to hand to Cloud Hypervisor.
 #[derive(Debug, Clone)]
 pub struct PreparedNic {
@@ -389,5 +405,17 @@ mod tests {
             .unwrap();
         assert_eq!(nic.mac, "02:00:00:00:00:01");
         assert_eq!(nic.tap, tap_name(vm, 0));
+    }
+
+    #[test]
+    fn overlay_bridge_names_round_trip_to_their_vni() {
+        assert_eq!(vni_of_bridge("vxbr4096"), Some(4096));
+        assert_eq!(vni_of_bridge(&overlay_bridge(16_777_215)), Some(16_777_215));
+        // Anything that is not an overlay bridge must not be reported as one —
+        // a false report would keep a VNI quarantined forever.
+        assert_eq!(vni_of_bridge("br-int"), None);
+        assert_eq!(vni_of_bridge("vxbr"), None);
+        assert_eq!(vni_of_bridge("vxbrx"), None);
+        assert_eq!(vni_of_bridge("br-vxipsec"), None);
     }
 }

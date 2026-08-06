@@ -69,14 +69,18 @@ pub fn builtin_roles() -> Vec<BuiltinRole> {
         })
         .collect();
 
-    // viewer: read-only across resources, plus console access.
+    // viewer: read-only across resources.
+    //
+    // Deliberately *not* vm:console. A serial console is an interactive,
+    // root-adjacent session on the guest — whatever is logged in there, the
+    // holder can drive. Calling that "read-only" was wrong: it made the most
+    // restricted role the one with the widest practical reach.
     let mut viewer: Vec<&str> = CATALOG
         .iter()
         .copied()
         .filter(|p| ends_with_read(p))
         .collect();
     viewer.retain(|p| *p != "iam:read");
-    viewer.push("vm:console");
 
     vec![
         BuiltinRole {
@@ -134,7 +138,10 @@ mod tests {
         assert!(admin.permissions.contains(&"network:create:provider"));
         assert!(operator.permissions.contains(&"vm:create"));
         let viewer = roles.iter().find(|r| r.name == "viewer").unwrap();
-        assert!(viewer.permissions.contains(&"vm:console"));
+        // A console is interactive access to the guest, not a read.
+        assert!(!viewer.permissions.contains(&"vm:console"));
+        let operator = roles.iter().find(|r| r.name == "operator").unwrap();
+        assert!(operator.permissions.contains(&"vm:console"));
         assert!(viewer.permissions.contains(&"vm:read"));
         assert!(!viewer.permissions.contains(&"vm:delete"));
     }
