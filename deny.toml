@@ -7,7 +7,13 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # rustls-pemfile is unmaintained. It reaches us only through axum-server
+    # and tonic, and cargo-deny reports "no safe upgrade is available" — there
+    # is nothing to act on until those crates move off it. Tracked rather than
+    # silently tolerated: re-check when axum-server or tonic is next bumped.
+    "RUSTSEC-2025-0134",
+]
 
 [licenses]
 version = 2
@@ -21,6 +27,10 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots (the Mozilla CA bundle, via reqwest/rustls) ships under
+    # CDLA-Permissive-2.0 — a permissive data licence, compatible with an
+    # Apache-2.0 project.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
