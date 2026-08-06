@@ -178,9 +178,16 @@ Split into three shippable slices.
   VXLAN packet from an unconfigured source IP matches no policy and is still
   delivered. Needs a host firewall rule accepting only ESP-protected traffic —
   the one piece that is distro-specific (iptables/nftables).
-- **M18d — UI for network kinds.** Kind selector, uplink/VLAN fields for platform
-  admins only, and badges for "legacy overlapping segment" and "allows all
-  ingress".
+- **M18d — UI for network kinds.** ✅ **Done.** The create/edit dialog selects a
+  kind (`provider` | `vlan` | `tenant`) and sends it explicitly — previously the
+  console omitted `kind`, so the server resolved a VLAN request to `provider`
+  and rejected the tag, making VLAN networks uncreatable from the UI. Uplink and
+  VLAN-tag fields appear only for physical kinds, and both physical options are
+  disabled without `network:create:provider`, leaving an operator able to create
+  tenant overlays and nothing else (ADR-016). The list badges "legacy segment"
+  (grandfathered, segment not guaranteed distinct) and "allows all ingress"
+  (the network's default policy group admits any address on any port, which
+  every NIC on it inherits — ADR-017).
 
 ### Networking
 - **M13a — IPAM: control-plane-managed / static IP assignment.** ✅ **Done.**
@@ -293,6 +300,48 @@ Split into three shippable slices.
   interactive install isn't possible (CH is headless + virtio-only) — the
   documented paths are a pre-built virtio image or an unattended serial setup.
 
+### Console
+The redesign (see Quality & delivery) landed against today's API. Five screens
+show less than they were designed to because the data does not exist yet — each
+needs a control-plane change first, and the UI change after it is small.
+
+- **Expose control-plane configuration read-only.** `GET /config` returning API
+  listen address, database DSN (without credentials), agent mTLS CA + expiry,
+  and the reconcile interval. Settings currently shows only what the console can
+  infer from its own origin and from `/auth-config`; the card that should carry
+  these values says where they live instead.
+- **Migration policy as API, not just `control.toml`.** Read/write endpoints for
+  allow-cross-CPU-model migration, auto-evacuate on NotReady, and max concurrent
+  migrations. The Settings screen was designed with three live controls here;
+  they are deliberately not rendered, because a toggle that cannot write is
+  worse than a value an operator has to go and read.
+- **Migration target on the VM.** A migrating VM's Host cell is designed to read
+  `host-02 → host-09`. `Vm` carries only `host_id`, and the target is not
+  recoverable from the task, so the cell shows the source alone. Needs a
+  `migration_target_host_id` (or an equivalent on the task) surfaced through
+  `GET /vms`.
+- **Placement and desired power on create-from-template.** The form is designed
+  with a segmented Auto / Pin host control and a "power on after create" toggle;
+  `CreateVmFromTemplateRequest` accepts neither, so the overrides grid carries
+  Max vCPU and cloud-init user-data in their place. Needs `placement` and
+  `desired_power_state` in `TemplateOverrides`.
+- **Snapshot counts on the volumes list.** Designed as a column
+  (`14 · snapshotting` in cyan for a volume mid-snapshot). Counting them today
+  costs one request per row and a fleet has hundreds of volumes, so the count
+  lives in the per-volume snapshots panel. Needs a `snapshot_count` on `Volume`,
+  or a bulk `GET /volumes/snapshots` summary.
+- **Control-plane version + reconcile age.** The sidebar footer is designed to
+  read `control v0.9.2 · reconciled 3s ago`; it shows agent-connection counts
+  and the freshest host heartbeat instead. Needs the build version and last
+  full-reconcile timestamp on a health or config endpoint.
+- **Command palette (⌘K).** The affordance is wired in the top bar but the open
+  panel was never designed. Needs a design pass before it is built.
+- **Functional icon family.** Consistent-weight line icons for hosts, VMs,
+  networks, volumes, images, migration, security groups, tasks and events. Until
+  they exist the sidebar stays text-only — the brand guidelines are explicit
+  that a generic icon set must not stand in, and the collapsed-sidebar
+  breakpoint below ~1100px is blocked on them.
+
 ### Platform & resilience
 - **Host lifecycle.** ✅ **Done (M16).** Maintenance mode (cordon/uncordon via
   the `schedulable` flag) + drain/evacuate (`POST /hosts/:id/drain` live-migrates
@@ -309,6 +358,56 @@ Split into three shippable slices.
 - Quotas, projects, multi-tenancy.
 
 ### Quality & delivery
+- **Console wired as the official UI.** ✅ **Done, deployed to the lab.** The
+  new bundle and the control binary that serves it are installed on `dome`; the
+  console is `https://<control>:8080/`, same origin as the API, over the
+  control plane's own TLS. Serving it over plain HTTP does not work and cannot:
+  OIDC Authorization Code + PKCE needs `crypto.subtle`, which browsers expose
+  only in a secure context, so an HTTP origin fails at sign-in with an opaque
+  Web Crypto error. The console now detects that on load and says so rather than
+  blaming the identity provider's CA, and the dev server takes
+  `VQUASAR_UI_TLS_CERT`/`_KEY` so the dev loop can be HTTPS too. The control
+  plane now
+  serves the whole UI directory rather than only `/assets`, so the favicons and
+  brand marks at the bundle root stop resolving to `index.html`; an unmatched
+  path still falls back to the SPA shell for deep links, while `/api/v1/*` keeps
+  its own JSON 404 so a typo'd endpoint can never return an HTML page with
+  status 200. Every response carries baseline security headers — a CSP that is
+  `'self'` throughout except for inline styles (the component library injects
+  them) and the OIDC issuer's origin (the sign-in flow talks to it directly),
+  plus `nosniff`, `no-referrer`, `frame-ancestors 'none'` and a
+  device-permissions denial. The three typefaces ship in the bundle instead of
+  loading from a font CDN: the console renders correctly with no egress, and no
+  third party sees an operator working. Both serving behaviours are pinned by
+  e2e tests. Polling is now tiered and permission-gated: hosts/VMs/tasks/events
+  run at 2s only while a task is running or a VM is in a transitional phase and
+  at 10s otherwise, images speed up only during an import, and everything an
+  operator changes by hand polls at 60s — the shell mounts every list for the
+  sidebar counts, so a flat 3s meant a full fetch of the entire inventory every
+  few seconds from every open browser. A query is not issued at all unless the
+  caller holds the read permission its endpoint requires, so a scoped role no
+  longer generates a 403 per resource per tick. The action → permission map
+  lives in one file (`ui/src/auth/perm.ts`) mirroring the guards in
+  `services/control/src/api/`; writing it down surfaced three gates that were
+  wrong (image edit/delete and template edit/delete were gated on `:create`).
+  `/iam` is guarded at the route, not just hidden in the nav. Lists are paged,
+  the vendor runtime is split from application code, and xterm loads only on the
+  console route.
+- **Console redesign + brand identity.** ✅ **Done.** The web UI was rebuilt on
+  the vQuasar design system: one CSS custom-property token set driving a dark
+  and a light theme of equal standing (`ui/src/styles/tokens.css`), a grouped
+  sidebar with live counts and agent-connection status, dense CSS-grid tables
+  replacing MUI X-DataGrid, and Ion Cyan reserved strictly for in-flight state.
+  New routes: host detail (`/hosts/:id`, with the migration-compatibility card),
+  settings (`/settings`), and create-VM-from-template as a full screen
+  (`/templates/:id/launch`) that shows the exact request it will send. Drift
+  (desired ≠ observed) is surfaced on Overview as its own metric, and a failed
+  task now carries its agent error inline in the table instead of a dismissible
+  alert. `@mui/x-data-grid` and `@mui/icons-material` were dropped — MUI is kept
+  only for dialogs and menus, themed from the same tokens. Navigation is
+  text-only until the functional icon family is designed. Brand assets (mark,
+  favicons, tokens) live in `ui/public/`.
+
 - **Metrics & tracing export.** ✅ **Done (M17).** A Prometheus `/metrics`
   endpoint (inventory gauges for VMs/hosts/tasks/migrations +
   reconcile/migration/recovery counters + HTTP request/latency); config-gated

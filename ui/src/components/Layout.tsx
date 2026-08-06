@@ -21,10 +21,12 @@ import {
 } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { usePermissions } from "../auth/permissions";
+import { ACTION, READ } from "../auth/perm";
 import { useThemeMode } from "../theme/ThemeMode";
 import { Logo } from "../ui/Mark";
 import { Segmented } from "../ui/kit";
 import { initials, relTime } from "../format";
+import { CrumbProvider, useCrumbLabel } from "./Breadcrumb";
 
 interface NavItem {
   to: string;
@@ -102,7 +104,7 @@ function Sidebar() {
   const operations: NavItem[] = [
     { to: "/tasks", label: "Tasks", count: tasks.data ? openTasks : undefined },
     { to: "/events", label: "Events" },
-    ...(can("iam:read") ? [{ to: "/iam", label: "Access control" }] : []),
+    ...(can(ACTION.iamRead) ? [{ to: "/iam", label: "Access control" }] : []),
     { to: "/settings", label: "Settings" },
   ];
 
@@ -137,7 +139,7 @@ function Sidebar() {
         />
         <NavGroup label="Operations" items={operations} />
       </div>
-      {can("host:read") && <AgentStatus />}
+      {can(READ.hosts) && <AgentStatus />}
     </nav>
   );
 }
@@ -159,9 +161,10 @@ const CRUMB: Record<string, string> = {
 
 function Breadcrumb() {
   const { pathname } = useLocation();
+  const published = useCrumbLabel();
   const segs = pathname.split("/").filter(Boolean);
-  // A detail route names the resource, not the collection.
-  const current = segs.length > 1 ? segs[segs.length - 1] : CRUMB[segs[0] ?? ""] ?? segs[0];
+  // A detail route names its resource; the collection name is the fallback.
+  const current = published ?? CRUMB[segs[0] ?? ""] ?? segs[0];
   return (
     <div className="vq-crumb">
       <span>{window.location.hostname}</span>
@@ -224,23 +227,25 @@ export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   return (
-    <div className="vq-app">
-      <Sidebar />
-      <div className="vq-body">
-        <header className="vq-topbar">
-          <Breadcrumb />
-          <div className="vq-spacer" />
-          {/* The palette itself is not designed yet — the affordance is wired to
-              the search that does exist. */}
-          <button className="vq-cmdk" onClick={() => navigate("/vms")}>
-            <kbd>⌘K</kbd>
-            Search or run a command
-          </button>
-          <ThemeSwitch />
-          <UserMenu />
-        </header>
-        <main className={`vq-main${pathname === "/" ? " wide-gap" : ""}`}>{children}</main>
+    <CrumbProvider>
+      <div className="vq-app">
+        <Sidebar />
+        <div className="vq-body">
+          <header className="vq-topbar">
+            <Breadcrumb />
+            <div className="vq-spacer" />
+            {/* The palette itself is not designed yet — the affordance is wired
+                to the search that does exist. */}
+            <button className="vq-cmdk" onClick={() => navigate("/vms")}>
+              <kbd>⌘K</kbd>
+              Search or run a command
+            </button>
+            <ThemeSwitch />
+            <UserMenu />
+          </header>
+          <main className={`vq-main${pathname === "/" ? " wide-gap" : ""}`}>{children}</main>
+        </div>
       </div>
-    </div>
+    </CrumbProvider>
   );
 }

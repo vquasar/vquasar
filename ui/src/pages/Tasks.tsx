@@ -2,12 +2,13 @@
 // row — never a dismissible alert, never detached from the row it belongs to.
 // The message is the whole reason an operator opened this screen.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useTasks, useVms } from "../api/hooks";
 import {
   Dash,
   EmptyState,
+  Pagination,
   PageHeader,
   ProgressCell,
   QueryError,
@@ -20,10 +21,12 @@ import {
 import { duration, formatTime } from "../format";
 
 const COLS = "1fr 1.3fr 1.3fr 1.6fr 1fr 1fr";
+const PAGE_SIZE = 25;
 
 export function Tasks() {
   const tasks = useTasks();
   const vms = useVms();
+  const [page, setPage] = useState(1);
 
   const vmById = useMemo(() => {
     const m = new Map<string, string>();
@@ -32,6 +35,9 @@ export function Tasks() {
   }, [vms.data]);
 
   const list = tasks.data ?? [];
+  // Task history grows without bound; render a page of it, not all of it.
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const shown = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <>
@@ -63,7 +69,7 @@ export function Tasks() {
           </div>
         )}
 
-        {list.map((t) => {
+        {shown.map((t) => {
           const vmName = t.vm_id ? vmById.get(t.vm_id) : undefined;
           const failed = t.state === "Failed";
           return (
@@ -102,6 +108,16 @@ export function Tasks() {
             </div>
           );
         })}
+
+        {list.length > 0 && (
+          <Pagination
+            page={page}
+            pages={pages}
+            shown={shown.length}
+            total={list.length}
+            onPage={setPage}
+          />
+        )}
       </Table>
     </>
   );

@@ -3,6 +3,13 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "@mui/material/styles";
+// Self-hosted fonts. The console runs in trusted labs with no egress, and the
+// control plane serves it under a same-origin CSP — a webfont CDN would be
+// both a broken dependency and a third party watching an operator work.
+import "@fontsource-variable/inter-tight/wght.css";
+import "@fontsource-variable/inter/wght.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import { buildTheme } from "./theme";

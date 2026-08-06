@@ -7,6 +7,8 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useDrainHost, useHost, useHosts, useSetHostSchedulable, useVms } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
+import { useCrumb } from "../components/Breadcrumb";
 import {
   Btn,
   Card,
@@ -68,6 +70,7 @@ export function HostDetail() {
   const drain = useDrainHost();
   const [drained, setDrained] = useState<string | null>(null);
 
+  useCrumb(host.data?.name);
   const h = host.data;
   const placed = useMemo(
     () => (vms.data ?? []).filter((v) => v.host_id === id),
@@ -126,7 +129,7 @@ export function HostDetail() {
           </>
         }
         actions={
-          can("host:manage") && (
+          can(ACTION.hostCordon) && (
             <>
               <Btn
                 onClick={() => setSchedulable.mutate({ id: h.id, schedulable: !h.schedulable })}

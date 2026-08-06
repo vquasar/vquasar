@@ -21,6 +21,7 @@ import {
   useVolumeSnapshots,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION, READ } from "../auth/perm";
 import {
   Btn,
   Dash,
@@ -32,6 +33,7 @@ import {
   Field,
   Grid,
   Input,
+  Pagination,
   PageHeader,
   QueryError,
   RowMenu,
@@ -46,6 +48,7 @@ import type { Vm, Volume } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
 const COLS = "1.6fr 100px 90px 1.3fr 90px 1fr 1fr";
+const PAGE_SIZE = 25;
 
 function CreateDialog({ onClose }: { onClose: () => void }) {
   const create = useCreateVolume();
@@ -327,8 +330,12 @@ export function Volumes() {
   const [attachVol, setAttachVol] = useState<Volume | null>(null);
   const [snapVol, setSnapVol] = useState<Volume | null>(null);
   const [bootVol, setBootVol] = useState<Volume | null>(null);
+  const [page, setPage] = useState(1);
 
   const list = volumes.data ?? [];
+  // A fleet carries hundreds of volumes; render a page of them.
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const shown = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const provisioned = list.reduce((n, v) => n + v.size_bytes, 0);
   const vmName = (id: string | null) =>
     id ? (vms.data?.find((v) => v.id === id)?.name ?? id.slice(0, 8)) : null;
@@ -343,7 +350,7 @@ export function Volumes() {
           provisioned,
         )} provisioned`}
         actions={
-          can("volume:create") && (
+          can(ACTION.volumeCreate) && (
             <Btn kind="primary" onClick={() => setCreating(true)}>
               Create volume
             </Btn>
@@ -378,21 +385,21 @@ export function Volumes() {
           </div>
         )}
 
-        {list.map((v) => {
+        {shown.map((v) => {
           const attachedTo = vmName(v.attached_vm_id);
           const menu = [
-            ...(can("volume:read")
+            ...(can(READ.volumes)
               ? [{ label: "Snapshots…", onClick: () => setSnapVol(v) }]
               : []),
-            ...(can("vm:create") && v.source_image_id && !v.attached_vm_id
+            ...(can(ACTION.vmCreate) && v.source_image_id && !v.attached_vm_id
               ? [{ label: "Boot a VM from this", onClick: () => setBootVol(v) }]
               : []),
-            ...(can("volume:update")
+            ...(can(ACTION.volumeUpdate)
               ? v.attached_vm_id
                 ? [{ label: "Detach", onClick: () => detach.mutate(v.id) }]
                 : [{ label: "Attach…", onClick: () => setAttachVol(v) }]
               : []),
-            ...(can("volume:delete") && !v.attached_vm_id
+            ...(can(ACTION.volumeDelete) && !v.attached_vm_id
               ? [{ label: "Delete", danger: true, onClick: () => del.mutate(v.id) }]
               : []),
           ];
@@ -401,7 +408,7 @@ export function Volumes() {
             <TRow key={v.id} cols={COLS}>
               <div className="vq-cell" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="vq-name">{v.name}</span>
-                <RowMenu items={menu} />
+                <RowMenu inline items={menu} />
               </div>
               <div className="vq-mono-sm">{formatBytes(v.size_bytes)}</div>
               <div className="vq-mono-sm">{v.format}</div>
@@ -424,6 +431,16 @@ export function Volumes() {
             </TRow>
           );
         })}
+
+        {list.length > 0 && (
+          <Pagination
+            page={page}
+            pages={pages}
+            shown={shown.length}
+            total={list.length}
+            onPage={setPage}
+          />
+        )}
       </Table>
 
       {creating && <CreateDialog onClose={() => setCreating(false)} />}
@@ -433,7 +450,7 @@ export function Volumes() {
       {snapVol && (
         <SnapshotsDialog
           volume={snapVol}
-          canManage={can("volume:update")}
+          canManage={can(ACTION.volumeUpdate)}
           onClose={() => setSnapVol(null)}
         />
       )}

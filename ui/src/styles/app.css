@@ -508,6 +508,16 @@ button {
 .vq-rowmenu:hover {
   color: var(--vq-text-2);
 }
+/* Beside a resource name the menu is a second affordance on the same cell —
+   it waits for the row rather than competing with it. */
+.vq-rowmenu.inline {
+  opacity: 0;
+}
+.vq-tr:hover .vq-rowmenu.inline,
+.vq-rowmenu.inline:focus-visible,
+.vq-rowmenu.inline[aria-expanded="true"] {
+  opacity: 1;
+}
 
 .vq-selectbox {
   width: 12px;
@@ -1247,6 +1257,13 @@ textarea.vq-input {
 .vq-spark.cyan > i {
   background: var(--vq-cyan-soft);
   border-top-color: var(--vq-cyan);
+}
+/* A slot with no sample yet: the track, not a reading. */
+.vq-spark > i.empty,
+.vq-spark.cyan > i.empty {
+  background: var(--vq-surface-3);
+  border-top: 0;
+  height: 3px;
 }
 
 /* --------------------------------------------------------------- events -- */

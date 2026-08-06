@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useHosts, useVmAction, useVms } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { ACTION } from "../auth/perm";
 import {
   Btn,
   Dash,
@@ -108,7 +109,7 @@ export function Vms() {
           counts.migrating ? ` · ${counts.migrating} migrating` : ""
         }`}
         actions={
-          can("vm:create") && (
+          can(ACTION.vmCreate) && (
             <>
               <Btn onClick={() => navigate("/templates")}>From template</Btn>
               <Btn kind="primary" onClick={() => navigate("/vms/new")}>
@@ -180,14 +181,14 @@ export function Vms() {
         {shown.map((v) => {
           const image = imageLabel(v);
           const menu = [
-            ...(can("vm:power")
+            ...(can(ACTION.vmPower)
               ? [
                   { label: "Start", onClick: () => action.mutate({ id: v.id, action: "start" }) },
                   { label: "Stop", onClick: () => action.mutate({ id: v.id, action: "stop" }) },
                 ]
               : []),
-            ...(can("vm:migrate") ? [{ label: "Migrate…", onClick: () => navigate(`/vms/${v.id}`) }] : []),
-            ...(can("vm:delete")
+            ...(can(ACTION.vmMigrate) ? [{ label: "Migrate…", onClick: () => navigate(`/vms/${v.id}`) }] : []),
+            ...(can(ACTION.vmDelete)
               ? [
                   {
                     label: "Delete",
