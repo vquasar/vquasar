@@ -360,6 +360,22 @@ impl Harness {
         panic!("control did not become healthy");
     }
 
+    /// Status code from a WebSocket upgrade attempt (the handshake is enough:
+    /// we are testing what happens *before* the upgrade).
+    async fn ws_status(&self, path: &str) -> u16 {
+        reqwest::Client::new()
+            .get(format!("{}/api/v1{path}", self.base))
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await
+            .expect("console request")
+            .status()
+            .as_u16()
+    }
+
     async fn get(&self, path: &str) -> Value {
         let r = self
             .client
@@ -894,4 +910,25 @@ async fn serves_the_console_with_deep_links_and_security_headers() {
         .unwrap();
     assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
     assert!(r.json::<Value>().await.unwrap()["error"]["code"].is_string());
+}
+
+/// The console WebSocket authorized the *permission* and then opened a session
+/// against whatever id was in the path, without ever resolving it. An unknown
+/// (or, once projects exist, someone else's) VM must not reach the upgrade.
+#[tokio::test]
+async fn console_rejects_an_unknown_vm_before_upgrading() {
+    let h = Harness::start().await;
+    let unknown = uuid::Uuid::new_v4();
+    let code = h.ws_status(&format!("/vms/{unknown}/console")).await;
+    assert_eq!(code, 404, "an unknown VM must not open a console session");
+
+    // A real VM still resolves (auth is disabled in the harness, so this
+    // isolates the ownership/resolution check from the permission check).
+    let (st, created) = h
+        .post("/vms", json!({"name": "conso", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{created}");
+    let vm = created["vm_id"].as_str().unwrap();
+    let code = h.ws_status(&format!("/vms/{vm}/console")).await;
+    assert_ne!(code, 404, "a real VM must get past the resolution check");
 }
