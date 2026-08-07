@@ -694,7 +694,7 @@ can still exhaust the fleet. That is ADR-019.
 
 ### ADR-019 — Quotas are admission control on committed intent
 
-*Status:* Accepted, not yet implemented.
+*Status:* Accepted and implemented.
 
 *Context.* The control plane persists intent and converges asynchronously (§7,
 §15). A resource limit could be enforced when intent is recorded or when the
@@ -714,9 +714,30 @@ all in one transaction. That serialises writes per project and only per project,
 and leaves no cached counter that can drift or need repair after a crash.
 
 *Consequences.* Every write that changes a counted quantity must pass admission,
-including in-place VM edits, not only creation. Operations that do expensive
-external work before persisting — cloning a volume from an image — must insert a
-`provisioning` row inside the admission transaction and finalise afterwards.
+including in-place VM edits, not only creation. In practice that meant reducing
+the spec-writing paths to one: two existed, and only one had been gated. A
+second door is how this gets bypassed six months later.
+
+Operations that do expensive external work before persisting — cloning a volume
+from an image — insert a `provisioning` row inside the admission transaction and
+finalise afterwards. The old order (convert, then insert) cannot be admitted at
+all: the expensive part would happen before anything was counted, so two
+concurrent creates would both convert gigabytes and only then discover one did
+not fit. Because a clone grows to the image's virtual size, which `qemu-img`
+only reveals after converting, the reservation is the largest figure known up
+front and the finalise admits the difference.
+
+Storage counts volumes *and* the disks a VM spec asks the agent to provision.
+Counting only volumes would leave the cap bypassable by asking for the space as
+a VM disk. vCPU and memory count the hot-plug *ceiling* (`max_vcpus`,
+`max_size_mib`), because that is what was committed to, whatever the VM boots
+with.
+
+A refusal is `409` with a `QUOTA_EXCEEDED` code, and the message carries the
+dimension, the limit and current usage — "over quota" alone sends an operator to
+the database to work out which limit and by how much. It is deliberately not
+`INSUFFICIENT_RESOURCES`: that means the fleet is full, whereas a quota refusal
+would happen on an empty cluster and is fixed by an operator raising a limit.
 Lowering a quota below current usage is permitted and non-destructive: it blocks
 new commitments and is reported as over-quota. Rejected: reconcile-time
 enforcement, which would strand persisted intent and make the reconcile loop a

@@ -58,6 +58,12 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
                 .patch(projects::update)
                 .delete(projects::delete),
         )
+        .route(
+            "/projects/:id/quota",
+            get(projects::get_quota)
+                .put(projects::set_quota)
+                .delete(projects::clear_quota),
+        )
         .route("/hosts", get(hosts::list).post(hosts::register))
         .route("/hosts/:id", get(hosts::get).patch(hosts::update))
         .route("/hosts/:id/drain", post(hosts::drain))

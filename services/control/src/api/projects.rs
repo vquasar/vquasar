@@ -140,3 +140,105 @@ fn duplicate_name(e: sqlx::Error) -> ApiError {
         _ => e.into(),
     }
 }
+
+// ---- quotas (ADR-019) ------------------------------------------------------
+
+/// A project's limits and what it is currently using.
+///
+/// Returned together on purpose: a limit without the usage beside it does not
+/// answer the question an operator actually has, which is whether there is room.
+#[derive(serde::Serialize)]
+pub struct QuotaView {
+    pub limits: crate::quota::Limits,
+    pub usage: crate::quota::Amounts,
+    /// True when usage already exceeds a limit — after that limit was lowered,
+    /// which is permitted. New commitments are refused; nothing is destroyed.
+    pub over_quota: bool,
+}
+
+fn over(limits: &crate::quota::Limits, usage: &crate::quota::Amounts) -> bool {
+    // A one-unit demand in each dimension is exactly "is there room for more".
+    [
+        (limits.max_vms, usage.vms),
+        (limits.max_vcpus, usage.vcpus),
+        (limits.max_memory_mib, usage.memory_mib),
+        (limits.max_volumes, usage.volumes),
+        (limits.max_storage_bytes, usage.storage_bytes),
+    ]
+    .into_iter()
+    .any(|(limit, used)| limit.is_some_and(|l| used > l))
+}
+
+pub async fn get_quota(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<QuotaView>> {
+    user.require("project:read")?;
+    if let Some(u) = user.user.as_ref() {
+        if let Some(mine) = store.projects_for_caller(u.id, &user.groups).await? {
+            if !mine.contains(&id) {
+                return Err(ApiError::not_found("project"));
+            }
+        }
+    }
+    if store.get_project(id).await?.is_none() {
+        return Err(ApiError::not_found("project"));
+    }
+    let limits = store.get_quota(id).await?.unwrap_or_default();
+    let usage = store.quota_usage(id).await?;
+    Ok(Json(QuotaView {
+        over_quota: over(&limits, &usage),
+        limits,
+        usage,
+    }))
+}
+
+/// `PUT /projects/:id/quota` — replace the limits. An omitted field is
+/// unlimited, so this is a whole-object write and there is no way to leave a
+/// stale limit behind by forgetting to mention it.
+pub async fn set_quota(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::quota::Limits>,
+) -> ApiResult<Json<QuotaView>> {
+    // Setting a quota is shaping tenancy, which is a platform act — the same
+    // authority that creates the boundary sets what fits inside it.
+    user.require("project:update")?;
+    if store.get_project(id).await?.is_none() {
+        return Err(ApiError::not_found("project"));
+    }
+    for (name, v) in [
+        ("max_vms", body.max_vms),
+        ("max_vcpus", body.max_vcpus),
+        ("max_memory_mib", body.max_memory_mib),
+        ("max_volumes", body.max_volumes),
+        ("max_storage_bytes", body.max_storage_bytes),
+    ] {
+        if v.is_some_and(|v| v < 0) {
+            return Err(ApiError::invalid(format!("{name} must not be negative")));
+        }
+    }
+    store.set_quota(id, &body).await?;
+    let usage = store.quota_usage(id).await?;
+    Ok(Json(QuotaView {
+        over_quota: over(&body, &usage),
+        limits: body,
+        usage,
+    }))
+}
+
+/// `DELETE /projects/:id/quota` — back to unlimited.
+pub async fn clear_quota(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    user.require("project:update")?;
+    if store.clear_quota(id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("quota"))
+    }
+}

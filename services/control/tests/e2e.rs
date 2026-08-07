@@ -518,6 +518,33 @@ impl Harness {
             .as_u16()
     }
 
+    /// PUT returning status and body.
+    async fn put(&self, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
+        let r = self
+            .client
+            .put(format!("{}/api/v1{path}", self.base))
+            .json(&body)
+            .send()
+            .await
+            .expect("put");
+        let st = r.status();
+        (st, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// PATCH returning status and body — some of these are refusals whose
+    /// message is the point.
+    async fn patch_body(&self, path: &str, body: Value) -> (u16, Value) {
+        let r = self
+            .client
+            .patch(format!("{}/api/v1{path}", self.base))
+            .json(&body)
+            .send()
+            .await
+            .expect("patch");
+        let st = r.status().as_u16();
+        (st, r.json().await.unwrap_or(Value::Null))
+    }
+
     async fn patch(&self, path: &str, body: Value) -> reqwest::StatusCode {
         self.client
             .patch(format!("{}/api/v1{path}", self.base))
@@ -1459,4 +1486,125 @@ async fn tenancy_scopes_writes_and_stamps_what_it_creates() {
         .await,
         "1"
     );
+}
+
+/// Quotas are admission control on committed intent (ADR-019): a resource
+/// counts from the moment its row exists, the check happens in the transaction
+/// that persists the intent, and the reconcile loop never sees a quota.
+#[tokio::test]
+async fn quotas_refuse_at_admission_and_count_committed_intent() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_TENANCY__ENABLED", "true")]).await;
+    let default = "00000000-0000-0000-0000-000000000001";
+
+    // No quota row is not a quota of zero — every project that predates quotas
+    // has none, and this migration must not make a cluster start refusing work.
+    let (st, v) = h
+        .post("/vms", json!({"name": "unlimited", "spec": vm_spec()}))
+        .await;
+    assert!(
+        st.is_success(),
+        "a project without a quota is unlimited: {v}"
+    );
+    let first = v["vm_id"].as_str().unwrap().to_string();
+
+    // vm_spec() asks for 1 vCPU and 512 MiB. Cap at two VMs' worth.
+    let (st, q) = h
+        .put(
+            &format!("/projects/{default}/quota"),
+            json!({"max_vms": 2, "max_vcpus": 2, "max_memory_mib": 1024}),
+        )
+        .await;
+    assert!(st.is_success(), "{q}");
+    assert_eq!(q["usage"]["vms"], 1, "the VM created above already counts");
+    assert_eq!(q["usage"]["memory_mib"], 512);
+    assert_eq!(q["over_quota"], false);
+
+    let (st, v) = h
+        .post("/vms", json!({"name": "second", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "the second VM fits exactly: {v}");
+
+    let (st, body) = h
+        .post("/vms", json!({"name": "third", "spec": vm_spec()}))
+        .await;
+    assert_eq!(st.as_u16(), 409, "the third must be refused: {body}");
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    // The arithmetic is the point: "over quota" alone sends an operator to the
+    // database to work out which limit and by how much.
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("vms"), "{msg}");
+    assert!(msg.contains("limit 2"), "{msg}");
+
+    // Nothing was persisted by the refusal.
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM virtual_machines")
+            .await,
+        "2"
+    );
+
+    // An in-place edit is admission too, on the difference it makes.
+    let (st, body) = h
+        .patch_body(&format!("/vms/{first}"), json!({"max_vcpus": 8}))
+        .await;
+    assert_eq!(st, 409, "growing a VM past the cap is refused: {body}");
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+
+    // Shrinking is always admissible, even from over quota — otherwise
+    // lowering a limit would trap a project with no way down.
+    let (st, body) = h
+        .patch_body(&format!("/vms/{first}"), json!({"memory_mib": 256}))
+        .await;
+    assert_eq!(st, 202, "shrinking is always admissible: {body}");
+
+    // Lowering a limit below current usage is permitted and non-destructive:
+    // it blocks new commitments and reports as over quota.
+    let (st, q) = h
+        .put(&format!("/projects/{default}/quota"), json!({"max_vms": 1}))
+        .await;
+    assert!(st.is_success(), "{q}");
+    assert_eq!(q["over_quota"], true);
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM virtual_machines")
+            .await,
+        "2",
+        "lowering a quota must not delete anything"
+    );
+
+    // A VM still counts while it is being deleted — the row is what commits.
+    let (st, _) = h.post(&format!("/vms/{first}/stop"), json!({})).await;
+    assert!(st.is_success());
+
+    // Clearing the quota returns the project to unlimited.
+    assert_eq!(h.delete(&format!("/projects/{default}/quota")).await, 204);
+    let (st, v) = h
+        .post("/vms", json!({"name": "after-clear", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+}
+
+/// A volume is reserved before its file is built, so the expensive work never
+/// happens for a request that will not fit (ADR-019).
+#[tokio::test]
+async fn a_volume_is_admitted_before_it_is_provisioned() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_TENANCY__ENABLED", "true")]).await;
+    let default = "00000000-0000-0000-0000-000000000001";
+
+    let (st, _) = h
+        .put(
+            &format!("/projects/{default}/quota"),
+            json!({"max_storage_bytes": 1_000_000}),
+        )
+        .await;
+    assert!(st.is_success());
+
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "too-big", "size_bytes": 2_000_000, "format": "qcow2"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 409, "refused before qemu-img runs: {body}");
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    // No row, and therefore no reservation left behind to leak the quota.
+    assert_eq!(h.query_one("SELECT count(*)::text FROM volumes").await, "0");
 }

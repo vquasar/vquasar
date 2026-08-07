@@ -101,6 +101,30 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// A project is out of room. `409 Conflict`, not `400`: the request is
+    /// well-formed and permitted, and the same request succeeds once a limit is
+    /// raised or something is deleted. The message carries the arithmetic —
+    /// which dimension, the limit, what is in use — because "over quota" alone
+    /// sends an operator to the database to find out (ADR-019).
+    pub fn quota_exceeded(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: ErrorCode::QuotaExceeded,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<crate::quota::AdmitError> for ApiError {
+    fn from(e: crate::quota::AdmitError) -> Self {
+        match e {
+            crate::quota::AdmitError::Exceeded(x) => ApiError::quota_exceeded(x.to_string()),
+            crate::quota::AdmitError::Db(e) => e.into(),
+        }
+    }
+}
+
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         // sqlx errors carry table, column and constraint names, and sometimes

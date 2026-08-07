@@ -16,6 +16,7 @@ mod ipam;
 mod metrics;
 mod netalloc;
 mod overlay;
+mod quota;
 mod rbac;
 mod reconcile;
 mod scheduler;
