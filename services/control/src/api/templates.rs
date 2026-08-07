@@ -49,6 +49,7 @@ fn default_machine_type() -> String {
 pub async fn create(
     State(store): State<Store>,
     _: RequireTemplateCreate,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateTemplate>,
 ) -> ApiResult<(StatusCode, Json<Template>)> {
     if body.name.is_empty() {
@@ -69,7 +70,17 @@ pub async fn create(
         ));
     }
     // The referenced image must exist (FK also enforces this, but a clear 400
-    // beats a 500 on a bad request).
+    // beats a 500 on a bad request) and be one this scope can see — otherwise a
+    // template is a way to read another project's catalogue by reference.
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    if !scoped.image_visible(body.image_id).await? {
+        return Err(ApiError::not_found("image"));
+    }
+    if let Some(net) = body.network_id {
+        if !scoped.network_visible(net).await? {
+            return Err(ApiError::not_found("network"));
+        }
+    }
     let image = match store.get_image(body.image_id).await? {
         None => {
             return Err(ApiError::invalid(format!(
@@ -112,6 +123,7 @@ pub async fn create(
             body.network_id,
             body.cloud_init.as_ref(),
             &body.machine_type,
+            crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
         )
         .await?;
     Ok((StatusCode::CREATED, Json(crate::api::redact::template(tpl))))
@@ -120,6 +132,7 @@ pub async fn create(
 pub async fn update(
     State(store): State<Store>,
     _: RequireTemplateUpdate,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateTemplate>,
 ) -> ApiResult<Json<Template>> {
@@ -136,6 +149,18 @@ pub async fn update(
         return Err(ApiError::invalid(
             "machine_type must be 'standard' or 'microvm'",
         ));
+    }
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    if !scoped.template_in_scope(id).await? {
+        return Err(ApiError::not_found("template"));
+    }
+    if !scoped.image_visible(body.image_id).await? {
+        return Err(ApiError::not_found("image"));
+    }
+    if let Some(net) = body.network_id {
+        if !scoped.network_visible(net).await? {
+            return Err(ApiError::not_found("network"));
+        }
     }
     let image = match store.get_image(body.image_id).await? {
         None => {
@@ -193,7 +218,7 @@ pub async fn update(
         .await?
         .map(crate::api::redact::template)
         .map(Json)
-        .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
+        .ok_or(ApiError::not_found("template"))
 }
 
 pub async fn list(
@@ -226,12 +251,16 @@ pub async fn get(
 pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("template:delete")?;
-    if store.delete_template(id).await? {
+    if crate::scoped::ScopedStore::new(store, scope.0)
+        .delete_template(id)
+        .await?
+    {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::invalid(format!("template not found: {id}")))
+        Err(ApiError::not_found("template"))
     }
 }

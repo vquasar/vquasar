@@ -238,6 +238,112 @@ impl ScopedStore {
         .await
     }
 
+    // ---- writes -----------------------------------------------------------
+    //
+    // The same predicate goes in the WHERE of an update or delete, so a
+    // cross-project write matches zero rows and the handler renders it as *not
+    // found* — the same answer an unknown id gets. There is no separate
+    // authorization step that could be forgotten, and no existence oracle.
+
+    pub async fn delete_template(&self, id: Uuid) -> Result<bool> {
+        Ok(sqlx::query(
+            "DELETE FROM templates
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+        )
+        .bind(id)
+        .bind(self.filter())
+        .execute(self.store.pool())
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
+    pub async fn delete_security_group(&self, id: Uuid) -> Result<bool> {
+        Ok(sqlx::query(
+            "DELETE FROM security_groups
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+        )
+        .bind(id)
+        .bind(self.filter())
+        .execute(self.store.pool())
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
+    /// Whether a shareable-catalogue row may be *written* from this scope.
+    ///
+    /// Stricter than the matching `_visible` check on purpose: a platform-shared
+    /// image or network (NULL) is readable from every project and editable from
+    /// none of them. Sharing a resource must not hand every project the ability
+    /// to delete it out from under the others.
+    pub async fn image_writable(&self, id: Uuid) -> Result<bool> {
+        self.owned_row("images", id).await
+    }
+
+    pub async fn network_writable(&self, id: Uuid) -> Result<bool> {
+        self.owned_row("networks", id).await
+    }
+
+    async fn owned_row(&self, table: &'static str, id: Uuid) -> Result<bool> {
+        // `table` is a literal chosen here, never caller input.
+        Ok(sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT count(*) FROM {table}
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)"
+        ))
+        .bind(id)
+        .bind(self.filter())
+        .fetch_one(self.store.pool())
+        .await?
+            > 0)
+    }
+
+    pub async fn delete_image(&self, id: Uuid) -> Result<bool> {
+        self.delete_owned("images", id).await
+    }
+
+    pub async fn delete_network(&self, id: Uuid) -> Result<bool> {
+        self.delete_owned("networks", id).await
+    }
+
+    pub async fn delete_volume(&self, id: Uuid) -> Result<bool> {
+        self.delete_owned("volumes", id).await
+    }
+
+    async fn delete_owned(&self, table: &'static str, id: Uuid) -> Result<bool> {
+        Ok(sqlx::query(&format!(
+            "DELETE FROM {table}
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)"
+        ))
+        .bind(id)
+        .bind(self.filter())
+        .execute(self.store.pool())
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
+    /// The project a resource created in this scope belongs to.
+    ///
+    /// Platform scope means the default project: a resource has to belong to
+    /// exactly one, and "everything" is not a home. That is also what keeps
+    /// behaviour identical while tenancy is off.
+    pub fn owning_project(&self) -> Uuid {
+        self.filter().unwrap_or(vquasar_model::DEFAULT_PROJECT_ID)
+    }
+
+    /// The owner to stamp on a newly created row in a *shareable* catalogue
+    /// (images, networks), where NULL means platform-shared.
+    ///
+    /// Deliberately not `owning_project()`: with tenancy off there is no
+    /// project context, and stamping the default project would quietly make
+    /// every image and network created today invisible to every other project
+    /// the day tenancy is switched on. NULL keeps them shared, which is exactly
+    /// what the migration's backfill did to the rows that already existed.
+    pub fn shareable_owner(&self) -> Option<Uuid> {
+        self.filter()
+    }
+
     /// Whether a template is in this scope.
     pub async fn template_in_scope(&self, id: Uuid) -> Result<bool> {
         Ok(sqlx::query_scalar::<_, i64>(

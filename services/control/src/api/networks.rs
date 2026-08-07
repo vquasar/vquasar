@@ -130,6 +130,7 @@ fn validate_ipam(ipam: &NetworkIpam) -> ApiResult<()> {
 pub async fn create(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<(StatusCode, Json<Network>)> {
     if body.name.is_empty() {
@@ -191,6 +192,12 @@ pub async fn create(
             body.vlan,
             vni,
             &body.ipam,
+            // Only a tenant network belongs to a project. Provider and VLAN
+            // networks attach to physical infrastructure and are
+            // platform-shared, so every project can use them (ADR-016/018).
+            (kind == NetworkKind::Tenant)
+                .then(|| crate::scoped::ScopedStore::new(store.clone(), scope.0).shareable_owner())
+                .flatten(),
         )
         .await
         .map_err(duplicate_segment)?;
@@ -222,6 +229,7 @@ fn duplicate_segment(e: sqlx::Error) -> ApiError {
 pub async fn update(
     State(store): State<Store>,
     _: RequireNetworkUpdate,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateNetwork>,
 ) -> ApiResult<Json<Network>> {
@@ -229,10 +237,18 @@ pub async fn update(
         return Err(ApiError::invalid("name is required"));
     }
     validate_ipam(&body.ipam)?;
+    // A platform-shared network is readable from every project and editable
+    // from none of them (design §47).
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .network_writable(id)
+        .await?
+    {
+        return Err(ApiError::not_found("network"));
+    }
     let existing = store
         .get_network(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))?;
+        .ok_or(ApiError::not_found("network"))?;
     // A network's segment is its identity: changing it would silently move
     // every attached VM to a different broadcast domain. Retarget the NICs
     // instead (PUT /vms/:id/nics/:index).
@@ -246,7 +262,7 @@ pub async fn update(
         .await
         .map_err(duplicate_segment)?
         .map(Json)
-        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
+        .ok_or(ApiError::not_found("network"))
 }
 
 pub async fn list(
@@ -273,16 +289,23 @@ pub async fn get(
         .get_network(id)
         .await?
         .map(Json)
-        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
+        .ok_or(ApiError::not_found("network"))
 }
 
 /// IP allocations in a network (design M13a).
 pub async fn allocations(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<crate::store::IpAllocation>>> {
     user.require("network:read")?;
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .network_visible(id)
+        .await?
+    {
+        return Err(ApiError::not_found("network"));
+    }
     Ok(Json(store.allocations_for_network(id).await?))
 }
 
@@ -320,13 +343,20 @@ pub struct AdoptSegment {
 pub async fn adopt_segment(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<AdoptSegment>,
 ) -> ApiResult<Json<Network>> {
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .network_writable(id)
+        .await?
+    {
+        return Err(ApiError::not_found("network"));
+    }
     let net = store
         .get_network(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))?;
+        .ok_or(ApiError::not_found("network"))?;
 
     let kind: NetworkKind =
         net.kind
@@ -398,13 +428,17 @@ pub async fn adopt_segment(
 pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("network:delete")?;
     // Quarantine the segment rather than freeing it: a host may still carry the
     // overlay bridge and its tunnel mesh (ADR-016).
     let segment = store.get_network(id).await?.and_then(|n| n.segment_key);
-    if store.delete_network(id).await? {
+    if crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .delete_network(id)
+        .await?
+    {
         if let Some(key) = segment {
             if let Err(e) = crate::segments::release(store.pool(), &key).await {
                 tracing::warn!(error = %e, segment = %key, "failed to quarantine segment");
@@ -412,6 +446,6 @@ pub async fn delete(
         }
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::invalid(format!("network not found: {id}")))
+        Err(ApiError::not_found("network"))
     }
 }

@@ -953,15 +953,16 @@ impl Store {
         vlan: Option<i32>,
         vni: Option<i32>,
         ipam: &NetworkIpam,
+        project: Option<Uuid>,
     ) -> Result<Network> {
         let now = Utc::now();
         sqlx::query_as::<_, Network>(
             "INSERT INTO networks
-                (id, name, kind, physical_network, segment_key, vlan, vni,
+                (id, name, kind, physical_network, segment_key, project_id, vlan, vni,
                  cidr_v4, gateway_v4, cidr_v6, gateway_v6, dns,
                  pool_v4_start, pool_v4_end, pool_v6_start, pool_v6_end,
                  created_at, updated_at)
-             VALUES ($1,$2,$15,$16,$17,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+             VALUES ($1,$2,$15,$16,$17,$18,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
@@ -981,6 +982,11 @@ impl Store {
         .bind(kind)
         .bind(physical_network)
         .bind(segment_key)
+        // A tenant network is a project's own segment; provider and vlan
+        // networks attach to physical infrastructure and stay platform-shared
+        // (NULL), which is what keeps an existing fleet's provider network
+        // usable from every project (design §47, ADR-016/018).
+        .bind(project)
         .fetch_one(&self.pool)
         .await
     }
@@ -1132,14 +1138,6 @@ impl Store {
             .await
     }
 
-    pub async fn delete_network(&self, id: Uuid) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM networks WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(res.rows_affected() > 0)
-    }
-
     #[allow(clippy::too_many_arguments)]
     /// Give a grandfathered network a real L2 segment (design §18, ADR-016).
     ///
@@ -1274,27 +1272,25 @@ impl Store {
 
     // ---- security groups (design M13c) -----------------------------------
 
-    pub async fn get_security_group(&self, id: Uuid) -> Result<Option<SecurityGroup>> {
-        sqlx::query_as::<_, SecurityGroup>("SELECT * FROM security_groups WHERE id=$1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-    }
-
+    /// Create a security group owned by `project` (design §47). Groups are
+    /// project-owned, never shared: a NIC referencing another project's group
+    /// would apply that project's policy to this VM.
     pub async fn create_security_group(
         &self,
         name: &str,
         description: Option<&str>,
+        project: Uuid,
     ) -> Result<SecurityGroup> {
         let now = Utc::now();
         sqlx::query_as::<_, SecurityGroup>(
-            "INSERT INTO security_groups (id, name, description, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$4) RETURNING *",
+            "INSERT INTO security_groups (id, name, description, project_id, created_at, updated_at)
+             VALUES ($1,$2,$3,$5,$4,$4) RETURNING *",
         )
         .bind(Uuid::new_v4())
         .bind(name)
         .bind(description)
         .bind(now)
+        .bind(project)
         .fetch_one(&self.pool)
         .await
     }
@@ -1326,14 +1322,6 @@ impl Store {
                 .await?
                 .unwrap_or(false),
         )
-    }
-
-    pub async fn delete_security_group(&self, id: Uuid) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM security_groups WHERE id=$1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(res.rows_affected() > 0)
     }
 
     pub async fn list_sg_rules(&self, sg_id: Uuid) -> Result<Vec<SecurityGroupRule>> {
@@ -1443,11 +1431,13 @@ impl Store {
         size_bytes: i64,
         format: &str,
         source_image_id: Option<Uuid>,
+        project: Uuid,
     ) -> Result<Volume> {
         let now = Utc::now();
         sqlx::query_as::<_, Volume>(
-            "INSERT INTO volumes (id, name, size_bytes, format, source_image_id, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING *",
+            "INSERT INTO volumes
+                (id, name, size_bytes, format, source_image_id, project_id, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$7,$6,$6) RETURNING *",
         )
         .bind(id)
         .bind(name)
@@ -1455,16 +1445,9 @@ impl Store {
         .bind(format)
         .bind(source_image_id)
         .bind(now)
+        .bind(project)
         .fetch_one(&self.pool)
         .await
-    }
-
-    pub async fn delete_volume(&self, id: Uuid) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM volumes WHERE id=$1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(res.rows_affected() > 0)
     }
 
     // ---- volume snapshots (design M14c) ----------------------------------
@@ -1542,12 +1525,14 @@ impl Store {
         default_size_bytes: Option<i64>,
         cloud_init: bool,
         os: Option<&str>,
+        project: Option<Uuid>,
     ) -> Result<Image> {
         let now = Utc::now();
         sqlx::query_as::<_, Image>(
             "INSERT INTO images
-                (id, name, source_path, format, boot, default_size_bytes, cloud_init, os, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+                (id, name, source_path, format, boot, default_size_bytes, cloud_init, os,
+                 project_id, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $9)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
@@ -1559,6 +1544,7 @@ impl Store {
         .bind(cloud_init)
         .bind(os)
         .bind(now)
+        .bind(project)
         .fetch_one(&self.pool)
         .await
     }
@@ -1576,13 +1562,14 @@ impl Store {
         default_size_bytes: Option<i64>,
         cloud_init: bool,
         os: Option<&str>,
+        project: Option<Uuid>,
     ) -> Result<Image> {
         let now = Utc::now();
         sqlx::query_as::<_, Image>(
             "INSERT INTO images
                 (id, name, source_path, format, boot, default_size_bytes, cloud_init, os,
-                 status, managed, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'importing',TRUE,$9,$9)
+                 status, managed, project_id, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'importing',TRUE,$10,$9,$9)
              RETURNING *",
         )
         .bind(id)
@@ -1594,6 +1581,7 @@ impl Store {
         .bind(cloud_init)
         .bind(os)
         .bind(now)
+        .bind(project)
         .fetch_one(&self.pool)
         .await
     }
@@ -1624,14 +1612,6 @@ impl Store {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-    }
-
-    pub async fn delete_image(&self, id: Uuid) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM images WHERE id=$1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(res.rows_affected() > 0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1679,14 +1659,16 @@ impl Store {
         network_id: Option<Uuid>,
         cloud_init: Option<&CloudInitSpec>,
         machine_type: &str,
+        project: Uuid,
     ) -> Result<Template> {
         let now = Utc::now();
         let sealed_ci = self.seal_ci(cloud_init)?;
         let t = sqlx::query_as::<_, Template>(
             "INSERT INTO templates
                 (id, name, image_id, boot_vcpus, max_vcpus, memory_mib, disk_size_bytes,
-                 disk_format, network_id, cloud_init, machine_type, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11, $11)
+                 disk_format, network_id, cloud_init, machine_type, project_id,
+                 created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $11, $11)
              RETURNING *",
         )
         .bind(Uuid::new_v4())
@@ -1701,6 +1683,7 @@ impl Store {
         .bind(sealed_ci.as_ref().map(Json))
         .bind(now)
         .bind(machine_type)
+        .bind(project)
         .fetch_one(&self.pool)
         .await?;
         self.open_template_opt(Some(t)).map(|o| o.unwrap())
@@ -1712,14 +1695,6 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         self.open_template_opt(t)
-    }
-
-    pub async fn delete_template(&self, id: Uuid) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM templates WHERE id=$1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(res.rows_affected() > 0)
     }
 
     // ---- IAM: users, roles, permissions (design M12b) --------------------
@@ -2031,8 +2006,11 @@ impl Store {
         let now = Utc::now();
         let id = Uuid::new_v4();
         sqlx::query_as::<_, Task>(
-            "INSERT INTO tasks (id, task_type, vm_id, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $4)
+            "INSERT INTO tasks (id, task_type, vm_id, project_id, created_at, updated_at)
+             VALUES ($1, $2, $3,
+                     COALESCE((SELECT project_id FROM virtual_machines WHERE id = $3),
+                              '00000000-0000-0000-0000-000000000001'::uuid),
+                     $4, $4)
              RETURNING *",
         )
         .bind(id)
