@@ -135,6 +135,9 @@ jobs:
       - name: Start the control plane with auth enabled
         env:
           VQUASAR_CONTROL_DATABASE__URL: postgres://ch:ch@127.0.0.1:5432/vquasar
+          # The CI Postgres has no TLS; encryption is the default, so the
+          # opt-out is explicit.
+          VQUASAR_CONTROL_DATABASE__SSL_MODE: disable
           VQUASAR_CONTROL_SERVER__LISTEN: 127.0.0.1:8080
           VQUASAR_CONTROL_AUTH__ISSUER: http://127.0.0.1:8081/realms/vquasar
           VQUASAR_CONTROL_AUTH__CLIENT_ID: vquasar

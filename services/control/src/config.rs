@@ -371,9 +371,17 @@ pub struct DatabaseConfig {
     /// PostgreSQL connection URL.
     pub url: String,
     /// TLS mode for the database connection: `disable`, `allow`, `prefer`,
-    /// `require`, `verify-ca` or `verify-full`. Unset ⇒ whatever the URL says,
-    /// which in turn defaults to libpq's `prefer` — TLS if the server offers it,
-    /// **silent plaintext otherwise**. Set `verify-full` for a real deployment.
+    /// `require`, `verify-ca` or `verify-full`.
+    ///
+    /// **Defaults to `require`**: the connection carries every secret the
+    /// platform holds, so it is encrypted unless someone deliberately says
+    /// otherwise. libpq's own default is `prefer`, which silently falls back to
+    /// plaintext when the server does not offer TLS — an exposure that looks
+    /// identical to success.
+    ///
+    /// `require` guarantees encryption but not the server's identity. Set
+    /// `verify-full` and a `ca` for that, which is what a real deployment
+    /// should do; it needs the certificate's SAN to match the host in `url`.
     #[serde(default)]
     pub ssl_mode: Option<String>,
     /// CA certificate (PEM) that signed the PostgreSQL server certificate.
@@ -401,6 +409,10 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Encryption is the default. Overriding it is a deliberate act, and the
+/// startup log says so when the effective mode permits plaintext.
+const DEFAULT_SSL_MODE: &str = "require";
+
 /// Database TLS modes that permit an unencrypted connection.
 const PLAINTEXT_CAPABLE_SSL_MODES: &[&str] = &["disable", "allow", "prefer"];
 
@@ -414,7 +426,11 @@ impl DatabaseConfig {
         let mut opts = sqlx::postgres::PgConnectOptions::from_str(&self.url)
             .map_err(|e| anyhow::anyhow!("invalid [database] url: {e}"))?;
 
-        if let Some(mode) = &self.ssl_mode {
+        // `effective_ssl_mode` already resolves explicit config → URL → our
+        // default, so applying it unconditionally is both simpler and the only
+        // way the default actually reaches the driver.
+        let effective = Some(self.effective_ssl_mode());
+        if let Some(mode) = &effective {
             let parsed = sqlx::postgres::PgSslMode::from_str(mode).map_err(|_| {
                 anyhow::anyhow!(
                     "invalid [database] ssl_mode {mode:?} — expected one of \
@@ -448,7 +464,7 @@ impl DatabaseConfig {
     }
 
     /// The TLS mode that will actually be used, for logging: the explicit
-    /// setting, else the URL's `sslmode`, else sqlx's `prefer` default.
+    /// setting, else the URL's `sslmode`, else our `require` default.
     pub fn effective_ssl_mode(&self) -> String {
         if let Some(mode) = &self.ssl_mode {
             return mode.to_ascii_lowercase();
@@ -462,7 +478,7 @@ impl DatabaseConfig {
                     matches!(k, "sslmode" | "ssl-mode").then(|| v.to_ascii_lowercase())
                 })
             })
-            .unwrap_or_else(|| "prefer".to_string())
+            .unwrap_or_else(|| DEFAULT_SSL_MODE.to_string())
     }
 
     /// Whether the effective mode allows the connection to end up unencrypted.
@@ -580,12 +596,39 @@ mod tests {
         assert!(!p.permits_uplink("dmz"));
     }
 
+    /// Encryption is the default: this connection carries every secret the
+    /// platform holds, so plaintext has to be asked for explicitly.
     #[test]
-    fn database_tls_defaults_to_prefer_and_is_optional() {
+    fn database_tls_is_required_by_default() {
         let cfg = DatabaseConfig::default();
-        assert_eq!(cfg.effective_ssl_mode(), "prefer");
+        assert_eq!(cfg.effective_ssl_mode(), "require");
+        assert!(!cfg.tls_is_optional());
+        let url = sqlx::ConnectOptions::to_url_lossy(&cfg.connect_options().unwrap()).to_string();
+        assert!(url.contains("sslmode=require"), "got {url}");
+    }
+
+    /// Opting out is still possible, but it is a deliberate act.
+    #[test]
+    fn plaintext_must_be_asked_for_explicitly() {
+        let cfg = DatabaseConfig {
+            ssl_mode: Some("disable".to_string()),
+            ..Default::default()
+        };
         assert!(cfg.tls_is_optional());
-        assert!(cfg.connect_options().is_ok());
+        let url = sqlx::ConnectOptions::to_url_lossy(&cfg.connect_options().unwrap()).to_string();
+        assert!(url.contains("sslmode=disable"), "got {url}");
+    }
+
+    /// A `sslmode=` already in the URL keeps working and is not overridden.
+    #[test]
+    fn a_url_sslmode_still_wins_over_the_default() {
+        let cfg = DatabaseConfig {
+            url: "postgres://u:p@db/vquasar?sslmode=disable".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_ssl_mode(), "disable");
+        let url = sqlx::ConnectOptions::to_url_lossy(&cfg.connect_options().unwrap()).to_string();
+        assert!(url.contains("sslmode=disable"), "got {url}");
     }
 
     #[test]

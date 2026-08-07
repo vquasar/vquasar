@@ -6,12 +6,23 @@ the whole desired state of the fleet. All of it travels over the PostgreSQL
 connection. That link is the one hop in vquasar that is not encrypted by
 default.
 
-## Why the default is not enough
+## The default
 
-The PostgreSQL driver defaults to libpq's `prefer` mode: it tries TLS, and if
-the server does not offer it, it **connects in plaintext anyway and says
-nothing**. A server that quietly loses its certificate, or an attacker who can
-strip the TLS negotiation, downgrades you silently.
+vquasar defaults `ssl_mode` to **`require`**: this connection carries every
+secret the platform holds, so it is encrypted unless someone deliberately says
+otherwise.
+
+That is stricter than the driver's own default. libpq uses `prefer`, which tries
+TLS and, if the server does not offer it, **connects in plaintext anyway and
+says nothing** — a server that quietly loses its certificate, or an attacker who
+can strip the negotiation, downgrades you silently and it looks like success.
+
+`require` guarantees encryption but not the server's identity. `verify-full`
+plus a `ca` gives both, and is what a real deployment should use.
+
+**Upgrading:** a control plane pointed at a PostgreSQL without TLS will now
+refuse to start. Either enable TLS on the server (below) or set
+`ssl_mode = "disable"` deliberately.
 
 vquasar therefore logs the effective mode at startup, and warns when it is one
 that permits plaintext:

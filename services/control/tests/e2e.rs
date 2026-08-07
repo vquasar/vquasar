@@ -326,6 +326,10 @@ impl Harness {
                 format!("127.0.0.1:{port}"),
             )
             .env("VQUASAR_CONTROL_AUTH__DISABLED", "true")
+            // The harness database is a throwaway with no TLS. Encryption is
+            // the default now, so opting out has to be explicit — which is the
+            // point: it is visible here rather than assumed.
+            .env("VQUASAR_CONTROL_DATABASE__SSL_MODE", "disable")
             // The harness's specs use synthetic paths, so declare the root they
             // live under; a real install keeps the default (/var/lib/vquasar).
             .env("VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS", "[\"/x\"]")
