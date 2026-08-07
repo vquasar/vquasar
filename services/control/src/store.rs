@@ -201,6 +201,10 @@ pub struct Volume {
     pub attached_serial: Option<i32>,
     /// Image this volume was cloned from (design M14d); `Some` ⇒ bootable.
     pub source_image_id: Option<Uuid>,
+    /// `provisioning` while its file is being built, then `ready`. A volume is
+    /// counted against quota from the moment the row exists (ADR-019), which is
+    /// before the file is there.
+    pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -756,15 +760,21 @@ impl Store {
     /// Insert a VM into `project` (design §47). Callers pass the request's
     /// scope; platform scope means the default project, because a resource must
     /// belong to exactly one and "everything" is not a home.
+    ///
+    /// Admission-gated: the quota check and the insert are one transaction, so
+    /// two concurrent creates in the same project cannot both read the same
+    /// usage and both fit (ADR-019).
     pub async fn insert_vm_with_id(
         &self,
         id: Uuid,
         name: &str,
         spec: &VirtualMachineSpec,
         project: Uuid,
-    ) -> Result<Vm> {
+    ) -> std::result::Result<Vm, crate::quota::AdmitError> {
         let now = Utc::now();
         let sealed = self.seal_spec(spec)?;
+        let mut tx = self.pool.begin().await?;
+        crate::quota::admit(&mut tx, project, crate::quota::Amounts::of_vm(spec)).await?;
         let vm = sqlx::query_as::<_, Vm>(
             // The phone_home secret is issued here rather than lazily: a VM
             // that exists but has no token yet would have an unauthenticated
@@ -781,10 +791,11 @@ impl Store {
         .bind(now)
         .bind(crate::crypto::random_token())
         .bind(project)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+        tx.commit().await?;
         // Return plaintext to the caller (the row is sealed at rest).
-        self.open_vm_opt(Some(vm)).map(|o| o.unwrap())
+        Ok(self.open_vm_opt(Some(vm)).map(|o| o.unwrap())?)
     }
 
     pub async fn get_vm(&self, id: Uuid) -> Result<Option<Vm>> {
@@ -819,46 +830,78 @@ impl Store {
 
     /// Set the desired power state on an existing VM (bumps generation so the
     /// controller reconciles it).
-    pub async fn set_vm_spec(&self, id: Uuid, spec: &VirtualMachineSpec) -> Result<Option<Vm>> {
-        let sealed = self.seal_spec(spec)?;
-        let vm = sqlx::query_as::<_, Vm>(
-            "UPDATE virtual_machines
-             SET spec=$2, generation=generation+1, updated_at=$3
-             WHERE id=$1
-             RETURNING *",
-        )
-        .bind(id)
-        .bind(Json(&sealed))
-        .bind(Utc::now())
-        .fetch_optional(&self.pool)
-        .await?;
-        self.open_vm_opt(vm)
+    /// Replace a VM's spec, admission-gated on the *difference* it makes.
+    ///
+    /// Every spec change goes through here, including ones that change nothing
+    /// countable (a power request, attaching an already-provisioned volume).
+    /// Those produce a delta of zero and are admitted without touching the
+    /// quota tables. Routing them through the same door anyway is the point:
+    /// there is no second path that could edit a spec without admission
+    /// (ADR-019).
+    pub async fn set_vm_spec(
+        &self,
+        id: Uuid,
+        spec: &VirtualMachineSpec,
+    ) -> std::result::Result<Option<Vm>, crate::quota::AdmitError> {
+        self.write_spec(id, None, spec).await
     }
 
-    /// Update a VM's name and/or spec, bumping generation so the controller
-    /// reconciles the change (design M10 editing). `name = None` keeps the name.
+    /// Rename and re-shape in one write.
     pub async fn update_vm(
         &self,
         id: Uuid,
         name: Option<&str>,
         spec: &VirtualMachineSpec,
-    ) -> Result<Option<Vm>> {
+    ) -> std::result::Result<Option<Vm>, crate::quota::AdmitError> {
+        self.write_spec(id, name, spec).await
+    }
+
+    /// The single door every spec change goes through, so admission cannot be
+    /// bypassed by reaching for the other method (ADR-019).
+    async fn write_spec(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        spec: &VirtualMachineSpec,
+    ) -> std::result::Result<Option<Vm>, crate::quota::AdmitError> {
         let sealed = self.seal_spec(spec)?;
+        let mut tx = self.pool.begin().await?;
+
+        let existing: Option<(Uuid, Json<VirtualMachineSpec>)> =
+            sqlx::query_as("SELECT project_id, spec FROM virtual_machines WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((project, before)) = existing else {
+            return Ok(None);
+        };
+        // The stored spec is sealed, but nothing sealed is counted — the seal
+        // covers cloud-init, not cpu/memory/disks — so it can be measured as-is.
+        let delta = crate::quota::Amounts::delta(
+            &crate::quota::Amounts::of_vm(&before.0),
+            &crate::quota::Amounts::of_vm(spec),
+        );
+        crate::quota::admit(&mut tx, project, delta).await?;
+
         let vm = sqlx::query_as::<_, Vm>(
             "UPDATE virtual_machines
-             SET name = COALESCE($2, name), spec=$3, generation=generation+1, updated_at=$4
+             SET name = COALESCE($4, name), spec=$2,
+                 generation=generation+1, updated_at=$3
              WHERE id=$1
              RETURNING *",
         )
         .bind(id)
-        .bind(name)
         .bind(Json(&sealed))
         .bind(Utc::now())
-        .fetch_optional(&self.pool)
+        .bind(name)
+        .fetch_optional(&mut *tx)
         .await?;
-        self.open_vm_opt(vm)
+        tx.commit().await?;
+        Ok(self.open_vm_opt(vm)?)
     }
 
+    /// Update a VM's name and/or spec, bumping generation so the controller
+    /// reconciles the change (design M10 editing). `name = None` keeps the name.
     pub async fn assign_vm_host(&self, id: Uuid, host_id: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE virtual_machines SET host_id=$2, phase='Scheduling', updated_at=$3 WHERE id=$1",
@@ -1010,6 +1053,71 @@ impl Store {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
+    }
+
+    /// A project's limits, or `None` when it has none at all.
+    pub async fn get_quota(&self, project: Uuid) -> Result<Option<crate::quota::Limits>> {
+        let row: Option<crate::quota::LimitRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM project_quotas WHERE project_id = $1",
+            crate::quota::LIMIT_COLUMNS
+        ))
+        .bind(project)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(crate::quota::Limits::from))
+    }
+
+    /// Set a project's limits, creating the row if it has none.
+    ///
+    /// Lowering a limit below current usage is allowed and non-destructive: it
+    /// blocks new commitments and shows as over quota. Refusing it would leave
+    /// an operator no way to stop a runaway project without deleting its work
+    /// (ADR-019).
+    pub async fn set_quota(&self, project: Uuid, l: &crate::quota::Limits) -> Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO project_quotas
+                (project_id, max_vms, max_vcpus, max_memory_mib, max_volumes,
+                 max_storage_bytes, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+             ON CONFLICT (project_id) DO UPDATE SET
+                max_vms = EXCLUDED.max_vms,
+                max_vcpus = EXCLUDED.max_vcpus,
+                max_memory_mib = EXCLUDED.max_memory_mib,
+                max_volumes = EXCLUDED.max_volumes,
+                max_storage_bytes = EXCLUDED.max_storage_bytes,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(project)
+        .bind(l.max_vms.map(|v| v as i32))
+        .bind(l.max_vcpus.map(|v| v as i32))
+        .bind(l.max_memory_mib)
+        .bind(l.max_volumes.map(|v| v as i32))
+        .bind(l.max_storage_bytes)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// Remove a project's limits entirely (back to unlimited).
+    pub async fn clear_quota(&self, project: Uuid) -> Result<bool> {
+        Ok(
+            sqlx::query("DELETE FROM project_quotas WHERE project_id = $1")
+                .bind(project)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
+    }
+
+    /// Current usage for a project, derived from the owning tables.
+    pub async fn quota_usage(&self, project: Uuid) -> Result<crate::quota::Amounts> {
+        let mut tx = self.pool.begin().await?;
+        let usage = crate::quota::usage_in(&mut tx, project).await?;
+        tx.rollback().await?;
+        Ok(usage)
     }
 
     pub async fn insert_project(&self, name: &str, description: Option<&str>) -> Result<Project> {
@@ -1432,12 +1540,20 @@ impl Store {
         format: &str,
         source_image_id: Option<Uuid>,
         project: Uuid,
-    ) -> Result<Volume> {
+    ) -> std::result::Result<Volume, crate::quota::AdmitError> {
         let now = Utc::now();
-        sqlx::query_as::<_, Volume>(
+        let mut tx = self.pool.begin().await?;
+        crate::quota::admit(
+            &mut tx,
+            project,
+            crate::quota::Amounts::of_volume(size_bytes),
+        )
+        .await?;
+        let v = sqlx::query_as::<_, Volume>(
             "INSERT INTO volumes
-                (id, name, size_bytes, format, source_image_id, project_id, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$7,$6,$6) RETURNING *",
+                (id, name, size_bytes, format, source_image_id, project_id,
+                 status, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$6,$6) RETURNING *",
         )
         .bind(id)
         .bind(name)
@@ -1446,8 +1562,66 @@ impl Store {
         .bind(source_image_id)
         .bind(now)
         .bind(project)
-        .fetch_one(&self.pool)
-        .await
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(v)
+    }
+
+    /// Mark a volume ready once its file exists. The size is re-stated because
+    /// a clone grows to the image's virtual size, which is only known after
+    /// `qemu-img` has run — and quota counted the reservation, so the final
+    /// figure has to land on the same row.
+    pub async fn finalize_volume(
+        &self,
+        id: Uuid,
+        size_bytes: i64,
+    ) -> std::result::Result<Option<Volume>, crate::quota::AdmitError> {
+        let mut tx = self.pool.begin().await?;
+        let reserved: Option<(Uuid, i64)> = sqlx::query_as(
+            "SELECT project_id, size_bytes FROM volumes
+              WHERE id = $1 AND status = 'provisioning'",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((project, reserved)) = reserved else {
+            return Ok(None);
+        };
+        // A clone grows to the image's virtual size, which can exceed what was
+        // reserved. Admit only the difference — the reservation is already
+        // counted — so an image bigger than advertised is caught here rather
+        // than silently putting the project over its cap.
+        crate::quota::admit(
+            &mut tx,
+            project,
+            crate::quota::Amounts {
+                storage_bytes: size_bytes - reserved,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let v = sqlx::query_as::<_, Volume>(
+            "UPDATE volumes SET status='ready', size_bytes=$2, updated_at=$3
+              WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(size_bytes)
+        .bind(Utc::now())
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(v)
+    }
+
+    /// Drop a reservation whose provisioning failed. Scoped to `provisioning`
+    /// so a retry racing a finalise cannot delete a good volume.
+    pub async fn drop_volume_reservation(&self, id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM volumes WHERE id=$1 AND status='provisioning'")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
     }
 
     // ---- volume snapshots (design M14c) ----------------------------------

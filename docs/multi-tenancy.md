@@ -124,10 +124,76 @@ they are about:
 If a call is refused where you expect it to work, check that field first — most
 surprises are a request acting in a different project than you meant.
 
+## Quotas
+
+A project can be capped on five dimensions. An unset one is unlimited, and a
+project with no quota at all is unlimited everywhere — which is what every
+project gets on upgrade.
+
+```bash
+curl -X PUT $API/projects/$P/quota -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"max_vms": 20, "max_vcpus": 80, "max_memory_mib": 262144,
+       "max_storage_bytes": 5497558138880}'
+```
+
+This is a whole-object write: a field you leave out becomes unlimited. That is
+deliberate — there is no way to leave a stale limit in place by forgetting to
+mention it.
+
+`GET /projects/:id/quota` returns the limits, current usage and an `over_quota`
+flag together, because a limit without the usage beside it does not answer the
+question you actually have.
+
+```json
+{"limits": {"max_vms": 20, "max_vcpus": 80},
+ "usage":  {"vms": 7, "vcpus": 22, "memory_mib": 45056,
+            "volumes": 3, "storage_bytes": 274877906944},
+ "over_quota": false}
+```
+
+`DELETE` returns the project to unlimited.
+
+**What counts.** A resource consumes quota from the moment its row exists until
+the row is gone — including while it is `Pending`, `Failed` or `Deleting`. The
+quota asks what the project has committed to, not what the fleet has managed to
+build.
+
+* `vcpus` and `memory_mib` count the hot-plug **ceiling** (`max_vcpus`,
+  `memory_max_mib`), because that is what was committed to, whatever the VM
+  boots with.
+* `storage_bytes` counts volumes **and** disks a VM spec asks the agent to
+  provision. Counting only volumes would leave the cap bypassable by asking for
+  the space as a VM disk.
+
+**When it is checked.** Only at API admission, in the same transaction that
+persists the intent. The reconcile loop never refuses work for quota reasons: a
+request accepted and then stranded is worse than one refused up front. Every
+write that changes a counted quantity passes admission, including an in-place
+`PATCH /vms/:id`, checked on the *difference* it makes — which is why shrinking
+a VM is always allowed.
+
+A refusal is `409` with code `QUOTA_EXCEEDED` and a message carrying the
+arithmetic:
+
+```
+project quota exceeded: memory_mib — limit 16384, 15360 in use,
+this request asks for 2048
+```
+
+**Lowering a limit below current usage is allowed** and destroys nothing. It
+blocks new commitments and reports `over_quota: true`. Refusing the change would
+leave you no way to stop a runaway project short of deleting its work, and
+shrinking stays admissible so a project is never trapped above its cap.
+
+**Volumes are reserved before they are built.** Creating one commits the row
+inside the admission transaction, then `qemu-img` runs, then the row is
+finalised — so it is `provisioning` for a while and cannot be attached or
+snapshotted until it is `ready`. The old order did the conversion first, which
+under a quota means doing the expensive work and only then refusing it.
+
 ## Limits
 
-* **No quotas yet.** A project is an isolation boundary, not a consumption
-  boundary: one project can still exhaust the fleet. See ADR-019.
 * **The web UI has no project selector.** It sends no header, so it acts in the
   default project.
 * **Projects are flat.** `parent_id` exists in the schema and is unenforced —

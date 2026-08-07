@@ -83,6 +83,11 @@ pub enum ErrorCode {
     HypervisorError,
     AgentUnavailable,
     InvalidConfiguration,
+    /// The request is well-formed and permitted, but the project has no room
+    /// for it. Distinct from `InsufficientResources`, which is about the fleet
+    /// not having the capacity — a quota refusal would be refused on an empty
+    /// cluster too, and the fix is an operator raising a limit (ADR-019).
+    QuotaExceeded,
     Unauthorized,
     Forbidden,
     Internal,
@@ -102,6 +107,7 @@ impl ErrorCode {
             ErrorCode::HypervisorError => "HYPERVISOR_ERROR",
             ErrorCode::AgentUnavailable => "AGENT_UNAVAILABLE",
             ErrorCode::InvalidConfiguration => "INVALID_CONFIGURATION",
+            ErrorCode::QuotaExceeded => "QUOTA_EXCEEDED",
             ErrorCode::Unauthorized => "UNAUTHORIZED",
             ErrorCode::Forbidden => "FORBIDDEN",
             ErrorCode::Internal => "INTERNAL",

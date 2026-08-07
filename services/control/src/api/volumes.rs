@@ -120,71 +120,115 @@ pub async fn create(
 
     let id = Uuid::new_v4();
 
-    // Clone-from-image (bootable) vs blank data volume.
-    let (format, size, path) = if let Some(image_id) = body.source_image_id {
-        if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
-            .image_visible(image_id)
-            .await?
-        {
-            return Err(ApiError::not_found("image"));
+    // Reserve before doing the work, then build the file, then finalise
+    // (ADR-019). The old order — provision, then insert — cannot be admitted:
+    // the expensive part would happen before anything was counted, so two
+    // concurrent creates would both convert gigabytes and only then discover
+    // one of them did not fit.
+    //
+    // For a clone the true size is the image's virtual size, which `qemu-img`
+    // only reveals after converting. Reserve the largest figure known up front;
+    // `finalize_volume` admits the difference if the result is bigger.
+    let (format, reserve) = match body.source_image_id {
+        Some(image_id) => {
+            if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+                .image_visible(image_id)
+                .await?
+            {
+                return Err(ApiError::not_found("image"));
+            }
+            let img = store
+                .get_image(image_id)
+                .await?
+                .ok_or(ApiError::not_found("image"))?;
+            if img.status != "ready" {
+                return Err(ApiError::invalid("image is not ready"));
+            }
+            (
+                img.format.clone(),
+                body.size_bytes.max(img.default_size_bytes.unwrap_or(0)),
+            )
         }
-        let img = store
-            .get_image(image_id)
-            .await?
-            .ok_or(ApiError::not_found("image"))?;
-        if img.status != "ready" {
-            return Err(ApiError::invalid("image is not ready"));
+        None => {
+            if body.size_bytes <= 0 {
+                return Err(ApiError::invalid("size_bytes must be positive"));
+            }
+            (body.format.clone(), body.size_bytes)
         }
-        let format = img.format.clone();
-        let path = volume_path(store.shared_volumes_dir(), id, &format);
-        // Full, independent copy so the volume outlives the image.
-        qemu_img(&[
-            "convert",
-            "-O",
-            ext(&format),
-            &img.source_path,
-            &path.to_string_lossy(),
-        ])
-        .await?;
-        if body.size_bytes > 0 {
-            // Grow to the requested size if it exceeds the image's virtual size.
-            let _ = qemu_img(&[
-                "resize",
-                &path.to_string_lossy(),
-                &body.size_bytes.to_string(),
-            ])
-            .await;
-        }
-        let size = disk_virtual_size(&path)
-            .await
-            .unwrap_or(body.size_bytes.max(0));
-        (format, size, path)
-    } else {
-        if body.size_bytes <= 0 {
-            return Err(ApiError::invalid("size_bytes must be positive"));
-        }
-        let path = volume_path(store.shared_volumes_dir(), id, &body.format);
-        provision_blank(&path, &body.format, body.size_bytes as u64).await?;
-        (body.format.clone(), body.size_bytes, path)
     };
 
-    match store
+    store
         .create_volume(
             id,
             body.name.trim(),
-            size,
+            reserve,
             &format,
             body.source_image_id,
             crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
         )
-        .await
-    {
-        Ok(v) => Ok((StatusCode::CREATED, Json(view(&store, v)))),
+        .await?;
+
+    let path = volume_path(store.shared_volumes_dir(), id, &format);
+    let built = provision(&store, &body, &path, &format).await;
+    let size = match built {
+        Ok(size) => size,
         Err(e) => {
             let _ = tokio::fs::remove_file(&path).await;
+            let _ = store.drop_volume_reservation(id).await;
+            return Err(e);
+        }
+    };
+    match store.finalize_volume(id, size).await {
+        Ok(Some(v)) => Ok((StatusCode::CREATED, Json(view(&store, v)))),
+        // The reservation vanished, or the true size did not fit after all.
+        Ok(None) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            Err(ApiError::internal("volume reservation disappeared"))
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            let _ = store.drop_volume_reservation(id).await;
             Err(e.into())
         }
     }
+}
+
+/// Build the volume's file, returning its guest-visible size.
+async fn provision(
+    store: &Store,
+    body: &CreateVolume,
+    path: &std::path::Path,
+    format: &str,
+) -> ApiResult<i64> {
+    let Some(image_id) = body.source_image_id else {
+        provision_blank(path, format, body.size_bytes as u64).await?;
+        return Ok(body.size_bytes);
+    };
+    let img = store
+        .get_image(image_id)
+        .await?
+        .ok_or(ApiError::not_found("image"))?;
+    // Full, independent copy so the volume outlives the image.
+    qemu_img(&[
+        "convert",
+        "-O",
+        ext(format),
+        &img.source_path,
+        &path.to_string_lossy(),
+    ])
+    .await?;
+    if body.size_bytes > 0 {
+        // Grow to the requested size if it exceeds the image's virtual size.
+        let _ = qemu_img(&[
+            "resize",
+            &path.to_string_lossy(),
+            &body.size_bytes.to_string(),
+        ])
+        .await;
+    }
+    Ok(disk_virtual_size(path)
+        .await
+        .unwrap_or(body.size_bytes.max(0)))
 }
 
 /// Guest-visible size of a disk via `qemu-img info` (best-effort).
@@ -243,6 +287,9 @@ pub async fn attach(
         .get_volume(id)
         .await?
         .ok_or(ApiError::not_found("volume"))?;
+    if v.status != "ready" {
+        return Err(ApiError::invalid("volume is still being provisioned"));
+    }
     if v.attached_vm_id.is_some() {
         return Err(ApiError::invalid("volume is already attached"));
     }
@@ -312,6 +359,9 @@ pub async fn detach(
 /// Guard shared by snapshot create/revert: the volume must be qcow2 and not held
 /// by a running VMM (which holds an exclusive lock on the file).
 async fn snapshottable(store: &Store, v: &Volume) -> ApiResult<()> {
+    if v.status != "ready" {
+        return Err(ApiError::invalid("volume is still being provisioned"));
+    }
     if v.format != "qcow2" {
         return Err(ApiError::invalid("snapshots require a qcow2 volume"));
     }

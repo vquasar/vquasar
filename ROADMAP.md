@@ -479,11 +479,35 @@ needs a control-plane change first, and the UI change after it is small.
     is refused when writing a platform binding. That is the only place this can
     be tested — the e2e harness runs with auth disabled, where every caller is a
     superuser. ADR-020.
-    **Remaining before the gate can be turned on by default:** quotas (M19d), so
-    one project cannot exhaust the fleet, and the UI needs a project selector —
-    it sends no header today, so it acts in the default project.
-  - **M19d — quotas.** Admission-time, against committed intent, usage derived
-    rather than stored. ADR-019.
+    **Remaining before the gate can be turned on by default:** the UI needs a
+    project selector — it sends no header today, so it acts in the default
+    project.
+  - **M19d — quotas.** ✅ **Done.** A ceiling on committed intent — VMs, vCPUs,
+    memory, volumes and storage bytes — enforced only at API admission, in the
+    transaction that persists the intent. A resource counts from the moment its
+    row exists until the row is gone, including while `Pending`, `Failed` or
+    `Deleting`; the reconcile loop never rejects work for quota reasons, because
+    a request accepted and then stranded is worse than one refused.
+    Usage is derived, never stored: admission locks the project row, aggregates
+    from the owning tables and inserts, all in one transaction. That serialises
+    writes per project and only per project, and leaves no counter to drift.
+    A project with no quota row is unlimited, so the migration cannot make a
+    running cluster start refusing work. `PUT /projects/:id/quota` sets limits,
+    `GET` returns them beside current usage and an `over_quota` flag — a limit
+    without the usage next to it does not answer the question an operator has.
+    Lowering a limit below usage is permitted and non-destructive: it blocks new
+    commitments, and shrinking stays admissible so a project is never trapped
+    above its cap.
+    Two things this forced. The spec-writing paths were reduced to **one**:
+    there were two and only one had been gated, which is how admission gets
+    bypassed later. And volume creation was inverted to reserve-then-provision,
+    with a `provisioning` status, because `qemu-img convert` used to run before
+    anything was persisted — under a quota that means doing the expensive work
+    and only then refusing it.
+    Storage counts volumes *and* disks a VM spec asks to have provisioned;
+    counting only volumes would leave the cap bypassable. vCPU and memory count
+    the hot-plug ceiling, which is what was committed to. Refusals are `409`
+    `QUOTA_EXCEEDED` carrying the dimension, the limit and the usage. ADR-019.
   - **M19e — scoped task and event streams.** Currently global and carrying
     resource names in free text; folded in here because it needs the same
     `project_id` column.
