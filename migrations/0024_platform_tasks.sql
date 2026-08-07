@@ -1,0 +1,15 @@
+-- Let a task belong to no project (design §47, ADR-018).
+--
+-- 0021 made `tasks.project_id` NOT NULL with a default, because at the time
+-- every task named a VM. Host work — registration, drain — names none, and
+-- falling back to `default` put platform work in a tenant's task feed: a
+-- project sharing the default project would watch hosts being registered.
+--
+-- NULL now means a platform task, the same thing it already means on `events`,
+-- and the scoped feed shows a project only its own rows. The DEFAULT stays, so
+-- an older binary that omits the column still inserts something valid.
+--
+-- Existing rows keep the default project. They are history, and rewriting them
+-- would be guessing: a task row does not record whether its work was platform
+-- work or a VM's.
+ALTER TABLE tasks ALTER COLUMN project_id DROP NOT NULL;

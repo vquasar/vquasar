@@ -37,6 +37,7 @@ import type {
   IsoEntry,
   IpAllocation,
   Network,
+  Project,
   Task,
   Template,
   UpdateVmRequest,
@@ -77,6 +78,19 @@ function taskInterval(data: Task[] | undefined): number {
 /// drain or a migration is what makes host state worth watching closely.
 function busyFromCache(qc: QueryClient): boolean {
   return tasksBusy(qc.getQueryData<Task[]>(["tasks"]));
+}
+
+/// The projects this caller can act in. Already scoped server-side to the ones
+/// they hold a binding in — which projects exist is itself tenancy information
+/// (ADR-020), so this list is not a fleet inventory.
+export function useProjects(enabled = true) {
+  const { can } = usePermissions();
+  return useQuery({
+    queryKey: ["projects"],
+    queryFn: () => api.get<Project[]>("/projects"),
+    enabled: enabled && can(READ.projects),
+    staleTime: SLOW_MS,
+  });
 }
 
 export function useHosts() {

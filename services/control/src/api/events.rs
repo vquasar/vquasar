@@ -21,9 +21,14 @@ fn default_limit() -> i64 {
 pub async fn list(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<Event>>> {
     user.require("vm:read")?;
     let limit = params.limit.clamp(1, 1000);
-    Ok(Json(store.list_events(limit).await?))
+    Ok(Json(
+        crate::scoped::ScopedStore::new(store, scope.0)
+            .list_events(limit)
+            .await?,
+    ))
 }

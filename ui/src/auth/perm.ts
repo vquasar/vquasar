@@ -38,6 +38,13 @@ export const CATALOG = [
   "template:delete",
   "iam:read",
   "iam:manage",
+  // Tenancy boundaries are platform objects: creating or deleting one is not a
+  // workload operation, and `operator` holds none of these beyond reading
+  // (design §47, ADR-018).
+  "project:read",
+  "project:create",
+  "project:update",
+  "project:delete",
 ] as const;
 
 export type Permission = (typeof CATALOG)[number];
@@ -107,4 +114,5 @@ export const READ = {
   // Tasks and events are guarded by vm:read server-side.
   tasks: "vm:read",
   events: "vm:read",
+  projects: "project:read",
 } as const satisfies Record<string, Permission>;

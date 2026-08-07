@@ -1608,3 +1608,103 @@ async fn a_volume_is_admitted_before_it_is_provisioned() {
     // No row, and therefore no reservation left behind to leak the quota.
     assert_eq!(h.query_one("SELECT count(*)::text FROM volumes").await, "0");
 }
+
+/// Task and event feeds are scoped, and platform work belongs to no project
+/// (design §47). A tenant watching "what is happening" must not be watching the
+/// fleet.
+#[tokio::test]
+async fn task_and_event_feeds_are_scoped_and_platform_work_is_not_a_tenants() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_TENANCY__ENABLED", "true")]).await;
+    let (st, blue) = h.post("/projects", json!({"name": "blue"})).await;
+    assert!(st.is_success(), "{blue}");
+    let blue = blue["id"].as_str().unwrap().to_string();
+
+    let port = free_port();
+    let _agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+
+    let (st, vm) = h
+        .post_in(&blue, "/vms", json!({"name": "blue-vm", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{vm}");
+    let task = vm["task_id"].as_str().unwrap().to_string();
+
+    // The VM's task carries the VM's project.
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT project_id::text FROM tasks WHERE id='{task}'"
+        ))
+        .await,
+        blue
+    );
+
+    // Every task today names a VM, so the platform case is exercised through
+    // the derivation itself: with no VM to inherit from it resolves to NULL,
+    // rather than falling back to the default project and putting platform work
+    // in a tenant's feed.
+    h.sql(
+        "INSERT INTO tasks (id, task_type, vm_id, project_id, created_at, updated_at)
+         VALUES (gen_random_uuid(), 'host.drain', NULL,
+                 (SELECT project_id FROM virtual_machines WHERE id IS NULL),
+                 now(), now())",
+    )
+    .await;
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM tasks WHERE project_id IS NULL")
+            .await,
+        "1",
+        "platform work belongs to no project"
+    );
+
+    // blue sees its own task and nothing else.
+    let tasks = h.get_in(&blue, "/tasks").await;
+    let tasks = tasks.as_array().unwrap();
+    assert_eq!(
+        tasks.len(),
+        1,
+        "a project sees only its own tasks: {tasks:?}"
+    );
+    assert_eq!(tasks[0]["id"], task);
+
+    // The platform view sees both.
+    assert_eq!(
+        h.get_in("*", "/tasks").await.as_array().unwrap().len(),
+        2,
+        "platform scope sees platform work too"
+    );
+
+    // Naming another project's task by id answers as an unknown id would.
+    let (st, _) = h.get_status_in("*", &format!("/tasks/{task}")).await;
+    assert_eq!(st, 200);
+    let default = "00000000-0000-0000-0000-000000000001";
+    let (st, _) = h.get_status_in(default, &format!("/tasks/{task}")).await;
+    assert_eq!(st, 404, "another project's task must not be readable by id");
+
+    // Events follow the resource they describe. Host events belong to nobody.
+    assert!(
+        h.query_one(
+            "SELECT count(*)::text FROM events
+              WHERE resource_type='host' AND project_id IS NOT NULL"
+        )
+        .await
+            == "0",
+        "a host event must not be stamped with a project"
+    );
+    let blue_events = h.get_in(&blue, "/events").await;
+    let blue_events = blue_events.as_array().unwrap();
+    assert!(
+        blue_events
+            .iter()
+            .all(|e| e["resource_type"] == "vm" || e["resource_type"] == "volume"),
+        "a tenant's feed must not carry fleet events: {blue_events:?}"
+    );
+    assert!(
+        h.get_in("*", "/events")
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["resource_type"] == "host"),
+        "the platform view does carry them"
+    );
+}

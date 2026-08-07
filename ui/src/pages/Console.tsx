@@ -8,7 +8,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useVm } from "../api/hooks";
-import { authToken } from "../api/client";
+import { authToken, currentProject } from "../api/client";
 import { PageHeader } from "../ui/kit";
 import { useThemeMode } from "../theme/ThemeMode";
 import { useCrumb } from "../components/Breadcrumb";
@@ -40,8 +40,15 @@ export function Console() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     // Browsers can't set headers on a WebSocket handshake, so the bearer token
     // rides as a query param; the control plane authorizes it (vm:console).
+    // The project rides the same way and for the same reason (design §47) —
+    // without it the handshake resolves in the default project and this VM
+    // answers as an unknown id.
+    const params = new URLSearchParams();
     const token = authToken();
-    const qs = token ? `?access_token=${encodeURIComponent(token)}` : "";
+    if (token) params.set("access_token", token);
+    const project = currentProject();
+    if (project) params.set("project", project);
+    const qs = params.toString() ? `?${params}` : "";
     const ws = new WebSocket(`${proto}//${location.host}/api/v1/vms/${id}/console${qs}`);
     ws.binaryType = "arraybuffer";
 

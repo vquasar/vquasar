@@ -14,6 +14,21 @@ export function authToken(): string | null {
   return tokenGetter();
 }
 
+// The project every request acts in (design §47). Registered the same way as
+// the token, and for the same reason: it belongs on every request, and
+// threading it through each call site is how one gets missed. Null means "send
+// no header" — the control plane then uses the caller's default project, or
+// ignores the question entirely when tenancy is off.
+//
+// "*" is the platform view; it is a valid header value, not an absence.
+let projectGetter: () => string | null = () => null;
+export function setProjectGetter(getter: () => string | null) {
+  projectGetter = getter;
+}
+export function currentProject(): string | null {
+  return projectGetter();
+}
+
 export interface ApiErrorBody {
   error: { code: string; message: string; request_id: string };
 }
@@ -37,6 +52,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = tokenGetter();
   if (token) {
     headers.authorization = `Bearer ${token}`;
+  }
+  const project = projectGetter();
+  if (project) {
+    headers["x-vquasar-project"] = project;
   }
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!res.ok) {
@@ -82,6 +101,8 @@ export async function uploadImage(
   const headers: Record<string, string> = {};
   const token = authToken();
   if (token) headers.authorization = `Bearer ${token}`;
+  const project = currentProject();
+  if (project) headers["x-vquasar-project"] = project;
   const res = await fetch(`${BASE}/images/upload?${qs}`, {
     method: "POST",
     headers,

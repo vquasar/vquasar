@@ -259,6 +259,30 @@ button {
   color: var(--vq-text-3);
 }
 
+/* Project switcher: reads as a label + value, not a button, because it states
+   what the whole screen is scoped to rather than offering an action. */
+.vq-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--vq-line);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--vq-text-1);
+}
+.vq-project:hover {
+  background: var(--vq-surface-2, transparent);
+}
+.vq-project-label {
+  color: var(--vq-text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .vq-user {
   display: flex;
   align-items: center;
