@@ -143,6 +143,10 @@ jobs:
           VQUASAR_CONTROL_AUTH__CLIENT_ID: vquasar
           VQUASAR_CONTROL_AUTH__AUDIENCE: vquasar
           VQUASAR_CONTROL_AUTH__BOOTSTRAP_ADMIN: alice
+          # Tenancy on, so the per-project RBAC checks are exercised. This is
+          # the only place they can be: the e2e harness runs with auth disabled,
+          # where every caller is a superuser.
+          VQUASAR_CONTROL_TENANCY__ENABLED: "true"
           RUST_LOG: warn
         run: |
           cargo build -p vquasar-control

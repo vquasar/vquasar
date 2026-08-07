@@ -39,7 +39,21 @@ pub async fn console_ws(
     Query(q): Query<ConsoleAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let tenancy_enabled = auth.tenancy_enabled;
+    // Resolve the scope first: `vm:console` is now a permission held *in* a
+    // project, so authorization cannot be decided before we know which one
+    // (ADR-020).
+    let scope = if auth.tenancy_enabled {
+        match &q.project {
+            Some(p) => match resolve_project(&store, p).await {
+                Some(id) => vquasar_model::Scope::Project(id),
+                None => return (StatusCode::NOT_FOUND, "project not found").into_response(),
+            },
+            None => vquasar_model::Scope::Project(vquasar_model::DEFAULT_PROJECT_ID),
+        }
+    } else {
+        vquasar_model::Scope::Platform
+    };
+
     // Authenticate + authorize before upgrading, unless auth is disabled (dev).
     if let Some(authenticator) = auth.authenticator {
         let Some(token) = q.access_token else {
@@ -59,7 +73,7 @@ pub async fn console_ws(
             .await
         {
             Ok(user) => store
-                .effective_permissions(user.id, &claims.groups)
+                .effective_permissions(user.id, &claims.groups, scope.project_filter())
                 .await
                 .map(|p| p.contains("vm:console"))
                 .unwrap_or(false),
@@ -74,21 +88,9 @@ pub async fn console_ws(
     // socket was upgraded regardless, so a caller learned nothing from the
     // status code but still got a session against whatever the id resolved to
     // later. Checking here means an unknown VM is a plain 404 and no stream is
-    // ever opened. When projects land, the ownership predicate goes here too —
-    // the lookup is already in the right place for it.
-    // Resolve in the caller's scope: another project's VM must answer exactly
+    // ever opened.
+    // Resolved in the caller's scope: another project's VM must answer exactly
     // as an unknown id does.
-    let scope = if tenancy_enabled {
-        match &q.project {
-            Some(p) => match resolve_project(&store, p).await {
-                Some(id) => vquasar_model::Scope::Project(id),
-                None => return (StatusCode::NOT_FOUND, "project not found").into_response(),
-            },
-            None => vquasar_model::Scope::Project(vquasar_model::DEFAULT_PROJECT_ID),
-        }
-    } else {
-        vquasar_model::Scope::Platform
-    };
     if crate::scoped::ScopedStore::new(store.clone(), scope)
         .get_vm(id)
         .await

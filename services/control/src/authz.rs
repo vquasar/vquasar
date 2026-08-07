@@ -37,6 +37,10 @@ pub struct AuthState {
 /// constraint that already forced `?access_token=` on the console.
 pub const PROJECT_HEADER: &str = "x-vquasar-project";
 
+/// The project selector meaning "every project". Not a valid project name, so
+/// it cannot collide with one.
+pub const PLATFORM_SCOPE: &str = "*";
+
 impl AuthState {
     /// Auth disabled (dev): no authenticator configured.
     pub fn disabled() -> Self {
@@ -51,7 +55,11 @@ impl AuthState {
 /// The authenticated caller and their effective permissions.
 pub struct AuthUser {
     pub user: Option<User>,
+    /// Effective permissions **in the project this request names**.
     pub permissions: HashSet<String>,
+    /// The token's group claim, kept because group bindings are half of what
+    /// decides which projects the caller can act in.
+    pub groups: Vec<String>,
     /// Dev mode: bypass all permission checks.
     pub superuser: bool,
 }
@@ -119,13 +127,39 @@ impl FromRequestParts<Store> for RequestScope {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, store: &Store) -> Result<Self, ApiError> {
+        Ok(RequestScope(resolve_scope(parts, store).await?))
+    }
+}
+
+/// Resolve (once per request) the project this request acts in.
+///
+/// Memoised in the request extensions because two extractors need it and the
+/// name form costs a query: [`RequestScope`] uses it to pick rows, and
+/// [`AuthUser`] uses it to decide which role bindings count. Those two must
+/// agree — a request authorized in one project and reading another is the bug
+/// this whole mechanism exists to prevent — so they read the same value rather
+/// than each parsing the request again.
+async fn resolve_scope(parts: &mut Parts, store: &Store) -> Result<vquasar_model::Scope, ApiError> {
+    if let Some(scope) = parts.extensions.get::<vquasar_model::Scope>() {
+        return Ok(*scope);
+    }
+    let scope = resolve_scope_uncached(parts, store).await?;
+    parts.extensions.insert(scope);
+    Ok(scope)
+}
+
+async fn resolve_scope_uncached(
+    parts: &Parts,
+    store: &Store,
+) -> Result<vquasar_model::Scope, ApiError> {
+    {
         let auth = parts
             .extensions
             .get::<AuthState>()
             .cloned()
             .ok_or_else(|| ApiError::internal("auth state missing"))?;
         if !auth.tenancy_enabled {
-            return Ok(RequestScope(vquasar_model::Scope::Platform));
+            return Ok(vquasar_model::Scope::Platform);
         }
 
         let requested = parts
@@ -142,12 +176,21 @@ impl FromRequestParts<Store> for RequestScope {
                 })
             });
 
+        // `*` is the platform view. It is not a privilege: permissions are
+        // resolved against it too, so a caller holding only project bindings
+        // resolves to the empty set here and can do nothing. It exists so a
+        // platform admin has a cross-project view, and so a platform-wide role
+        // binding has a scope it can be created from (ADR-020).
+        if requested.as_deref() == Some(PLATFORM_SCOPE) {
+            return Ok(vquasar_model::Scope::Platform);
+        }
+
         let Some(requested) = requested else {
             // No context: the default project, never "everything". Absence of a
             // selection must not widen what a caller can see.
-            return Ok(RequestScope(vquasar_model::Scope::Project(
+            return Ok(vquasar_model::Scope::Project(
                 vquasar_model::DEFAULT_PROJECT_ID,
-            )));
+            ));
         };
 
         let project = match uuid::Uuid::parse_str(&requested) {
@@ -159,7 +202,7 @@ impl FromRequestParts<Store> for RequestScope {
                 .find(|p| p.name == requested),
         };
         let project = project.ok_or_else(|| ApiError::not_found("project"))?;
-        Ok(RequestScope(vquasar_model::Scope::Project(project.id)))
+        Ok(vquasar_model::Scope::Project(project.id))
     }
 }
 
@@ -187,6 +230,7 @@ impl FromRequestParts<Store> for AuthUser {
             return Ok(AuthUser {
                 user: None,
                 permissions: HashSet::new(),
+                groups: Vec::new(),
                 superuser: true,
             });
         };
@@ -217,10 +261,17 @@ impl FromRequestParts<Store> for AuthUser {
             }
         }
 
-        let permissions = store.effective_permissions(user.id, &claims.groups).await?;
+        // Permissions are resolved *in* the project this request names. A
+        // caller with no binding there gets the empty set, so the header can be
+        // anything they like and still buys them nothing (ADR-020).
+        let scope = resolve_scope(parts, store).await?;
+        let permissions = store
+            .effective_permissions(user.id, &claims.groups, scope.project_filter())
+            .await?;
         Ok(AuthUser {
             user: Some(user),
             permissions,
+            groups: claims.groups,
             superuser: false,
         })
     }

@@ -1739,31 +1739,48 @@ impl Store {
             .await
     }
 
-    /// Roles directly assigned to a user (not counting group-derived roles).
-    pub async fn roles_for_user(&self, user_id: Uuid) -> Result<Vec<Role>> {
+    /// Roles assigned to a user **in a scope** (not counting group-derived
+    /// roles). `project = None` is the platform-wide binding set.
+    pub async fn roles_for_user(&self, user_id: Uuid, project: Option<Uuid>) -> Result<Vec<Role>> {
         sqlx::query_as::<_, Role>(
             "SELECT r.* FROM roles r
              JOIN user_roles ur ON ur.role_id = r.id
-             WHERE ur.user_id = $1 ORDER BY r.name",
+             WHERE ur.user_id = $1 AND ur.project_id IS NOT DISTINCT FROM $2
+             ORDER BY r.name",
         )
         .bind(user_id)
+        .bind(project)
         .fetch_all(&self.pool)
         .await
     }
 
-    /// Replace a user's direct role assignments.
-    pub async fn set_user_roles(&self, user_id: Uuid, role_ids: &[Uuid]) -> Result<()> {
+    /// Replace a user's direct role assignments **within one scope**.
+    ///
+    /// Scoped on both sides: acting in a project must not clear the bindings
+    /// another project — or the platform — granted the same user. That is why
+    /// the DELETE carries the same predicate as the INSERT.
+    pub async fn set_user_roles(
+        &self,
+        user_id: Uuid,
+        role_ids: &[Uuid],
+        project: Option<Uuid>,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM user_roles WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM user_roles WHERE user_id=$1 AND project_id IS NOT DISTINCT FROM $2",
+        )
+        .bind(user_id)
+        .bind(project)
+        .execute(&mut *tx)
+        .await?;
         for rid in role_ids {
             sqlx::query(
-                "INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                "INSERT INTO user_roles (user_id, role_id, project_id)
+                 VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
             )
             .bind(user_id)
             .bind(rid)
+            .bind(project)
             .execute(&mut *tx)
             .await?;
         }
@@ -1784,26 +1801,82 @@ impl Store {
         .map(|_| ())
     }
 
-    /// The effective permission set for a user: the union over their directly
-    /// assigned roles and any roles mapped from the token's `groups`.
+    /// The effective permission set for a user **in a project**: the union over
+    /// their directly assigned roles and any roles mapped from the token's
+    /// `groups`, counting only bindings that apply there.
+    ///
+    /// A binding with a NULL project is platform-wide and always counts — that
+    /// is every binding made before tenancy existed, and it is what the
+    /// first-admin bootstrap creates. A binding naming a project counts only in
+    /// that project. `project = None` (tenancy off, or platform scope) therefore
+    /// resolves to the platform-wide bindings alone.
+    ///
+    /// This is the whole of per-project authorization: a caller with no binding
+    /// in the requested project resolves to the empty set and fails every
+    /// permission guard. There is no separate membership check to forget.
     pub async fn effective_permissions(
         &self,
         user_id: Uuid,
         groups: &[String],
+        project: Option<Uuid>,
     ) -> Result<std::collections::HashSet<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"SELECT DISTINCT rp.permission FROM role_permissions rp
                WHERE rp.role_id IN (
-                   SELECT role_id FROM user_roles WHERE user_id = $1
+                   SELECT role_id FROM user_roles
+                    WHERE user_id = $1
+                      AND (project_id IS NULL OR project_id = $3)
                    UNION
-                   SELECT role_id FROM group_roles WHERE "group" = ANY($2)
+                   SELECT role_id FROM group_roles
+                    WHERE "group" = ANY($2)
+                      AND (project_id IS NULL OR project_id = $3)
                )"#,
+        )
+        .bind(user_id)
+        .bind(groups)
+        .bind(project)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(p,)| p).collect())
+    }
+
+    /// Projects the caller holds any binding in.
+    ///
+    /// `None` means every project: the caller has a platform-wide binding, so
+    /// listing is not a tenancy question for them. Otherwise a tenant must not
+    /// learn that other projects exist — the project list is itself tenancy
+    /// information.
+    pub async fn projects_for_caller(
+        &self,
+        user_id: Uuid,
+        groups: &[String],
+    ) -> Result<Option<Vec<Uuid>>> {
+        let platform: i64 = sqlx::query_scalar(
+            r#"SELECT count(*) FROM (
+                   SELECT 1 FROM user_roles  WHERE user_id = $1        AND project_id IS NULL
+                   UNION ALL
+                   SELECT 1 FROM group_roles WHERE "group" = ANY($2) AND project_id IS NULL
+               ) t"#,
+        )
+        .bind(user_id)
+        .bind(groups)
+        .fetch_one(&self.pool)
+        .await?;
+        if platform > 0 {
+            return Ok(None);
+        }
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"SELECT DISTINCT project_id FROM (
+                   SELECT project_id FROM user_roles  WHERE user_id = $1
+                   UNION ALL
+                   SELECT project_id FROM group_roles WHERE "group" = ANY($2)
+               ) t WHERE project_id IS NOT NULL"#,
         )
         .bind(user_id)
         .bind(groups)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|(p,)| p).collect())
+        Ok(Some(ids))
     }
 
     pub async fn list_roles(&self) -> Result<Vec<Role>> {
@@ -1898,7 +1971,25 @@ impl Store {
     }
 
     /// group -> role name mappings (for display/management).
-    pub async fn list_group_roles(&self) -> Result<Vec<(String, String)>> {
+    /// Group -> role mappings visible in a scope: those made in this project
+    /// plus the platform-wide ones, which apply everywhere.
+    pub async fn list_group_roles(
+        &self,
+        project: Option<Uuid>,
+    ) -> Result<Vec<(String, String, Option<Uuid>)>> {
+        sqlx::query_as(
+            r#"SELECT gr."group", r.name, gr.project_id FROM group_roles gr
+               JOIN roles r ON r.id = gr.role_id
+               WHERE gr.project_id IS NULL OR gr.project_id = $1
+               ORDER BY gr."group", r.name"#,
+        )
+        .bind(project)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn list_group_roles_unscoped(&self) -> Result<Vec<(String, String)>> {
         sqlx::query_as(
             r#"SELECT gr."group", r.name FROM group_roles gr
                JOIN roles r ON r.id = gr.role_id ORDER BY gr."group""#,
@@ -1907,23 +1998,39 @@ impl Store {
         .await
     }
 
-    pub async fn add_group_role(&self, group: &str, role_id: Uuid) -> Result<()> {
+    pub async fn add_group_role(
+        &self,
+        group: &str,
+        role_id: Uuid,
+        project: Option<Uuid>,
+    ) -> Result<()> {
         sqlx::query(
-            r#"INSERT INTO group_roles ("group", role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING"#,
+            r#"INSERT INTO group_roles ("group", role_id, project_id)
+               VALUES ($1,$2,$3) ON CONFLICT DO NOTHING"#,
         )
         .bind(group)
         .bind(role_id)
+        .bind(project)
         .execute(&self.pool)
         .await
         .map(|_| ())
     }
 
-    pub async fn remove_group_role(&self, group: &str, role_id: Uuid) -> Result<bool> {
-        let res = sqlx::query(r#"DELETE FROM group_roles WHERE "group"=$1 AND role_id=$2"#)
-            .bind(group)
-            .bind(role_id)
-            .execute(&self.pool)
-            .await?;
+    pub async fn remove_group_role(
+        &self,
+        group: &str,
+        role_id: Uuid,
+        project: Option<Uuid>,
+    ) -> Result<bool> {
+        let res = sqlx::query(
+            r#"DELETE FROM group_roles
+                WHERE "group"=$1 AND role_id=$2 AND project_id IS NOT DISTINCT FROM $3"#,
+        )
+        .bind(group)
+        .bind(role_id)
+        .bind(project)
+        .execute(&self.pool)
+        .await?;
         Ok(res.rows_affected() > 0)
     }
 

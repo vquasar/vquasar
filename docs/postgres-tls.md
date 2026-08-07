@@ -63,8 +63,9 @@ scripts/install.sh control \
 
 The modes, in increasing strictness:
 
-* `disable` / `allow` / `prefer` — **can end up unencrypted**. `prefer` is the
-  default when nothing is set.
+* `disable` / `allow` / `prefer` — **can end up unencrypted**. `prefer` is
+  libpq's default; vquasar's is `require`, so reaching any of these takes a
+  deliberate setting.
 * `require` — TLS is mandatory, but the certificate is only verified if a `ca`
   is configured. Encrypted, not authenticated: it stops passive sniffing, not an
   active man-in-the-middle.

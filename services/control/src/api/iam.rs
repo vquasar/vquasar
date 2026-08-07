@@ -42,11 +42,16 @@ pub struct Me {
     pub authenticated: bool,
     pub username: Option<String>,
     pub email: Option<String>,
+    /// Effective permissions **in `project`** — the same resolution the guards
+    /// use, so the UI hides exactly what the API would refuse.
     pub permissions: Vec<String>,
+    /// The project this answer is about; absent means the platform view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<Uuid>,
 }
 
 /// The current caller's identity + effective permissions (drives the UI).
-pub async fn me(user: AuthUser) -> Json<Me> {
+pub async fn me(user: AuthUser, scope: crate::authz::RequestScope) -> Json<Me> {
     let mut permissions: Vec<String> = if user.superuser {
         rbac::CATALOG.iter().map(|s| s.to_string()).collect()
     } else {
@@ -58,6 +63,7 @@ pub async fn me(user: AuthUser) -> Json<Me> {
         username: user.user.as_ref().map(|u| u.username.clone()),
         email: user.user.as_ref().and_then(|u| u.email.clone()),
         permissions,
+        project: scope.0.project_filter(),
     })
 }
 
@@ -77,11 +83,14 @@ pub struct UserView {
 pub async fn list_users(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<Json<Vec<UserView>>> {
     user.require("iam:read")?;
+    // Roles are reported for the scope the request is acting in — the same
+    // bindings `set_user_roles` would replace from here (ADR-020).
     let mut out = Vec::new();
     for u in store.list_users().await? {
-        let roles = store.roles_for_user(u.id).await?;
+        let roles = store.roles_for_user(u.id, scope.0.project_filter()).await?;
         out.push(UserView { user: u, roles });
     }
     Ok(Json(out))
@@ -95,6 +104,7 @@ pub struct SetUserRoles {
 pub async fn set_user_roles(
     State(store): State<Store>,
     _: RequireIamManage,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<SetUserRoles>,
 ) -> ApiResult<Json<UserView>> {
@@ -102,8 +112,13 @@ pub async fn set_user_roles(
         .get_user(id)
         .await?
         .ok_or_else(|| ApiError::invalid(format!("user not found: {id}")))?;
-    store.set_user_roles(id, &body.role_ids).await?;
-    let roles = store.roles_for_user(id).await?;
+    // The binding is made in the scope the caller is acting in — which is the
+    // scope their own `iam:manage` was resolved in. A project admin therefore
+    // cannot mint a platform-wide grant: reaching platform scope needs
+    // `X-Vquasar-Project: *`, where their permissions resolve to nothing.
+    let project = scope.0.project_filter();
+    store.set_user_roles(id, &body.role_ids, project).await?;
+    let roles = store.roles_for_user(id, project).await?;
     Ok(Json(UserView {
         user: target,
         roles,
@@ -230,17 +245,25 @@ pub async fn delete_role(
 pub struct GroupRoleView {
     pub group: String,
     pub role: String,
+    /// The project the mapping applies in; absent means platform-wide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
 }
 
 pub async fn list_group_roles(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<Json<Vec<GroupRoleView>>> {
     user.require("iam:read")?;
-    let rows = store.list_group_roles().await?;
+    let rows = store.list_group_roles(scope.0.project_filter()).await?;
     Ok(Json(
         rows.into_iter()
-            .map(|(group, role)| GroupRoleView { group, role })
+            .map(|(group, role, project_id)| GroupRoleView {
+                group,
+                role,
+                project_id,
+            })
             .collect(),
     ))
 }
@@ -254,22 +277,29 @@ pub struct AddGroupRole {
 pub async fn add_group_role(
     State(store): State<Store>,
     _: RequireIamManage,
+    scope: crate::authz::RequestScope,
     Json(body): Json<AddGroupRole>,
 ) -> ApiResult<axum::http::StatusCode> {
     if body.group.is_empty() {
         return Err(ApiError::invalid("group is required"));
     }
-    store.add_group_role(&body.group, body.role_id).await?;
+    store
+        .add_group_role(&body.group, body.role_id, scope.0.project_filter())
+        .await?;
     Ok(axum::http::StatusCode::CREATED)
 }
 
 pub async fn remove_group_role(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path((group, role_id)): Path<(String, Uuid)>,
 ) -> ApiResult<axum::http::StatusCode> {
     user.require("iam:manage")?;
-    if store.remove_group_role(&group, role_id).await? {
+    if store
+        .remove_group_role(&group, role_id, scope.0.project_filter())
+        .await?
+    {
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::invalid("mapping not found"))
