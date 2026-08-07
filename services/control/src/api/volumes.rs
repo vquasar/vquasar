@@ -45,10 +45,15 @@ fn view(store: &Store, v: Volume) -> VolumeView {
     VolumeView { volume: v, path }
 }
 
-pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<VolumeView>>> {
+pub async fn list(
+    State(store): State<Store>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+) -> ApiResult<Json<Vec<VolumeView>>> {
     user.require("volume:read")?;
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
     Ok(Json(
-        store
+        scoped
             .list_volumes()
             .await?
             .into_iter()

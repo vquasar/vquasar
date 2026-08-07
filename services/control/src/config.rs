@@ -31,6 +31,23 @@ pub struct ControlConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub network: NetworkPolicy,
+    #[serde(default)]
+    pub tenancy: TenancyConfig,
+}
+
+/// Multi-tenancy (design §47, ADR-018).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TenancyConfig {
+    /// Whether requests are scoped to a project.
+    ///
+    /// **Off by default.** Disabled, every caller runs at platform scope and
+    /// sees everything, which is exactly what a single-tenant deployment does
+    /// today — the schema carries `project_id` either way, but nothing filters
+    /// on it. Enabling it is the behavioural change, and it is an operator's
+    /// decision because it can hide resources from a caller who could see them
+    /// yesterday.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// Platform policy over network segments (design §18, ADR-016).

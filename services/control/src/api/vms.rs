@@ -145,12 +145,16 @@ pub struct CreateVmFromVolume {
 pub async fn create_from_volume(
     State(store): State<Store>,
     _: RequireVmCreate,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateVmFromVolume>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
-    let vol = store
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    // The volume must be ours: booting from another project's root disk would
+    // be a data leak dressed as a VM create (design §47).
+    let vol = scoped
         .get_volume(body.volume_id)
         .await?
         .ok_or_else(|| ApiError::invalid(format!("volume not found: {}", body.volume_id)))?;
@@ -161,6 +165,11 @@ pub async fn create_from_volume(
     };
     if vol.attached_vm_id.is_some() {
         return Err(ApiError::invalid("volume is already attached"));
+    }
+    // The volume was in scope; its source image must be too, or a boot recipe
+    // could be pulled from another project's catalogue entry.
+    if !scoped.image_visible(image_id).await? {
+        return Err(ApiError::not_found("image"));
     }
     let image = store
         .get_image(image_id)
@@ -211,7 +220,17 @@ pub async fn create_from_volume(
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
 
-    let vm = store.insert_vm_with_id(vm_id, &body.name, &spec).await?;
+    let vm = store
+        .insert_vm_with_id(
+            vm_id,
+            &body.name,
+            &spec,
+            scope
+                .0
+                .project_filter()
+                .unwrap_or(vquasar_model::DEFAULT_PROJECT_ID),
+        )
+        .await?;
     if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {
         let _ = store.delete_vm_row(vm.id).await;
         return Err(e);
@@ -423,6 +442,7 @@ pub struct Accepted {
 pub async fn create(
     State(store): State<Store>,
     _: RequireVmCreate,
+    scope: crate::authz::RequestScope,
     Json(mut body): Json<CreateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     // Pick the id up front so a blank/provisioned disk left without a path can
@@ -442,13 +462,39 @@ pub async fn create(
     body.spec
         .validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
+    // Reference smuggling is the leak that matters, not the list endpoints: a
+    // create body naming another project's network or security group would
+    // attach this VM to it, and no amount of scoping on reads would catch that
+    // (design §47).
+    {
+        let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+        for nic in &body.spec.network_interfaces {
+            if !scoped.network_visible(nic.network_id.as_uuid()).await? {
+                return Err(ApiError::not_found("network"));
+            }
+            if !scoped
+                .security_groups_in_scope(&nic.security_groups)
+                .await?
+            {
+                return Err(ApiError::not_found("security group"));
+            }
+        }
+    }
     // The agent opens these paths with privilege and trusts us to have vetted
     // them (design §30) — confine them before they reach desired state.
     crate::api::pathsafe::ensure_spec_within(&body.spec, store.allowed_paths())?;
 
     // Persist desired state first (section 7), then let reconciliation act.
     let vm = store
-        .insert_vm_with_id(vm_id, &body.name, &body.spec)
+        .insert_vm_with_id(
+            vm_id,
+            &body.name,
+            &body.spec,
+            scope
+                .0
+                .project_filter()
+                .unwrap_or(vquasar_model::DEFAULT_PROJECT_ID),
+        )
         .await?;
     // Allocate static IPs for NICs on managed networks (M13a); roll back the VM
     // row if allocation fails so we never leave a half-provisioned VM.
@@ -507,10 +553,15 @@ pub struct CreateVmFromTemplate {
 pub async fn create_from_template(
     State(store): State<Store>,
     _: RequireVmCreate,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateVmFromTemplate>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     if body.name.is_empty() {
         return Err(ApiError::invalid("name is required"));
+    }
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    if !scoped.template_in_scope(body.template_id).await? {
+        return Err(ApiError::not_found("template"));
     }
     let template = store
         .get_template(body.template_id)
@@ -540,7 +591,17 @@ pub async fn create_from_template(
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
 
-    let vm = store.insert_vm_with_id(vm_id, &body.name, &spec).await?;
+    let vm = store
+        .insert_vm_with_id(
+            vm_id,
+            &body.name,
+            &spec,
+            scope
+                .0
+                .project_filter()
+                .unwrap_or(vquasar_model::DEFAULT_PROJECT_ID),
+        )
+        .await?;
     if let Err(e) = allocate_nic_ips(&store, vm.id, &vm.spec).await {
         let _ = store.delete_vm_row(vm.id).await;
         return Err(e);
@@ -772,8 +833,13 @@ pub async fn update(
     ))
 }
 
-pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Vm>>> {
+pub async fn list(
+    State(store): State<Store>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+) -> ApiResult<Json<Vec<Vm>>> {
     user.require("vm:read")?;
+    let store = crate::scoped::ScopedStore::new(store, scope.0);
     // Secrets are unsealed at the store boundary for the agent's benefit, not
     // the caller's (design M12c) — redact before serializing.
     Ok(Json(crate::api::redact::vms(store.list_vms().await?)))
@@ -782,9 +848,11 @@ pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vm>> {
     user.require("vm:read")?;
+    let store = crate::scoped::ScopedStore::new(store, scope.0);
     store
         .get_vm(id)
         .await?
@@ -796,10 +864,13 @@ pub async fn get(
 pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     user.require("vm:delete")?;
-    let vm = store
+    // Resolve within scope: a VM in another project answers the same way an
+    // unknown id does, so the response is not an existence oracle.
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_vm(id)
         .await?
         .ok_or_else(|| ApiError::vm_not_found(id))?;

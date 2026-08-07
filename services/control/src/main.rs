@@ -19,6 +19,7 @@ mod overlay;
 mod rbac;
 mod reconcile;
 mod scheduler;
+mod scoped;
 mod segments;
 mod store;
 
@@ -139,11 +140,18 @@ async fn main() -> anyhow::Result<()> {
         crate::authz::AuthState {
             authenticator: Some(std::sync::Arc::new(authn)),
             bootstrap_admin: config.auth.bootstrap_admin.clone(),
+            tenancy_enabled: config.tenancy.enabled,
         }
     } else {
         info!("authentication DISABLED (dev mode) — set [auth] issuer to enforce");
-        crate::authz::AuthState::disabled()
+        crate::authz::AuthState {
+            tenancy_enabled: config.tenancy.enabled,
+            ..crate::authz::AuthState::disabled()
+        }
     };
+    if config.tenancy.enabled {
+        info!("tenancy enabled — requests are scoped to a project");
+    }
 
     // Reconcile loop (host polling + VM reconciliation).
     let interval = Duration::from_secs(config.reconcile.interval_secs);

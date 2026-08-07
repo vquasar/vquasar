@@ -24,7 +24,18 @@ use crate::store::{Store, User};
 pub struct AuthState {
     pub authenticator: Option<Arc<Authenticator>>,
     pub bootstrap_admin: Option<String>,
+    /// Whether requests are scoped to a project (design §47).
+    pub tenancy_enabled: bool,
 }
+
+/// The header naming the project a request acts in.
+///
+/// A header rather than a path prefix: prefixing would double every route and
+/// break every existing client and UI route, and it makes a platform admin's
+/// cross-project view an awkward special case. A `?project=` query parameter is
+/// accepted too, because a WebSocket handshake cannot set headers — the same
+/// constraint that already forced `?access_token=` on the console.
+pub const PROJECT_HEADER: &str = "x-vquasar-project";
 
 impl AuthState {
     /// Auth disabled (dev): no authenticator configured.
@@ -32,6 +43,7 @@ impl AuthState {
         Self {
             authenticator: None,
             bootstrap_admin: None,
+            tenancy_enabled: false,
         }
     }
 }
@@ -92,6 +104,64 @@ perm_guard!(RequireHostManage => "host:manage");
 perm_guard!(RequireIamManage => "iam:manage");
 perm_guard!(RequireVolumeCreate => "volume:create");
 perm_guard!(RequireVolumeUpdate => "volume:update");
+
+/// The project a request acts in.
+///
+/// Resolution order: the `X-Vquasar-Project` header, then `?project=`, then the
+/// caller's default. Absent tenancy, everything is platform scope, which is
+/// what makes this a no-op for a single-tenant deployment.
+///
+/// A name is accepted as well as a UUID because operators type these.
+pub struct RequestScope(pub vquasar_model::Scope);
+
+#[axum::async_trait]
+impl FromRequestParts<Store> for RequestScope {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, store: &Store) -> Result<Self, ApiError> {
+        let auth = parts
+            .extensions
+            .get::<AuthState>()
+            .cloned()
+            .ok_or_else(|| ApiError::internal("auth state missing"))?;
+        if !auth.tenancy_enabled {
+            return Ok(RequestScope(vquasar_model::Scope::Platform));
+        }
+
+        let requested = parts
+            .headers
+            .get(PROJECT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| {
+                parts.uri.query().and_then(|q| {
+                    q.split('&').find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        (k == "project").then(|| v.to_string())
+                    })
+                })
+            });
+
+        let Some(requested) = requested else {
+            // No context: the default project, never "everything". Absence of a
+            // selection must not widen what a caller can see.
+            return Ok(RequestScope(vquasar_model::Scope::Project(
+                vquasar_model::DEFAULT_PROJECT_ID,
+            )));
+        };
+
+        let project = match uuid::Uuid::parse_str(&requested) {
+            Ok(id) => store.get_project(id).await?,
+            Err(_) => store
+                .list_projects()
+                .await?
+                .into_iter()
+                .find(|p| p.name == requested),
+        };
+        let project = project.ok_or_else(|| ApiError::not_found("project"))?;
+        Ok(RequestScope(vquasar_model::Scope::Project(project.id)))
+    }
+}
 
 fn bearer(parts: &Parts) -> Option<String> {
     let h = parts.headers.get(axum::http::header::AUTHORIZATION)?;

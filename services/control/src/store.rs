@@ -420,6 +420,16 @@ impl Store {
         &self.network_policy
     }
 
+    /// Unseal a VM for a caller (design M12c). Exposed to the scoped layer so
+    /// it runs the same query-then-open path as the unscoped one.
+    pub(crate) fn open_vms_public(&self, vms: Vec<Vm>) -> Result<Vec<Vm>> {
+        self.open_vms(vms)
+    }
+
+    pub(crate) fn open_vm_opt_public(&self, vm: Option<Vm>) -> Result<Option<Vm>> {
+        self.open_vm_opt(vm)
+    }
+
     /// The connection pool, for helpers that own their own SQL (segments).
     pub fn pool(&self) -> &PgPool {
         &self.pool
@@ -743,11 +753,15 @@ impl Store {
 
     /// Insert a VM with a caller-chosen id. Used when the spec must reference the
     /// id before persistence (e.g. a provisioned volume path — design M9).
+    /// Insert a VM into `project` (design §47). Callers pass the request's
+    /// scope; platform scope means the default project, because a resource must
+    /// belong to exactly one and "everything" is not a home.
     pub async fn insert_vm_with_id(
         &self,
         id: Uuid,
         name: &str,
         spec: &VirtualMachineSpec,
+        project: Uuid,
     ) -> Result<Vm> {
         let now = Utc::now();
         let sealed = self.seal_spec(spec)?;
@@ -756,8 +770,9 @@ impl Store {
             // that exists but has no token yet would have an unauthenticated
             // window on first boot, which is exactly the window that matters
             // (design M13e).
-            "INSERT INTO virtual_machines (id, name, spec, phone_home_token, created_at, updated_at)
-             VALUES ($1, $2, $3, $5, $4, $4)
+            "INSERT INTO virtual_machines
+                (id, name, spec, phone_home_token, project_id, created_at, updated_at)
+             VALUES ($1, $2, $3, $5, $6, $4, $4)
              RETURNING *",
         )
         .bind(id)
@@ -765,6 +780,7 @@ impl Store {
         .bind(Json(&sealed))
         .bind(now)
         .bind(crate::crypto::random_token())
+        .bind(project)
         .fetch_one(&self.pool)
         .await?;
         // Return plaintext to the caller (the row is sealed at rest).
@@ -1418,12 +1434,6 @@ impl Store {
     }
 
     // ---- volumes (design M14a) -------------------------------------------
-
-    pub async fn list_volumes(&self) -> Result<Vec<Volume>> {
-        sqlx::query_as::<_, Volume>("SELECT * FROM volumes ORDER BY created_at")
-            .fetch_all(&self.pool)
-            .await
-    }
 
     pub async fn get_volume(&self, id: Uuid) -> Result<Option<Volume>> {
         sqlx::query_as::<_, Volume>("SELECT * FROM volumes WHERE id=$1")

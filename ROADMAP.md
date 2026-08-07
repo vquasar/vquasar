@@ -410,11 +410,25 @@ needs a control-plane change first, and the UI change after it is small.
     CRUD is permission-gated (`project:*`), `operator` can read but not shape
     tenancy, and deletion is refused while a project owns anything, naming what
     is in the way. Verified against a clone of the live database. ADR-018.
-  - **M19b — scoping.** Move tenant-scoped queries onto a scope-carrying store
-    handle so a handler that forgets scoping does not compile, and fix the
-    cross-project reference sites (a create body naming another project's
-    network, template, image or security group — the real leak surface, not the
-    list endpoints).
+  - **M19b — scoping.** ✅ **First pass done.** A `ScopedStore` carries the
+    caller's scope and owns the tenant-scoped queries, so they cannot be called
+    without one; every query uses the same predicate shape with a single bind,
+    and platform scope is a bound NULL rather than a different statement. The
+    same predicate goes in `WHERE` for writes, so a cross-project write matches
+    zero rows and answers *not found* — no separate authorization step, no
+    existence oracle. Request scope comes from `X-Vquasar-Project` (or
+    `?project=`, since a WebSocket handshake cannot set headers), defaulting to
+    the caller's default project — never to "everything". Gated on
+    `[tenancy] enabled`, off by default: disabled, every caller is platform
+    scope and behaviour is exactly as before.
+    Covered so far: VM list/get/delete/create (including from-volume and
+    from-template), volume list, and the **reference-smuggling** sites — a
+    create body naming another project's network, security group, template,
+    volume or image is refused. That was the real leak surface; list endpoints
+    were never the interesting part.
+    **Remaining:** templates, images, networks and security-group handlers still
+    read unscoped, and `PATCH /vms/:id`, the console and metrics endpoints
+    resolve ids without a scope check.
   - **M19c — per-project RBAC.** `project_id` on the role bindings, where NULL
     keeps today's meaning of a platform-wide grant, so the OIDC group mapping is
     unchanged.
