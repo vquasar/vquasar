@@ -82,7 +82,15 @@ Split into three shippable slices.
   over existing rows (idempotent, no generation bump). Key material lives in the
   0600 systemd env file. Follow-ups: KMS-backed KEK/DEK envelope + key
   auto-rotation; DB host-disk encryption (ops).
-- **M12d — TLS to PostgreSQL.** ✅ **Done.** The driver's default (`prefer`)
+- **M12d — TLS to PostgreSQL.** ✅ **Done, and encrypted by default.**
+  `ssl_mode` now defaults to `require` rather than the driver's `prefer`: the
+  connection carries every secret the platform holds, so plaintext has to be
+  asked for explicitly. **Breaking on upgrade** — a control plane pointed at a
+  PostgreSQL without TLS refuses to start until the server has TLS or
+  `ssl_mode = "disable"` is set deliberately. The lab now runs `verify-full`
+  against a certificate issued for it, and its `pg_hba.conf` uses `hostssl`, so
+  the server refuses unencrypted TCP outright.
+  The driver's `prefer` default
   silently falls back to plaintext, so `[database]` gained `ssl_mode` / `ca` /
   `cert` / `key` (env + `install.sh --db-ssl-mode/--db-ca/--db-cert/--db-key`).
   Set `verify-full` and an unencrypted or unverified connection becomes a
