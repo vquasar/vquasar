@@ -37,6 +37,13 @@ pub const CATALOG: &[&str] = &[
     "template:delete",
     "iam:read",
     "iam:manage",
+    // Tenancy boundaries are platform objects: creating or deleting one is not
+    // a workload operation, and `operator` deliberately holds none of these
+    // beyond reading (design §47, ADR-018).
+    "project:read",
+    "project:create",
+    "project:update",
+    "project:delete",
 ];
 
 /// Whether `perm` is part of the catalog (rejects typos in custom roles).
@@ -65,7 +72,11 @@ pub fn builtin_roles() -> Vec<BuiltinRole> {
         .iter()
         .copied()
         .filter(|p| {
-            !p.starts_with("iam:") && *p != "host:manage" && *p != "network:create:provider"
+            !p.starts_with("iam:")
+                && *p != "host:manage"
+                && *p != "network:create:provider"
+                // Reading the project list is fine; shaping tenancy is not.
+                && !matches!(*p, "project:create" | "project:update" | "project:delete")
         })
         .collect();
 
@@ -133,6 +144,10 @@ mod tests {
         assert!(!operator.permissions.contains(&"host:manage"));
         // Physical attachment is platform-only (ADR-016).
         assert!(!operator.permissions.contains(&"network:create:provider"));
+        // Tenancy boundaries are platform-shaped, not workload-shaped.
+        assert!(!operator.permissions.contains(&"project:create"));
+        assert!(!operator.permissions.contains(&"project:delete"));
+        assert!(operator.permissions.contains(&"project:read"));
         assert!(operator.permissions.contains(&"network:create"));
         let admin = roles.iter().find(|r| r.name == "admin").unwrap();
         assert!(admin.permissions.contains(&"network:create:provider"));

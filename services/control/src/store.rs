@@ -58,6 +58,53 @@ pub struct Vm {
     pub generation: i64,
 }
 
+/// A project row (design §47, ADR-018).
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct Project {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// What a project still owns, for the refusal message when deleting it.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ProjectContents {
+    pub vms: i64,
+    pub volumes: i64,
+    pub templates: i64,
+    pub security_groups: i64,
+    pub networks: i64,
+}
+
+impl ProjectContents {
+    pub fn is_empty(&self) -> bool {
+        self.vms == 0
+            && self.volumes == 0
+            && self.templates == 0
+            && self.security_groups == 0
+            && self.networks == 0
+    }
+
+    /// A human-readable summary, so the caller learns *what* is in the way.
+    pub fn summary(&self) -> String {
+        [
+            (self.vms, "VM"),
+            (self.volumes, "volume"),
+            (self.templates, "template"),
+            (self.security_groups, "security group"),
+            (self.networks, "network"),
+        ]
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}{}", if *n == 1 { "" } else { "s" }))
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+}
+
 /// A virtual network row.
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
 pub struct Network {
@@ -920,6 +967,90 @@ impl Store {
         .bind(segment_key)
         .fetch_one(&self.pool)
         .await
+    }
+
+    // ---- projects (design §47, ADR-018) ----------------------------------
+
+    pub async fn list_projects(&self) -> Result<Vec<Project>> {
+        sqlx::query_as::<_, Project>("SELECT * FROM projects ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_project(&self, id: Uuid) -> Result<Option<Project>> {
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn insert_project(&self, name: &str, description: Option<&str>) -> Result<Project> {
+        let now = Utc::now();
+        sqlx::query_as::<_, Project>(
+            "INSERT INTO projects (id, name, description, is_default, created_at, updated_at)
+             VALUES ($1,$2,$3,false,$4,$4) RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(name)
+        .bind(description)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn update_project(
+        &self,
+        id: Uuid,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<Option<Project>> {
+        sqlx::query_as::<_, Project>(
+            "UPDATE projects SET name=$2, description=$3, updated_at=$4
+              WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(description)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn delete_project(&self, id: Uuid) -> Result<bool> {
+        Ok(
+            sqlx::query("DELETE FROM projects WHERE id=$1 AND NOT is_default")
+                .bind(id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
+    }
+
+    /// What a project still owns.
+    ///
+    /// Deletion is refused while anything remains rather than cascading:
+    /// deleting a project's VMs is a long, agent-touching, restartable
+    /// operation, and a DELETE that quietly starts one would be the wrong shape
+    /// entirely (design §7).
+    pub async fn project_contents(&self, id: Uuid) -> Result<ProjectContents> {
+        let row: (i64, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM virtual_machines WHERE project_id=$1),
+                    (SELECT count(*) FROM volumes          WHERE project_id=$1),
+                    (SELECT count(*) FROM templates        WHERE project_id=$1),
+                    (SELECT count(*) FROM security_groups  WHERE project_id=$1),
+                    (SELECT count(*) FROM networks         WHERE project_id=$1)",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ProjectContents {
+            vms: row.0,
+            volumes: row.1,
+            templates: row.2,
+            security_groups: row.3,
+            networks: row.4,
+        })
     }
 
     /// The phone_home secret for a VM, generated at creation (design M13e).

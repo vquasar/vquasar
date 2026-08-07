@@ -74,6 +74,9 @@ pub enum ErrorCode {
     InsufficientResources,
     HostUnavailable,
     VmNotFound,
+    /// A resource that does not exist, or that the caller may not see. The two
+    /// are deliberately indistinguishable once projects scope things.
+    NotFound,
     VmAlreadyRunning,
     NetworkUnavailable,
     StorageUnavailable,
@@ -92,6 +95,7 @@ impl ErrorCode {
             ErrorCode::InsufficientResources => "INSUFFICIENT_RESOURCES",
             ErrorCode::HostUnavailable => "HOST_UNAVAILABLE",
             ErrorCode::VmNotFound => "VM_NOT_FOUND",
+            ErrorCode::NotFound => "NOT_FOUND",
             ErrorCode::VmAlreadyRunning => "VM_ALREADY_RUNNING",
             ErrorCode::NetworkUnavailable => "NETWORK_UNAVAILABLE",
             ErrorCode::StorageUnavailable => "STORAGE_UNAVAILABLE",

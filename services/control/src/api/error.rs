@@ -79,6 +79,19 @@ impl ApiError {
         }
     }
 
+    /// A resource that does not exist, or that the caller may not see.
+    ///
+    /// Deliberately says only what kind of thing was not found: distinguishing
+    /// "no such id" from "not yours" is an existence oracle once projects
+    /// scope things, and the difference is not useful to a legitimate caller.
+    pub fn not_found(kind: &str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: ErrorCode::NotFound,
+            message: format!("{kind} not found"),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
