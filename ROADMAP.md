@@ -449,13 +449,39 @@ needs a control-plane change first, and the UI change after it is small.
     Where a refusal carries information — "this is a network's default policy
     group" — the scope check runs first, so a caller who cannot see the group
     does not learn what kind it is.
-    **The gate stays off.** `X-Vquasar-Project` is still taken at face value:
-    any caller holding a global permission can name any project and act in it.
-    Until M19c binds roles to projects, tenancy separates namespaces, not
-    people, and turning it on would look like protection it does not provide.
-  - **M19c — per-project RBAC.** `project_id` on the role bindings, where NULL
-    keeps today's meaning of a platform-wide grant, so the OIDC group mapping is
-    unchanged.
+    Scoping data was only half of it — authority had to be scoped too. See
+    M19c.
+  - **M19c — per-project RBAC.** ✅ **Done.** `project_id` on both kinds of role
+    binding — a user's direct grant and an OIDC group mapping — where NULL keeps
+    today's meaning of a platform-wide grant. Every existing binding, the
+    first-admin bootstrap and the group mapping are unchanged by the migration.
+    A caller's permissions are resolved **in the project the request names**:
+    platform-wide bindings plus bindings in that project. A caller with no
+    binding there resolves to the empty set and fails every guard — the whole
+    enforcement, with no separate membership check that a new endpoint could
+    forget to call.
+    Scope is resolved once per request and memoised, because the extractor that
+    picks rows and the one that decides permissions must agree; a request
+    authorized in one project and reading another is the failure the mechanism
+    exists to prevent.
+    `X-Vquasar-Project: *` is the platform view, and is not a privilege:
+    permissions resolve against it too, so a caller holding only project
+    bindings gets nothing there. It exists so a platform admin has a
+    cross-project view and so a platform-wide binding has a scope it can be
+    created from. A binding is created in the scope the caller is acting in,
+    which is what stops a project admin minting a platform-wide grant.
+    `GET /projects` returns only the projects the caller is bound to — which
+    projects exist is itself tenancy information. `GET /me` reports the project
+    its permission list is about, so the UI hides exactly what the API refuses.
+    Verified by the OIDC matrix (`scripts/verify-oidc.sh`), which now runs with
+    tenancy on in CI: a binding made in one project works there and returns 403
+    in every other project and in the platform view, and a project-scoped caller
+    is refused when writing a platform binding. That is the only place this can
+    be tested — the e2e harness runs with auth disabled, where every caller is a
+    superuser. ADR-020.
+    **Remaining before the gate can be turned on by default:** quotas (M19d), so
+    one project cannot exhaust the fleet, and the UI needs a project selector —
+    it sends no header today, so it acts in the default project.
   - **M19d — quotas.** Admission-time, against committed intent, usage derived
     rather than stored. ADR-019.
   - **M19e — scoped task and event streams.** Currently global and carrying

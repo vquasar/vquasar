@@ -520,6 +520,8 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-017** Every guest port carries an explicit dataplane policy.
 * **ADR-018** The project is the unit of tenancy, enforced in the control plane.
 * **ADR-019** Quotas are admission control on committed intent.
+* **ADR-020** A role binding names the project it applies in; the request's
+  project is resolved, never believed.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -583,9 +585,10 @@ the API, and unable to express "this network stays open while that one closes".
 
 ### ADR-018 — The project is the unit of tenancy
 
-*Status:* Accepted. Schema, objects and scoping (reads and writes) landed;
-per-project RBAC and quotas follow as separate steps. The feature stays gated
-off until RBAC lands — see *Consequences*.
+*Status:* Accepted. Schema, objects, scoping (reads and writes) and per-project
+RBAC (ADR-020) landed; quotas (ADR-019) follow. Still gated on
+`[tenancy] enabled`, off by default — an existing deployment keeps behaving
+exactly as it did until an operator opts in.
 
 *Context.* The platform is single-tenant: any authenticated caller holding a
 permission sees every resource. Introducing tenancy touches the ownership of
@@ -633,11 +636,61 @@ not belong behind a DELETE (§7). A hierarchy is left unbuilt but not foreclosed
 quota rollup are load-bearing decisions that cannot be guessed correctly in
 advance.
 
-Scoping alone is not isolation. The request's project comes from a header, and
-until role bindings carry a project (M19c) any caller holding a global
-permission can name any project and act in it. The feature is therefore gated
-off by default and stays that way until RBAC is per-project: partial isolation
-is worse than none, because it looks like protection.
+Scoping data is not on its own isolation — the request's project arrives in a
+header, and authority has to be scoped too. That is ADR-020, which completes the
+boundary and is what allows the feature to be switched on.
+
+### ADR-020 — A role binding names the project it applies in
+
+*Status:* Accepted.
+
+*Context.* ADR-018 made the project the unit of ownership and every query
+carries its predicate. That scopes *data*. It does not scope *authority*: the
+project a request acts in arrived in a header, and permissions were a single
+global set. A caller holding `vm:read` anywhere held it everywhere, so naming
+another project in the header was enough to read it. Scoping without this is
+worse than no tenancy at all, because the boundary is visible and does not hold.
+
+*Decision.* A role binding — a user's direct grant and an OIDC group mapping
+alike — carries a `project_id`. **NULL means platform-wide**, which is exactly
+what every binding meant before this existed, so the migration changes no
+behaviour and the first-admin bootstrap keeps working.
+
+A caller's permissions are then resolved **in the project the request names**:
+the union of their platform-wide bindings and their bindings in that project. A
+caller with no binding there resolves to the empty permission set and fails
+every guard. That is the entire enforcement mechanism — there is no separate
+membership check, because a membership check is a thing one can forget to call
+at a new endpoint, and an empty permission set is not.
+
+The scope is resolved once per request and memoised, because two extractors
+consume it: the one that picks rows and the one that decides permissions. A
+request authorized in one project while reading another is precisely the failure
+this exists to prevent, so they read one value rather than each parsing the
+request again.
+
+`X-Vquasar-Project: *` selects the platform view. It is **not** a privilege:
+permissions are resolved against it the same way, so a caller holding only
+project bindings resolves to nothing there. It exists because a platform admin
+needs a cross-project view, and because a platform-wide binding needs a scope it
+can be created from.
+
+A binding is created in the scope the request is acting in — the same scope the
+caller's own `iam:manage` was resolved in. This is what closes the escalation: a
+project administrator cannot mint a platform-wide grant, because doing so
+requires acting in platform scope, where their permissions are empty.
+
+*Consequences.* With tenancy enabled and no project named, a request acts in the
+default project — including an IAM write, which therefore creates a
+default-project binding rather than a platform-wide one. That is deliberate:
+where authorization is concerned the quiet default must be the narrower one.
+Platform-wide bindings remain possible and explicit, via `*`.
+
+Which projects exist is itself tenancy information, so `GET /projects` returns
+only those the caller holds a binding in; a platform-wide binding sees them all.
+
+Alone, this makes tenancy enforceable but does not bound consumption — a project
+can still exhaust the fleet. That is ADR-019.
 
 ### ADR-019 — Quotas are admission control on committed intent
 

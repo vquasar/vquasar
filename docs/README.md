@@ -17,6 +17,9 @@ Guides for running and developing vquasar. Start at the
 * [**Authentication and RBAC**](oidc-keycloak.md) — wiring an OIDC provider
   (Keycloak as the reference), mapping its groups to vquasar roles, the first-
   admin bootstrap, and how to verify the result.
+* [**Projects and multi-tenancy**](multi-tenancy.md) — what a project owns,
+  how a request picks one, why a role binding names the project it applies in,
+  and what is still missing before it bounds consumption as well as access.
 * [**Security hardening**](security-hardening.md) — three defects found in
   review (an agent certificate that was also a control credential, cloud-init
   secrets returned to any reader, unconfined host paths in a VM spec), what
@@ -40,7 +43,7 @@ Guides for running and developing vquasar. Start at the
   does: systemd install/uninstall, OVS setup, image prep, certificate
   generation, Keycloak realm setup, firmware build.
 * [`../DESIGN.md`](../DESIGN.md) — the architecture in full. Section 44 records
-  the load-bearing decisions as ADR-001 … ADR-015; code comments cite design
+  the load-bearing decisions as ADR-001 … ADR-020; code comments cite design
   sections by number.
 * [`../ROADMAP.md`](../ROADMAP.md) — what has landed, and what is queued.
 * [`../proto/agent.proto`](../proto/agent.proto) — the control ↔ agent gRPC

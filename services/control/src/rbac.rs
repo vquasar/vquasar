@@ -106,7 +106,7 @@ pub fn builtin_roles() -> Vec<BuiltinRole> {
         },
         BuiltinRole {
             name: "viewer",
-            description: "Read-only access, plus VM console.",
+            description: "Read-only access.",
             permissions: viewer,
         },
     ]

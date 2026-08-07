@@ -28,7 +28,19 @@ fn check_name(name: &str) -> ApiResult<()> {
 
 pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Project>>> {
     user.require("project:read")?;
-    Ok(Json(store.list_projects().await?))
+    let all = store.list_projects().await?;
+    // Which projects exist is itself tenancy information: a tenant must not
+    // learn the shape of the fleet from the picker. A caller with a
+    // platform-wide binding is not a tenant and sees them all (ADR-020).
+    let Some(caller) = user.user.as_ref() else {
+        return Ok(Json(all)); // dev superuser
+    };
+    let Some(mine) = store.projects_for_caller(caller.id, &user.groups).await? else {
+        return Ok(Json(all));
+    };
+    Ok(Json(
+        all.into_iter().filter(|p| mine.contains(&p.id)).collect(),
+    ))
 }
 
 pub async fn get(
@@ -37,6 +49,13 @@ pub async fn get(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Project>> {
     user.require("project:read")?;
+    if let Some(u) = user.user.as_ref() {
+        if let Some(mine) = store.projects_for_caller(u.id, &user.groups).await? {
+            if !mine.contains(&id) {
+                return Err(ApiError::not_found("project"));
+            }
+        }
+    }
     store
         .get_project(id)
         .await?
