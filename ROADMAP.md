@@ -426,9 +426,18 @@ needs a control-plane change first, and the UI change after it is small.
     create body naming another project's network, security group, template,
     volume or image is refused. That was the real leak surface; list endpoints
     were never the interesting part.
-    **Remaining:** templates, images, networks and security-group handlers still
-    read unscoped, and `PATCH /vms/:id`, the console and metrics endpoints
-    resolve ids without a scope check.
+    Every id-taking read now resolves in scope, including `PATCH /vms/:id`,
+    `PUT /vms/:id/nics/:index`, per-VM metrics and the console — the console
+    takes `?project=` for the same reason it takes `?access_token=`. The
+    reference sites are checked on both create *and* NIC retarget.
+    The structural guarantee is that the unscoped `list_*` methods for VMs,
+    volumes, networks, images, templates and security groups **no longer
+    exist**: they live on `ScopedStore`, which cannot be built without a
+    caller's scope. Clippy reporting them as dead was the signal that the last
+    call site had moved.
+    **Remaining:** write paths (create/update/delete for templates, images,
+    networks and security groups) still act unscoped, and rows they create are
+    not yet stamped with the caller's project.
   - **M19c — per-project RBAC.** `project_id` on the role bindings, where NULL
     keeps today's meaning of a platform-wide grant, so the OIDC group mapping is
     unchanged.

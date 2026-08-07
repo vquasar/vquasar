@@ -25,6 +25,10 @@ pub struct ConsoleAuth {
     /// param and is validated here (design M12b), gated on `vm:console`.
     #[serde(default)]
     access_token: Option<String>,
+    /// Project to act in. A WebSocket handshake cannot carry a header, which is
+    /// the same constraint that put the token here (design §47).
+    #[serde(default)]
+    project: Option<String>,
 }
 
 /// `GET /api/v1/vms/{id}/console` — upgrade to a WebSocket console session.
@@ -35,6 +39,7 @@ pub async fn console_ws(
     Query(q): Query<ConsoleAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let tenancy_enabled = auth.tenancy_enabled;
     // Authenticate + authorize before upgrading, unless auth is disabled (dev).
     if let Some(authenticator) = auth.authenticator {
         let Some(token) = q.access_token else {
@@ -71,7 +76,26 @@ pub async fn console_ws(
     // later. Checking here means an unknown VM is a plain 404 and no stream is
     // ever opened. When projects land, the ownership predicate goes here too —
     // the lookup is already in the right place for it.
-    if store.get_vm(id).await.ok().flatten().is_none() {
+    // Resolve in the caller's scope: another project's VM must answer exactly
+    // as an unknown id does.
+    let scope = if tenancy_enabled {
+        match &q.project {
+            Some(p) => match resolve_project(&store, p).await {
+                Some(id) => vquasar_model::Scope::Project(id),
+                None => return (StatusCode::NOT_FOUND, "project not found").into_response(),
+            },
+            None => vquasar_model::Scope::Project(vquasar_model::DEFAULT_PROJECT_ID),
+        }
+    } else {
+        vquasar_model::Scope::Platform
+    };
+    if crate::scoped::ScopedStore::new(store.clone(), scope)
+        .get_vm(id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
         return (StatusCode::NOT_FOUND, "virtual machine not found").into_response();
     }
 
@@ -85,6 +109,20 @@ pub async fn console_ws(
 /// no natural point at which authorization is rechecked, so the bound has to be
 /// wall-clock. Reconnecting is cheap; the UI does it transparently.
 const MAX_SESSION: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// A project by id or name, so operators can use either.
+async fn resolve_project(store: &Store, wanted: &str) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(wanted) {
+        return store.get_project(id).await.ok().flatten().map(|p| p.id);
+    }
+    store
+        .list_projects()
+        .await
+        .ok()?
+        .into_iter()
+        .find(|p| p.name == wanted)
+        .map(|p| p.id)
+}
 
 async fn handle(store: Store, id: Uuid, socket: WebSocket) {
     // Resolve the VM's host and agent endpoint.

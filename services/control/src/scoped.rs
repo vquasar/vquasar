@@ -28,7 +28,7 @@
 use uuid::Uuid;
 use vquasar_model::Scope;
 
-use crate::store::{Store, Vm, Volume};
+use crate::store::{Image, Network, SecurityGroup, Store, Template, Vm, Volume};
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
 
@@ -154,6 +154,88 @@ impl ScopedStore {
         .fetch_one(self.store.pool())
         .await?;
         Ok(found as usize == ids.len())
+    }
+
+    // ---- catalogues, read through the same predicate ----------------------
+
+    pub async fn list_templates(&self) -> Result<Vec<Template>> {
+        sqlx::query_as::<_, Template>(
+            "SELECT * FROM templates
+              WHERE ($1::uuid IS NULL OR project_id = $1)
+              ORDER BY name",
+        )
+        .bind(self.filter())
+        .fetch_all(self.store.pool())
+        .await
+    }
+
+    pub async fn get_template(&self, id: Uuid) -> Result<Option<Template>> {
+        sqlx::query_as::<_, Template>(
+            "SELECT * FROM templates
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+        )
+        .bind(id)
+        .bind(self.filter())
+        .fetch_optional(self.store.pool())
+        .await
+    }
+
+    pub async fn list_security_groups(&self) -> Result<Vec<SecurityGroup>> {
+        sqlx::query_as::<_, SecurityGroup>(
+            "SELECT * FROM security_groups
+              WHERE ($1::uuid IS NULL OR project_id = $1)
+              ORDER BY name",
+        )
+        .bind(self.filter())
+        .fetch_all(self.store.pool())
+        .await
+    }
+
+    pub async fn get_security_group(&self, id: Uuid) -> Result<Option<SecurityGroup>> {
+        sqlx::query_as::<_, SecurityGroup>(
+            "SELECT * FROM security_groups
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+        )
+        .bind(id)
+        .bind(self.filter())
+        .fetch_optional(self.store.pool())
+        .await
+    }
+
+    // Shareable: NULL project means platform-shared and visible everywhere.
+
+    pub async fn list_networks(&self) -> Result<Vec<Network>> {
+        sqlx::query_as::<_, Network>(
+            "SELECT * FROM networks
+              WHERE (project_id IS NULL OR $1::uuid IS NULL OR project_id = $1)
+              ORDER BY name",
+        )
+        .bind(self.filter())
+        .fetch_all(self.store.pool())
+        .await
+    }
+
+    pub async fn get_network(&self, id: Uuid) -> Result<Option<Network>> {
+        sqlx::query_as::<_, Network>(
+            "SELECT * FROM networks
+              WHERE id = $1
+                AND (project_id IS NULL OR $2::uuid IS NULL OR project_id = $2)",
+        )
+        .bind(id)
+        .bind(self.filter())
+        .fetch_optional(self.store.pool())
+        .await
+    }
+
+    pub async fn list_images(&self) -> Result<Vec<Image>> {
+        sqlx::query_as::<_, Image>(
+            "SELECT * FROM images
+              WHERE (project_id IS NULL OR $1::uuid IS NULL OR project_id = $1)
+              ORDER BY name",
+        )
+        .bind(self.filter())
+        .fetch_all(self.store.pool())
+        .await
     }
 
     /// Whether a template is in this scope.
