@@ -202,6 +202,24 @@ fn images_dir(store: &Store) -> std::path::PathBuf {
 /// Import an image by downloading it from a URL (design M14b). Returns the
 /// record immediately in `importing` state; the download runs in the background
 /// and flips the image to `ready` (or `failed`).
+/// Cap on a caller-supplied default size for an imported image. The download
+/// itself is bounded by what the remote actually serves; this stops the
+/// *provisioning* side from being asked for something absurd later.
+fn check_default_size(size: Option<i64>) -> ApiResult<()> {
+    if let Some(size) = size {
+        if size < 0 {
+            return Err(ApiError::invalid("default_size_bytes must not be negative"));
+        }
+        if size as u64 > vquasar_model::validation::MAX_DISK_BYTES {
+            return Err(ApiError::invalid(format!(
+                "default_size_bytes {size} exceeds the limit of {} bytes",
+                vquasar_model::validation::MAX_DISK_BYTES
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub async fn import(
     State(store): State<Store>,
     _: RequireImageCreate,
@@ -216,6 +234,7 @@ pub async fn import(
     if !(body.url.starts_with("http://") || body.url.starts_with("https://")) {
         return Err(ApiError::invalid("url must be http(s)"));
     }
+    check_default_size(body.default_size_bytes)?;
 
     let id = Uuid::new_v4();
     let ext = if body.format == "raw" { "raw" } else { "qcow2" };

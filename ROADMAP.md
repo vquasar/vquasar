@@ -211,6 +211,18 @@ Split into three shippable slices.
   (the network's default policy group admits any address on any port, which
   every NIC on it inherits — ADR-017).
 
+- **Resource upper bounds.** ✅ **Done.** Spec validation enforced only
+  minimums, so one request could ask for 4096 vCPUs or 64 TiB of memory. A VM
+  like that never schedules — but it is admitted into desired state and the
+  reconcile loop retries it forever. Worse, `POST /volumes` and
+  `POST /images/import` act on shared storage *before* anything is persisted, so
+  an absurd size is real work and real disk. There are now ceilings on vCPUs,
+  memory (including the hot-plug maximum, which is what CH reserves address
+  space for), disk and NIC counts, and per-disk size, plus the same limit on
+  volume creation and image import. Deliberately generous — they exist to stop
+  absurd requests, not to express policy; per-tenant quotas are the mechanism
+  for policy and are part of the tenancy milestone.
+
 ### Networking
 - **M13a — IPAM: control-plane-managed / static IP assignment.** ✅ **Done.**
   Networks carry optional IPv4 and/or IPv6 subnets (cidr + gateway + dns + pool);
