@@ -39,6 +39,7 @@ fn default_true() -> bool {
 pub async fn create(
     State(store): State<Store>,
     _: RequireImageCreate,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateImage>,
 ) -> ApiResult<(StatusCode, Json<Image>)> {
     if body.name.is_empty() || body.source_path.is_empty() {
@@ -62,6 +63,7 @@ pub async fn create(
             body.default_size_bytes,
             body.cloud_init,
             body.os.as_deref(),
+            crate::scoped::ScopedStore::new(store.clone(), scope.0).shareable_owner(),
         )
         .await?;
     Ok((StatusCode::CREATED, Json(image)))
@@ -70,6 +72,7 @@ pub async fn create(
 pub async fn update(
     State(store): State<Store>,
     _: RequireImageUpdate,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateImage>,
 ) -> ApiResult<Json<Image>> {
@@ -84,6 +87,12 @@ pub async fn update(
         store.allowed_paths(),
         "source_path",
     )?;
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .image_writable(id)
+        .await?
+    {
+        return Err(ApiError::not_found("image"));
+    }
     store
         .update_image(
             id,
@@ -155,24 +164,35 @@ pub async fn list_isos(
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Image>> {
     user.require("image:read")?;
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .image_visible(id)
+        .await?
+    {
+        return Err(ApiError::not_found("image"));
+    }
     store
         .get_image(id)
         .await?
         .map(Json)
-        .ok_or_else(|| ApiError::invalid(format!("image not found: {id}")))
+        .ok_or_else(|| ApiError::not_found("image"))
 }
 
 pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("image:delete")?;
     let image = store.get_image(id).await?;
-    if store.delete_image(id).await? {
+    if crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .delete_image(id)
+        .await?
+    {
         // Remove the backing file only for images the platform created (M14b);
         // a registered-by-path image's file belongs to the operator.
         if let Some(img) = image {
@@ -182,7 +202,7 @@ pub async fn delete(
         }
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::invalid(format!("image not found: {id}")))
+        Err(ApiError::not_found("image"))
     }
 }
 
@@ -231,6 +251,7 @@ fn check_default_size(size: Option<i64>) -> ApiResult<()> {
 pub async fn import(
     State(store): State<Store>,
     _: RequireImageCreate,
+    scope: crate::authz::RequestScope,
     Json(body): Json<ImportImage>,
 ) -> ApiResult<(StatusCode, Json<Image>)> {
     if body.name.trim().is_empty() || body.url.trim().is_empty() {
@@ -260,6 +281,7 @@ pub async fn import(
             body.default_size_bytes,
             body.cloud_init,
             body.os.as_deref(),
+            crate::scoped::ScopedStore::new(store.clone(), scope.0).shareable_owner(),
         )
         .await?;
 
@@ -295,6 +317,7 @@ fn default_firmware() -> String {
 pub async fn upload(
     State(store): State<Store>,
     _: RequireImageCreate,
+    scope: crate::authz::RequestScope,
     axum::extract::Query(p): axum::extract::Query<UploadParams>,
     body: axum::body::Body,
 ) -> ApiResult<(StatusCode, Json<Image>)> {
@@ -327,6 +350,7 @@ pub async fn upload(
             p.default_size_bytes,
             p.cloud_init,
             p.os.as_deref(),
+            crate::scoped::ScopedStore::new(store.clone(), scope.0).shareable_owner(),
         )
         .await?;
 

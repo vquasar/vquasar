@@ -493,6 +493,31 @@ impl Harness {
     }
 
     #[allow(dead_code)]
+    /// DELETE within a project's scope.
+    async fn delete_in(&self, project: &str, path: &str) -> u16 {
+        self.client
+            .delete(format!("{}/api/v1{path}", self.base))
+            .header("X-Vquasar-Project", project)
+            .send()
+            .await
+            .expect("delete")
+            .status()
+            .as_u16()
+    }
+
+    /// PATCH within a project's scope.
+    async fn patch_in(&self, project: &str, path: &str, body: Value) -> u16 {
+        self.client
+            .patch(format!("{}/api/v1{path}", self.base))
+            .header("X-Vquasar-Project", project)
+            .json(&body)
+            .send()
+            .await
+            .expect("patch")
+            .status()
+            .as_u16()
+    }
+
     async fn patch(&self, path: &str, body: Value) -> reqwest::StatusCode {
         self.client
             .patch(format!("{}/api/v1{path}", self.base))
@@ -1265,10 +1290,14 @@ async fn tenancy_scopes_reads_and_refuses_foreign_references() {
         .await;
     assert!(st.is_success(), "{net}");
     let net = net["id"].as_str().unwrap().to_string();
-    h.sql(&format!(
-        "UPDATE networks SET project_id='00000000-0000-0000-0000-000000000001' WHERE id='{net}'"
-    ))
-    .await;
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT project_id::text FROM networks WHERE id='{net}'"
+        ))
+        .await,
+        "00000000-0000-0000-0000-000000000001",
+        "a tenant network must be stamped with the project that created it"
+    );
 
     let mut spec = vm_spec();
     spec["network_interfaces"] = json!([{"network_id": net}]);
@@ -1279,5 +1308,155 @@ async fn tenancy_scopes_reads_and_refuses_foreign_references() {
         st.as_u16(),
         404,
         "a create body must not be able to name another project's network: {body}"
+    );
+}
+
+/// Writes are scoped, and what a write creates is stamped with the caller's
+/// project. Reads being scoped is only half of tenancy: if a project can still
+/// delete or re-point another project's resources, the isolation is decorative
+/// (design §47, ADR-018).
+#[tokio::test]
+async fn tenancy_scopes_writes_and_stamps_what_it_creates() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_TENANCY__ENABLED", "true")]).await;
+
+    let (st, blue) = h.post("/projects", json!({"name": "blue"})).await;
+    assert!(st.is_success(), "{blue}");
+    let blue = blue["id"].as_str().unwrap().to_string();
+    let default = "00000000-0000-0000-0000-000000000001";
+
+    // ---- what a project creates belongs to that project ------------------
+    let (st, sg) = h
+        .post_in(&blue, "/security-groups", json!({"name": "web"}))
+        .await;
+    assert!(st.is_success(), "{sg}");
+    let sg = sg["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT project_id::text FROM security_groups WHERE id='{sg}'"
+        ))
+        .await,
+        blue,
+        "a security group must be stamped with the project that created it"
+    );
+
+    let (st, vm) = h
+        .post_in(&blue, "/vms", json!({"name": "blue-vm", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{vm}");
+    let vm = vm["vm_id"].as_str().unwrap().to_string();
+    // A task inherits the project of the VM it acts on, so a scoped task feed
+    // needs no separate bookkeeping.
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT project_id::text FROM tasks WHERE vm_id='{vm}' LIMIT 1"
+        ))
+        .await,
+        blue,
+        "a task must inherit its VM's project"
+    );
+
+    // ---- one project cannot write another's resources --------------------
+    let (st, other) = h.post("/security-groups", json!({"name": "theirs"})).await;
+    assert!(st.is_success(), "{other}");
+    let other = other["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        h.delete_in(&blue, &format!("/security-groups/{other}"))
+            .await,
+        404,
+        "deleting another project's security group must look like a missing id"
+    );
+    assert_eq!(
+        h.patch_in(
+            &blue,
+            &format!("/security-groups/{other}"),
+            json!({"name": "mine-now"})
+        )
+        .await,
+        404,
+        "renaming another project's security group must be refused"
+    );
+    assert_eq!(
+        h.post_in(
+            &blue,
+            &format!("/security-groups/{other}/rules"),
+            json!({"direction": "ingress", "ethertype": "IPv4", "protocol": "tcp",
+                   "port_min": 22, "port_max": 22}),
+        )
+        .await
+        .0
+        .as_u16(),
+        404,
+        "adding a rule to another project's group would be a policy change on their VMs"
+    );
+    // The refusal is real, not just a status code.
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT name FROM security_groups WHERE id='{other}'"
+        ))
+        .await,
+        "theirs"
+    );
+
+    assert_eq!(
+        h.delete_in(&blue, &format!("/vms/{vm}")).await,
+        202,
+        "a project deletes its own VM (accepted; the reconcile loop does the work)"
+    );
+
+    // ---- power operations are scoped too ---------------------------------
+    let (st, theirs) = h
+        .post("/vms", json!({"name": "their-vm", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{theirs}");
+    let theirs = theirs["vm_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        h.post_in(&blue, &format!("/vms/{theirs}/stop"), json!({}))
+            .await
+            .0
+            .as_u16(),
+        404,
+        "stopping another project's VM must be refused"
+    );
+
+    // ---- a shared catalogue is readable by all and writable by none ------
+    // NULL project_id is what the migration left on rows that predate tenancy.
+    let (st, img) = h
+        .post(
+            "/images",
+            json!({"name": "shared", "source_path": "/x/img.qcow2", "format": "qcow2",
+                   "boot": {"type": "firmware", "firmware": "/x/CLOUDHV.fd"}}),
+        )
+        .await;
+    assert!(st.is_success(), "{img}");
+    let img = img["id"].as_str().unwrap().to_string();
+    h.sql(&format!(
+        "UPDATE images SET project_id = NULL WHERE id='{img}'"
+    ))
+    .await;
+
+    let (st, _) = h.get_status_in(&blue, &format!("/images/{img}")).await;
+    assert_eq!(
+        st, 200,
+        "a platform-shared image is readable from any project"
+    );
+    assert_eq!(
+        h.delete_in(&blue, &format!("/images/{img}")).await,
+        404,
+        "sharing an image must not hand every project the power to delete it"
+    );
+    assert_eq!(
+        h.query_one(&format!("SELECT name FROM images WHERE id='{img}'"))
+            .await,
+        "shared"
+    );
+
+    // With tenancy on, the default project is a project like any other.
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT count(*)::text FROM virtual_machines WHERE project_id='{default}'"
+        ))
+        .await,
+        "1"
     );
 }

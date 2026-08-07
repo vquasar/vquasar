@@ -66,12 +66,13 @@ pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<Json<VolumeView>> {
     user.require("volume:read")?;
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     Ok(Json(view(&store, v)))
 }
 
@@ -95,6 +96,7 @@ fn default_format() -> String {
 pub async fn create(
     State(store): State<Store>,
     _: RequireVolumeCreate,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateVolume>,
 ) -> ApiResult<(StatusCode, Json<VolumeView>)> {
     if body.name.trim().is_empty() {
@@ -120,10 +122,16 @@ pub async fn create(
 
     // Clone-from-image (bootable) vs blank data volume.
     let (format, size, path) = if let Some(image_id) = body.source_image_id {
+        if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+            .image_visible(image_id)
+            .await?
+        {
+            return Err(ApiError::not_found("image"));
+        }
         let img = store
             .get_image(image_id)
             .await?
-            .ok_or_else(|| ApiError::invalid(format!("image not found: {image_id}")))?;
+            .ok_or(ApiError::not_found("image"))?;
         if img.status != "ready" {
             return Err(ApiError::invalid("image is not ready"));
         }
@@ -161,7 +169,14 @@ pub async fn create(
     };
 
     match store
-        .create_volume(id, body.name.trim(), size, &format, body.source_image_id)
+        .create_volume(
+            id,
+            body.name.trim(),
+            size,
+            &format,
+            body.source_image_id,
+            crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
+        )
         .await
     {
         Ok(v) => Ok((StatusCode::CREATED, Json(view(&store, v)))),
@@ -194,18 +209,21 @@ pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<StatusCode> {
     user.require("volume:delete")?;
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     if v.attached_vm_id.is_some() {
         return Err(ApiError::invalid("detach the volume before deleting it"));
     }
     let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
     let _ = tokio::fs::remove_file(&path).await; // best-effort
-    store.delete_volume(id).await?;
+    crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .delete_volume(id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -218,19 +236,20 @@ pub async fn attach(
     State(store): State<Store>,
     _: RequireVolumeUpdate,
     Path(id): Path<Uuid>,
+    scope: crate::authz::RequestScope,
     Json(body): Json<AttachVolume>,
 ) -> ApiResult<Json<VolumeView>> {
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     if v.attached_vm_id.is_some() {
         return Err(ApiError::invalid("volume is already attached"));
     }
-    let vm = store
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_vm(body.vm_id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("vm not found: {}", body.vm_id)))?;
+        .ok_or(ApiError::not_found("vm"))?;
 
     let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
     let mut spec = vm.spec.0.clone();
@@ -260,12 +279,13 @@ pub async fn detach(
     State(store): State<Store>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<Json<VolumeView>> {
     user.require("volume:update")?;
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     let Some(vm_id) = v.attached_vm_id else {
         return Err(ApiError::invalid("volume is not attached"));
     };
@@ -311,8 +331,16 @@ pub async fn list_snapshots(
     State(store): State<Store>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<Json<Vec<VolumeSnapshot>>> {
     user.require("volume:read")?;
+    if crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .get_volume(id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::not_found("volume"));
+    }
     Ok(Json(store.list_volume_snapshots(id).await?))
 }
 
@@ -325,15 +353,16 @@ pub async fn create_snapshot(
     State(store): State<Store>,
     _: RequireVolumeUpdate,
     Path(id): Path<Uuid>,
+    scope: crate::authz::RequestScope,
     Json(body): Json<CreateSnapshot>,
 ) -> ApiResult<(StatusCode, Json<VolumeSnapshot>)> {
     if body.name.trim().is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     snapshottable(&store, &v).await?;
     let snap_id = Uuid::new_v4();
     let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
@@ -355,12 +384,13 @@ pub async fn delete_snapshot(
     State(store): State<Store>,
     user: AuthUser,
     Path((id, snap_id)): Path<(Uuid, Uuid)>,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<StatusCode> {
     user.require("volume:update")?;
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     if store.get_volume_snapshot(snap_id).await?.is_none() {
         return Err(ApiError::invalid("snapshot not found"));
     }
@@ -381,11 +411,12 @@ pub async fn revert_snapshot(
     State(store): State<Store>,
     _: RequireVolumeUpdate,
     Path((id, snap_id)): Path<(Uuid, Uuid)>,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<StatusCode> {
-    let v = store
+    let v = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_volume(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("volume not found: {id}")))?;
+        .ok_or(ApiError::not_found("volume"))?;
     if store.get_volume_snapshot(snap_id).await?.is_none() {
         return Err(ApiError::invalid("snapshot not found"));
     }

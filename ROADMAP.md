@@ -410,7 +410,7 @@ needs a control-plane change first, and the UI change after it is small.
     CRUD is permission-gated (`project:*`), `operator` can read but not shape
     tenancy, and deletion is refused while a project owns anything, naming what
     is in the way. Verified against a clone of the live database. ADR-018.
-  - **M19b — scoping.** ✅ **First pass done.** A `ScopedStore` carries the
+  - **M19b — scoping.** ✅ **Done.** A `ScopedStore` carries the
     caller's scope and owns the tenant-scoped queries, so they cannot be called
     without one; every query uses the same predicate shape with a single bind,
     and platform scope is a bound NULL rather than a different statement. The
@@ -435,9 +435,24 @@ needs a control-plane change first, and the UI change after it is small.
     exist**: they live on `ScopedStore`, which cannot be built without a
     caller's scope. Clippy reporting them as dead was the signal that the last
     call site had moved.
-    **Remaining:** write paths (create/update/delete for templates, images,
-    networks and security groups) still act unscoped, and rows they create are
-    not yet stamped with the caller's project.
+    Write paths are scoped on the same predicate and stamp what they create.
+    Project-owned rows (VMs, volumes, templates, security groups) take the
+    caller's project. Shareable catalogues take the caller's project *only when
+    tenancy is on* — with it off there is no project context, and stamping
+    `default` would quietly make every image and network created today invisible
+    to every other project the day tenancy is switched on. A task inherits the
+    project of the VM it acts on, derived in the INSERT, so a scoped task feed
+    needs no separate bookkeeping.
+    Writing a shared row is stricter than reading one: a NULL-owned image or
+    network is readable from every project and editable from none. Sharing must
+    not hand every project the power to delete it out from under the others.
+    Where a refusal carries information — "this is a network's default policy
+    group" — the scope check runs first, so a caller who cannot see the group
+    does not learn what kind it is.
+    **The gate stays off.** `X-Vquasar-Project` is still taken at face value:
+    any caller holding a global permission can name any project and act in it.
+    Until M19c binds roles to projects, tenancy separates namespaces, not
+    people, and turning it on would look like protection it does not provide.
   - **M19c — per-project RBAC.** `project_id` on the role bindings, where NULL
     keeps today's meaning of a platform-wide grant, so the OIDC group mapping is
     unchanged.

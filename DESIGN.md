@@ -583,8 +583,9 @@ the API, and unable to express "this network stays open while that one closes".
 
 ### ADR-018 — The project is the unit of tenancy
 
-*Status:* Accepted. Schema and objects landed; scoping, per-project RBAC and
-quotas follow as separate steps.
+*Status:* Accepted. Schema, objects and scoping (reads and writes) landed;
+per-project RBAC and quotas follow as separate steps. The feature stays gated
+off until RBAC lands — see *Consequences*.
 
 *Context.* The platform is single-tenant: any authenticated caller holding a
 permission sees every resource. Introducing tenancy touches the ownership of
@@ -612,6 +613,14 @@ Tenancy is a control-plane concept. `project_id` is a column, never a field of
 `VirtualMachineSpec`: the host agent and `proto/agent.proto` learn nothing about
 projects, which preserves the privilege boundary of ADR-001 and §30.
 
+Two rules follow from "shareable" and are not symmetric. A shared row (NULL
+owner) is **readable** from every project and **writable** from none: sharing a
+resource must not hand every project the power to delete it out from under the
+others. And a shareable row created while tenancy is off is left NULL rather
+than stamped `default` — with the feature off there is no project context to
+record, and inventing one would make every image and network created today
+invisible to every other project the day tenancy is switched on.
+
 *Consequences.* Existing rows are assigned to a `default` project by column
 default, so the backfill is free and an older binary that omits `project_id` on
 insert still works — a rollback path for a control plane that migrates at
@@ -623,6 +632,12 @@ not belong behind a DELETE (§7). A hierarchy is left unbuilt but not foreclosed
 — `parent_id` exists, unenforced, because recursive permission inheritance and
 quota rollup are load-bearing decisions that cannot be guessed correctly in
 advance.
+
+Scoping alone is not isolation. The request's project comes from a header, and
+until role bindings carry a project (M19c) any caller holding a global
+permission can name any project and act in it. The feature is therefore gated
+off by default and stays that way until RBAC is per-project: partial isolation
+is worse than none, because it looks like protection.
 
 ### ADR-019 — Quotas are admission control on committed intent
 

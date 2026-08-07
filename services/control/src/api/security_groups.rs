@@ -57,6 +57,7 @@ pub struct CreateGroup {
 
 pub async fn create(
     State(store): State<Store>,
+    scope: crate::authz::RequestScope,
     _: RequireNetworkCreate,
     Json(body): Json<CreateGroup>,
 ) -> ApiResult<(StatusCode, Json<SecurityGroup>)> {
@@ -64,7 +65,11 @@ pub async fn create(
         return Err(ApiError::invalid("name is required"));
     }
     let g = store
-        .create_security_group(body.name.trim(), body.description.as_deref())
+        .create_security_group(
+            body.name.trim(),
+            body.description.as_deref(),
+            crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(g)))
 }
@@ -72,25 +77,39 @@ pub async fn create(
 pub async fn update(
     State(store): State<Store>,
     _: RequireNetworkUpdate,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateGroup>,
 ) -> ApiResult<Json<SecurityGroup>> {
     if body.name.trim().is_empty() {
         return Err(ApiError::invalid("name is required"));
     }
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .security_groups_in_scope(&[id])
+        .await?
+    {
+        return Err(ApiError::not_found("security group"));
+    }
     store
         .update_security_group(id, body.name.trim(), body.description.as_deref())
         .await?
         .map(Json)
-        .ok_or_else(|| ApiError::invalid(format!("security group not found: {id}")))
+        .ok_or(ApiError::not_found("security group"))
 }
 
 pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("network:delete")?;
+    // Scope first: the "managed group" refusal below is information about the
+    // group, and a caller who cannot see it must not learn that much.
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    if !scoped.security_groups_in_scope(&[id]).await? {
+        return Err(ApiError::not_found("security group"));
+    }
     // A managed group is a network's policy object, not a user-created one:
     // deleting it would leave that network with no default and every NIC on it
     // silently unpoliced (ADR-017). Delete or re-default the network instead.
@@ -100,10 +119,10 @@ pub async fn delete(
              delete the network, or point it at a different default",
         ));
     }
-    if store.delete_security_group(id).await? {
+    if scoped.delete_security_group(id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::invalid(format!("security group not found: {id}")))
+        Err(ApiError::not_found("security group"))
     }
 }
 
@@ -168,13 +187,18 @@ fn validate_rule(r: &CreateRule) -> ApiResult<()> {
 pub async fn add_rule(
     State(store): State<Store>,
     _: RequireNetworkUpdate,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<CreateRule>,
 ) -> ApiResult<(StatusCode, Json<SecurityGroupRule>)> {
-    store
-        .get_security_group(id)
+    // A rule carries no project of its own; it inherits the group's, so the
+    // group is what has to be in scope (design §47).
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .security_groups_in_scope(&[id])
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("security group not found: {id}")))?;
+    {
+        return Err(ApiError::not_found("security group"));
+    }
     validate_rule(&body)?;
     let cidr = body
         .remote_cidr
@@ -200,9 +224,16 @@ pub async fn add_rule(
 pub async fn delete_rule(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path((id, rule_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<StatusCode> {
     user.require("network:update")?;
+    if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .security_groups_in_scope(&[id])
+        .await?
+    {
+        return Err(ApiError::not_found("security group"));
+    }
     if store.delete_sg_rule(id, rule_id).await? {
         store.touch_vms_using_security_group(id).await?;
         Ok(StatusCode::NO_CONTENT)

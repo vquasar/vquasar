@@ -905,19 +905,21 @@ pub async fn delete(
 pub async fn start(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     user.require("vm:power")?;
-    set_power(&store, id, DesiredPowerState::Running, "vm.start").await
+    set_power(&store, scope.0, id, DesiredPowerState::Running, "vm.start").await
 }
 
 pub async fn stop(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     user.require("vm:power")?;
-    set_power(&store, id, DesiredPowerState::Stopped, "vm.stop").await
+    set_power(&store, scope.0, id, DesiredPowerState::Stopped, "vm.stop").await
 }
 
 #[derive(Debug, Deserialize)]
@@ -935,11 +937,12 @@ pub struct MigrateRequest {
 pub async fn migrate(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
     Json(body): Json<MigrateRequest>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
     user.require("vm:migrate")?;
-    let vm = store
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_vm(id)
         .await?
         .ok_or_else(|| ApiError::vm_not_found(id))?;
@@ -1036,11 +1039,12 @@ pub async fn migrate(
 /// Update a VM's desired power state and queue a task; reconciliation applies it.
 async fn set_power(
     store: &Store,
+    scope: vquasar_model::project::Scope,
     id: Uuid,
     power: DesiredPowerState,
     task_type: &str,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
-    let vm = store
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope)
         .get_vm(id)
         .await?
         .ok_or_else(|| ApiError::vm_not_found(id))?;
