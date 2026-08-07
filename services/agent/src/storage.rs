@@ -65,6 +65,7 @@ impl StorageProvisioner {
         name: &str,
         mut spec: VirtualMachineSpec,
         network_config: Option<&str>,
+        phone_home_token: Option<&str>,
     ) -> Result<VirtualMachineSpec> {
         for disk in &spec.disks {
             if disk.needs_provisioning() {
@@ -72,7 +73,9 @@ impl StorageProvisioner {
             }
         }
         if let Some(ci) = spec.cloud_init.clone() {
-            let seed = self.ensure_seed(id, name, &ci, network_config).await?;
+            let seed = self
+                .ensure_seed(id, name, &ci, network_config, phone_home_token)
+                .await?;
             if !spec.disks.iter().any(|d| d.path == seed.path) {
                 spec.disks.push(seed);
             }
@@ -181,6 +184,7 @@ impl StorageProvisioner {
         name: &str,
         ci: &CloudInitSpec,
         network_config: Option<&str>,
+        phone_home_token: Option<&str>,
     ) -> Result<DiskSpec> {
         let seed_path = self.shared_dir.join("seeds").join(format!("{id}.iso"));
         if !tokio::fs::try_exists(&seed_path).await? {
@@ -195,6 +199,7 @@ impl StorageProvisioner {
                 &id.to_string(),
                 self.phone_home_url.as_deref(),
                 self.trusted_ca.as_deref(),
+                phone_home_token,
             );
 
             // Stage the files in a temp dir, then pack them into an ISO labelled
@@ -241,6 +246,7 @@ fn render_user_data(
     instance_id: &str,
     phone_home_url: Option<&str>,
     trusted_ca: Option<&str>,
+    phone_home_token: Option<&str>,
 ) -> String {
     if let Some(raw) = &ci.user_data {
         return raw.clone();
@@ -283,8 +289,14 @@ fn render_user_data(
         // works across Debian and RHEL guests whose bundle paths differ. The POST
         // carries no body; control records the request's source IP.
         let base = url.trim_end_matches('/');
+        // The token is what makes this callback the guest's own: without it any
+        // caller who knows a VM id could set that VM's address (design M13e).
+        let auth = phone_home_token
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("?token={t}"))
+            .unwrap_or_default();
         s.push_str(&format!(
-            "runcmd:\n  - [\"sh\", \"-c\", \"for i in $(seq 1 12); do curl -fsS -X POST {base}/api/v1/phone-home/{instance_id} && break; sleep 5; done\"]\n"
+            "runcmd:\n  - [\"sh\", \"-c\", \"for i in $(seq 1 12); do curl -fsS -X POST {base}/api/v1/phone-home/{instance_id}{auth} && break; sleep 5; done\"]\n"
         ));
     }
     s
@@ -356,7 +368,7 @@ mod tests {
             password: Some("pw".into()),
             user_data: None,
         };
-        let s = render_user_data(&ci, "h", "vm-1", None, None);
+        let s = render_user_data(&ci, "h", "vm-1", None, None, None);
         assert!(s.starts_with("#cloud-config"));
         assert!(s.contains("password: pw"));
         assert!(s.contains("ssh-ed25519 AAAA"));
@@ -374,7 +386,7 @@ mod tests {
         };
         // Raw user-data is returned verbatim even with phone_home configured.
         assert_eq!(
-            render_user_data(&ci, "h", "vm-1", Some("https://c:8080"), Some("CA")),
+            render_user_data(&ci, "h", "vm-1", Some("https://c:8080"), Some("CA"), None),
             "#cloud-config\nruncmd: [echo hi]\n"
         );
     }
@@ -394,7 +406,11 @@ mod tests {
             "vm-42",
             Some("https://172.16.56.8:8080/"),
             Some(ca),
+            Some("s3cr3t-token"),
         );
+        // The guest's own secret rides in the callback URL — without it the
+        // control plane cannot tell this guest from any other caller.
+        assert!(s.contains("?token=s3cr3t-token"), "{s}");
         // curl-based phone home to the vm-id URL (trailing slash trimmed);
         // no explicit --cacert so it works across Debian/RHEL guests.
         assert!(s.contains("curl -fsS -X POST"));
@@ -402,5 +418,26 @@ mod tests {
         assert!(s.contains("https://172.16.56.8:8080/api/v1/phone-home/vm-42"));
         assert!(s.contains("ca_certs:"));
         assert!(s.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    /// A VM with no token yet must not get a callback URL that looks
+    /// authenticated — better an unauthenticated attempt the server rejects
+    /// than a URL with an empty secret in it.
+    #[test]
+    fn no_token_means_no_token_parameter() {
+        let ci = CloudInitSpec {
+            hostname: Some("h".into()),
+            ssh_authorized_keys: vec![],
+            password: None,
+            user_data: None,
+        };
+        let s = render_user_data(&ci, "h", "vm-9", Some("https://c:8080"), None, None);
+        assert!(s.contains("phone-home/vm-9"), "{s}");
+        assert!(!s.contains("token="), "{s}");
+        let s = render_user_data(&ci, "h", "vm-9", Some("https://c:8080"), None, Some(""));
+        assert!(
+            !s.contains("token="),
+            "an empty token must not be sent: {s}"
+        );
     }
 }

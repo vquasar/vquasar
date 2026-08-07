@@ -162,9 +162,17 @@ impl HostAgent for AgentService {
             })
             .collect();
         let network_config = Some(req.network_config).filter(|s| !s.is_empty());
+        let phone_home_token = Some(req.phone_home_token).filter(|s| !s.is_empty());
         let obs = self
             .manager
-            .ensure(id, req.name, spec, bindings, network_config)
+            .ensure(
+                id,
+                req.name,
+                spec,
+                bindings,
+                network_config,
+                phone_home_token,
+            )
             .await
             .map_err(to_status)?;
         Ok(Response::new(EnsureVmResponse {
@@ -403,6 +411,7 @@ pub(crate) mod tests {
         // EnsureVm creates and boots.
         let ensure = svc
             .ensure_vm(Request::new(EnsureVmRequest {
+                phone_home_token: String::new(),
                 vm_id: id.to_string(),
                 name: "web-1".into(),
                 spec_json: serde_json::to_vec(&spec()).unwrap(),
@@ -468,6 +477,7 @@ pub(crate) mod tests {
         let svc = service(dir.path());
         let err = svc
             .ensure_vm(Request::new(EnsureVmRequest {
+                phone_home_token: String::new(),
                 vm_id: VmId::new().to_string(),
                 name: "bad".into(),
                 spec_json: b"not json".to_vec(),

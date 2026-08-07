@@ -705,14 +705,19 @@ impl Store {
         let now = Utc::now();
         let sealed = self.seal_spec(spec)?;
         let vm = sqlx::query_as::<_, Vm>(
-            "INSERT INTO virtual_machines (id, name, spec, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $4)
+            // The phone_home secret is issued here rather than lazily: a VM
+            // that exists but has no token yet would have an unauthenticated
+            // window on first boot, which is exactly the window that matters
+            // (design M13e).
+            "INSERT INTO virtual_machines (id, name, spec, phone_home_token, created_at, updated_at)
+             VALUES ($1, $2, $3, $5, $4, $4)
              RETURNING *",
         )
         .bind(id)
         .bind(name)
         .bind(Json(&sealed))
         .bind(now)
+        .bind(crate::crypto::random_token())
         .fetch_one(&self.pool)
         .await?;
         // Return plaintext to the caller (the row is sealed at rest).
@@ -915,6 +920,34 @@ impl Store {
         .bind(segment_key)
         .fetch_one(&self.pool)
         .await
+    }
+
+    /// The phone_home secret for a VM, generated at creation (design M13e).
+    pub async fn phone_home_token(&self, vm: Uuid) -> Result<Option<String>> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT phone_home_token FROM virtual_machines WHERE id=$1",
+        )
+        .bind(vm)
+        .fetch_optional(&self.pool)
+        .await
+        .map(Option::flatten)
+    }
+
+    /// Give a VM a phone_home secret if it does not have one yet, returning it.
+    ///
+    /// Idempotent so a VM created before this existed picks one up on its next
+    /// reconcile rather than staying unauthenticated forever.
+    pub async fn ensure_phone_home_token(&self, vm: Uuid) -> Result<String> {
+        if let Some(existing) = self.phone_home_token(vm).await? {
+            return Ok(existing);
+        }
+        let token = crate::crypto::random_token();
+        sqlx::query("UPDATE virtual_machines SET phone_home_token=$2 WHERE id=$1")
+            .bind(vm)
+            .bind(&token)
+            .execute(&self.pool)
+            .await?;
+        Ok(token)
     }
 
     /// Record the CN of a host's agent certificate, so overlay IPsec can pin

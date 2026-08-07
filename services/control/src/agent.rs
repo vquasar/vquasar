@@ -124,10 +124,12 @@ impl Agent {
         spec_json: Vec<u8>,
         networks: Vec<NetworkBinding>,
         network_config: String,
+        phone_home_token: String,
     ) -> Result<VmObservedState, AgentError> {
         let mut client = self.client().await?;
         let resp = client
             .ensure_vm(EnsureVmRequest {
+                phone_home_token,
                 vm_id,
                 name,
                 spec_json,

@@ -395,6 +395,21 @@ impl Harness {
         pool.close().await;
     }
 
+    /// A single text value from the harness database.
+    async fn query_one(&self, sql: &str) -> String {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&self.db_url)
+            .await
+            .expect("connect to the harness DB");
+        let v: Option<String> = sqlx::query_scalar(sql)
+            .fetch_one(&pool)
+            .await
+            .expect("query");
+        pool.close().await;
+        v.unwrap_or_default()
+    }
+
     async fn get(&self, path: &str) -> Value {
         let r = self
             .client
@@ -1021,4 +1036,49 @@ async fn a_legacy_network_can_adopt_a_segment_exactly_once() {
         .as_str()
         .unwrap()
         .contains("cannot be changed"));
+}
+
+/// phone_home was unauthenticated: anyone who could reach the API and knew a VM
+/// id could set that VM's recorded address. VM ids are not secret — the task and
+/// event streams hand them out (design M13e).
+#[tokio::test]
+async fn phone_home_requires_the_guests_own_token() {
+    let h = Harness::start().await;
+    let (st, created) = h
+        .post("/vms", json!({"name": "ph", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{created}");
+    let vm = created["vm_id"].as_str().unwrap().to_string();
+
+    // The endpoint always answers 204: the response must not tell a caller
+    // whether the VM exists or whether the token was right. The observable
+    // difference is whether the address was actually recorded.
+    let (st, _) = h.post(&format!("/phone-home/{vm}"), json!({})).await;
+    assert_eq!(st.as_u16(), 204);
+    let (st, _) = h
+        .post(&format!("/phone-home/{vm}?token=guessed"), json!({}))
+        .await;
+    assert_eq!(st.as_u16(), 204);
+    assert!(
+        h.get(&format!("/vms/{vm}")).await["ip_address"].is_null(),
+        "an unauthenticated caller must not be able to set the address"
+    );
+
+    // With the VM's own token, the address is recorded.
+    let token: String = h
+        .query_one(&format!(
+            "SELECT phone_home_token FROM virtual_machines WHERE id='{vm}'"
+        ))
+        .await;
+    assert!(!token.is_empty(), "a VM should be issued a token");
+    let (st, _) = h
+        .post(&format!("/phone-home/{vm}?token={token}"), json!({}))
+        .await;
+    assert_eq!(st.as_u16(), 204);
+    h.wait_for(
+        &format!("/vms/{vm}"),
+        |v| !v["ip_address"].is_null(),
+        "the address is recorded once the guest proves who it is",
+    )
+    .await;
 }

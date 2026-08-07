@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -294,13 +294,43 @@ pub async fn metrics(
 /// for guests the agentless ARP/neighbour sweep can't see (e.g. ICMP-filtered).
 /// Public + unauthenticated: the guest cannot hold a token; it's identified by
 /// the vm id in the path, and this only ever records an observed IP.
+#[derive(Debug, Deserialize)]
+pub struct PhoneHomeAuth {
+    /// The per-VM secret injected into this guest's cloud-init seed.
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// `POST /phone-home/{vm_id}?token=…` — a guest reporting the address it came
+/// up on (design M13e).
+///
+/// Unauthenticated in the operator sense: a guest holds no operator credential,
+/// and this runs on first boot before anything else exists. It is *not*
+/// unauthenticated in the useful sense — the guest presents a secret that only
+/// it and the control plane know, injected into its seed. Without that, anyone
+/// who could reach the API and knew a VM id could set that VM's recorded
+/// address, and VM ids are not secret: the task and event streams hand them out.
+///
+/// Always answers `204`, whatever happens. The response must not tell a caller
+/// whether the VM exists or whether the token was right.
 pub async fn phone_home(
     State(store): State<Store>,
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(vm_id): Path<Uuid>,
+    Query(q): Query<PhoneHomeAuth>,
 ) -> StatusCode {
     let ip = peer.ip().to_string();
-    // Only accept for a known VM; ignore otherwise (don't leak existence).
+    let expected = store.phone_home_token(vm_id).await.ok().flatten();
+    let ok = match (expected, q.token) {
+        (Some(expected), Some(given)) => crate::crypto::secret_eq(&expected, &given),
+        // A VM created before tokens existed has none. Refuse rather than
+        // grandfathering it: it gets one on its next reconcile.
+        _ => false,
+    };
+    if !ok {
+        tracing::debug!(vm = %vm_id, source = %ip, "phone_home rejected: bad or missing token");
+        return StatusCode::NO_CONTENT;
+    }
     if matches!(store.get_vm(vm_id).await, Ok(Some(_))) {
         let _ = store.set_vm_ip(vm_id, &ip).await;
         let _ = store
