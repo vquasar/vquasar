@@ -410,6 +410,20 @@ impl Harness {
         v.unwrap_or_default()
     }
 
+    /// DELETE, returning the status and body — some deletions are refusals
+    /// whose message is the point.
+    async fn delete_status(&self, path: &str) -> (u16, Value) {
+        let r = self
+            .client
+            .delete(format!("{}/api/v1{path}", self.base))
+            .send()
+            .await
+            .expect("delete");
+        let st = r.status().as_u16();
+        let body = r.json::<Value>().await.unwrap_or(Value::Null);
+        (st, body)
+    }
+
     async fn get(&self, path: &str) -> Value {
         let r = self
             .client
@@ -1122,4 +1136,50 @@ async fn absurd_resource_requests_are_refused() {
         st.is_success(),
         "a reasonable spec must still be accepted: {body}"
     );
+}
+
+/// Projects exist as objects before anything is scoped to them (ADR-018). The
+/// invasive part — the schema — lands once; scoping, per-project RBAC and
+/// quotas follow separately.
+#[tokio::test]
+async fn projects_are_created_and_refuse_to_vanish_with_contents() {
+    let h = Harness::start().await;
+
+    // Migration 0021 leaves exactly one project, and everything belongs to it.
+    let list = h.get("/projects").await;
+    let projects = list.as_array().unwrap();
+    assert_eq!(projects.len(), 1, "{list}");
+    assert_eq!(projects[0]["name"], json!("default"));
+    assert_eq!(projects[0]["is_default"], json!(true));
+
+    // Names are identifiers, not free text.
+    for bad in ["", "Team Blue", "-leading", "under_score"] {
+        let (st, body) = h.post("/projects", json!({"name": bad})).await;
+        assert_eq!(st.as_u16(), 400, "{bad:?} should be refused: {body}");
+    }
+
+    let (st, p) = h
+        .post(
+            "/projects",
+            json!({"name": "team-blue", "description": "a tenant"}),
+        )
+        .await;
+    assert!(st.is_success(), "{p}");
+    let id = p["id"].as_str().unwrap().to_string();
+    assert_eq!(p["is_default"], json!(false));
+
+    // Names are unique: a collision is the caller's to see, not a 500.
+    let (st, body) = h.post("/projects", json!({"name": "team-blue"})).await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // The default project is the fallback for a caller with no context, so it
+    // cannot be removed.
+    let default_id = projects[0]["id"].as_str().unwrap();
+    let (st, body) = h.delete_status(&format!("/projects/{default_id}")).await;
+    assert_eq!(st, 400, "the default project must not be deletable: {body}");
+
+    // An empty project deletes cleanly.
+    let (st, _) = h.delete_status(&format!("/projects/{id}")).await;
+    assert_eq!(st, 204);
+    assert_eq!(h.get("/projects").await.as_array().unwrap().len(), 1);
 }

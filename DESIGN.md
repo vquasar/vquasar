@@ -518,6 +518,8 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-016** A network's type declares its isolation guarantee, and the platform
   owns segment identifiers.
 * **ADR-017** Every guest port carries an explicit dataplane policy.
+* **ADR-018** The project is the unit of tenancy, enforced in the control plane.
+* **ADR-019** Quotas are admission control on committed intent.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -578,6 +580,80 @@ flows is still a real dataplane change, enforcement is gated on
 `[network] policy_mode`, which defaults to the previous behaviour. Rejected: a
 cluster-wide default-deny flag — a flag day for every VM at once, invisible in
 the API, and unable to express "this network stays open while that one closes".
+
+### ADR-018 — The project is the unit of tenancy
+
+*Status:* Accepted. Schema and objects landed; scoping, per-project RBAC and
+quotas follow as separate steps.
+
+*Context.* The platform is single-tenant: any authenticated caller holding a
+permission sees every resource. Introducing tenancy touches the ownership of
+most tables, the RBAC binding model and admission control at once. Doing those
+separately would migrate the same tables three times, each pass rewriting the
+previous one's queries.
+
+*Decision.* A **project** is the sole unit of tenancy: flat, non-hierarchical,
+identified by a UUID. VMs, volumes, templates, security groups and tasks are
+owned by exactly one project. Images and networks are **shareable** — an unset
+project means platform-shared and usable by every project. Hosts, users, role
+definitions, enrollment tokens and the CA are **platform** resources and are
+never project-scoped: a host inventory is a leak to a tenant with no tenant
+benefit, and placement is a platform concern (§17, §30).
+
+Scoping is enforced in the control plane by a scope-carrying store handle, not
+by PostgreSQL row-level security. The control plane uses one database role and
+one pool, and most of its queries are single statements off that pool; RLS would
+need a session GUC set inside a transaction for every one of them, plus a second
+`BYPASSRLS` role for the reconcile loop — the same two-scope model, expressed
+where the compiler cannot check it, and turning authorization bugs into silent
+empty result sets rather than errors.
+
+Tenancy is a control-plane concept. `project_id` is a column, never a field of
+`VirtualMachineSpec`: the host agent and `proto/agent.proto` learn nothing about
+projects, which preserves the privilege boundary of ADR-001 and §30.
+
+*Consequences.* Existing rows are assigned to a `default` project by column
+default, so the backfill is free and an older binary that omits `project_id` on
+insert still works — a rollback path for a control plane that migrates at
+startup. Shareable catalogues stay shared, so a fleet's curated images and its
+provider network keep working the moment a second project appears. Project
+deletion is refused while the project owns anything: cascading would mean
+deleting VMs, which is a long, agent-touching, restartable operation and does
+not belong behind a DELETE (§7). A hierarchy is left unbuilt but not foreclosed
+— `parent_id` exists, unenforced, because recursive permission inheritance and
+quota rollup are load-bearing decisions that cannot be guessed correctly in
+advance.
+
+### ADR-019 — Quotas are admission control on committed intent
+
+*Status:* Accepted, not yet implemented.
+
+*Context.* The control plane persists intent and converges asynchronously (§7,
+§15). A resource limit could be enforced when intent is recorded or when the
+reconcile loop tries to realise it. The two are not equivalent.
+
+*Decision.* A quota is a ceiling on **committed intent** — the resources
+described by rows that exist — enforced **only at API admission**, in the same
+transaction that persists the intent. The reconcile loop never rejects work for
+quota reasons; it may only report observed usage. A resource consumes quota from
+the moment its row exists until the row is gone, including while `Pending`,
+`Failed` or `Deleting`. That differs deliberately from the scheduler's per-host
+commitment model, which excludes `Deleting`: the two answer different questions.
+
+Usage is **derived, not stored**. Admission locks the project row, aggregates
+current usage from the owning tables, compares against the limits and inserts —
+all in one transaction. That serialises writes per project and only per project,
+and leaves no cached counter that can drift or need repair after a crash.
+
+*Consequences.* Every write that changes a counted quantity must pass admission,
+including in-place VM edits, not only creation. Operations that do expensive
+external work before persisting — cloning a volume from an image — must insert a
+`provisioning` row inside the admission transaction and finalise afterwards.
+Lowering a quota below current usage is permitted and non-destructive: it blocks
+new commitments and is reported as over-quota. Rejected: reconcile-time
+enforcement, which would strand persisted intent and make the reconcile loop a
+second authority on admissibility; and denormalized usage counters, which
+introduce a second source of truth needing a repair pass.
 
 ## 45. Longer-term architecture
 

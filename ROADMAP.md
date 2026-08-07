@@ -397,7 +397,32 @@ needs a control-plane change first, and the UI change after it is small.
   `vquasar-vm-shutdown.service` terminates CH VMs before NFS unmount so reboots don't
   hang on the orphaned (KillMode=process) hypervisor processes. Verified live.
 - Control-plane HA (multiple control nodes; PostgreSQL HA).
-- Quotas, projects, multi-tenancy.
+- **M19 — multi-tenancy.** In progress.
+  - **M19a — projects: schema, objects, permissions.** ✅ **Done.** A `projects`
+    table with a deletion-protected `default`, and `project_id` on the
+    project-owned tables (VMs, volumes, templates, security groups, tasks),
+    nullable on the shareable catalogues (images, networks) and on events.
+    Existing rows are assigned to `default` by column default, so the backfill
+    is free and an older binary still inserts successfully — the rollback path
+    for a control plane that migrates at startup. Shareable catalogues are left
+    NULL: backfilling them into `default` would make the lab's images and its
+    provider network invisible the moment a second project existed. Projects
+    CRUD is permission-gated (`project:*`), `operator` can read but not shape
+    tenancy, and deletion is refused while a project owns anything, naming what
+    is in the way. Verified against a clone of the live database. ADR-018.
+  - **M19b — scoping.** Move tenant-scoped queries onto a scope-carrying store
+    handle so a handler that forgets scoping does not compile, and fix the
+    cross-project reference sites (a create body naming another project's
+    network, template, image or security group — the real leak surface, not the
+    list endpoints).
+  - **M19c — per-project RBAC.** `project_id` on the role bindings, where NULL
+    keeps today's meaning of a platform-wide grant, so the OIDC group mapping is
+    unchanged.
+  - **M19d — quotas.** Admission-time, against committed intent, usage derived
+    rather than stored. ADR-019.
+  - **M19e — scoped task and event streams.** Currently global and carrying
+    resource names in free text; folded in here because it needs the same
+    `project_id` column.
 
 ### Quality & delivery
 - **Console wired as the official UI.** ✅ **Done, deployed to the lab.** The

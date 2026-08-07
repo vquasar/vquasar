@@ -10,6 +10,7 @@ mod iam;
 mod images;
 mod networks;
 pub mod pathsafe;
+mod projects;
 pub mod redact;
 mod security_groups;
 mod tasks;
@@ -49,6 +50,13 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
         .route(
             "/group-mappings/:group/:role_id",
             axum::routing::delete(iam::remove_group_role),
+        )
+        .route("/projects", get(projects::list).post(projects::create))
+        .route(
+            "/projects/:id",
+            get(projects::get)
+                .patch(projects::update)
+                .delete(projects::delete),
         )
         .route("/hosts", get(hosts::list).post(hosts::register))
         .route("/hosts/:id", get(hosts::get).patch(hosts::update))
