@@ -432,6 +432,12 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
     let agent = Agent::new(host.endpoint.clone());
     let spec_json = serde_json::to_vec(&*vm.spec)?;
     let network_config = build_network_config(store, vm).await?;
+    // The guest cannot hold an operator credential, so it gets a secret of its
+    // own to present back on the phone_home callback (design M13e).
+    let phone_home_token = store
+        .ensure_phone_home_token(vm.id)
+        .await
+        .unwrap_or_default();
     match agent
         .ensure_vm(
             vm.id.to_string(),
@@ -439,6 +445,7 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
             spec_json,
             bindings,
             network_config,
+            phone_home_token,
         )
         .await
     {

@@ -99,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
             let spec = build_spec(&args)?;
             let resp = client
                 .ensure_vm(EnsureVmRequest {
+                    // Not exercising phone_home from this harness.
+                    phone_home_token: String::new(),
                     vm_id: args.vm_id,
                     name: args.name,
                     spec_json: serde_json::to_vec(&spec)?,

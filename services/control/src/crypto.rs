@@ -21,6 +21,7 @@
 
 use std::collections::HashMap;
 
+use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::{Aead, KeyInit, OsRng, Payload};
 use aes_gcm::{AeadCore, Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -196,6 +197,27 @@ fn build_cipher(material_b64: &str) -> Result<Aes256Gcm, CryptoError> {
     Ok(Aes256Gcm::new(key))
 }
 
+/// A URL-safe random secret, for things a guest must present back to us
+/// (the cloud-init phone_home callback, design M13e).
+///
+/// 256 bits from the OS CSPRNG — the same source the AEAD nonces come from —
+/// so it is not guessable from a VM id or a creation time.
+pub fn random_token() -> String {
+    let mut raw = [0u8; 32];
+    OsRng.fill_bytes(&mut raw);
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+}
+
+/// Compare two secrets without leaking where they differ.
+pub fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +277,26 @@ mod tests {
         let last = sealed.pop().unwrap();
         sealed.push(if last == 'A' { 'B' } else { 'A' });
         assert!(c.open(PURPOSE_PASSWORD, &sealed).is_err());
+    }
+
+    #[test]
+    fn tokens_are_unique_and_long_enough() {
+        let a = random_token();
+        let b = random_token();
+        assert_ne!(a, b, "tokens must not repeat");
+        assert!(a.len() >= 43, "256 bits of entropy, got {}", a.len());
+        assert!(
+            !a.contains('+') && !a.contains('/'),
+            "must be URL-safe: {a}"
+        );
+    }
+
+    #[test]
+    fn secret_comparison_is_length_safe() {
+        assert!(secret_eq("abc", "abc"));
+        assert!(!secret_eq("abc", "abd"));
+        assert!(!secret_eq("abc", "abcd"));
+        assert!(!secret_eq("", "a"));
     }
 
     #[test]

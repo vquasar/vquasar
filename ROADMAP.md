@@ -241,7 +241,15 @@ Split into three shippable slices.
   allocation to the new network. Caveat: the guest keeps its MAC/IP, so on a
   different subnet it must renew DHCP or be reconfigured at L3 (a link-bounce
   hot-replug to force guest re-init is a follow-up).
-- **M13e — cloud-init `phone_home` IP-discovery fallback.** ✅ **Done.** For
+- **M13e — cloud-init `phone_home` IP-discovery fallback.** ✅ **Done, and
+  authenticated.** The endpoint was unauthenticated: anyone who could reach the
+  API and knew a VM id could set that VM's recorded address, and VM ids are not
+  secret — the task and event streams hand them out. Each VM is now issued a
+  256-bit secret at creation, injected into its cloud-init seed and required on
+  the callback, compared in constant time. The endpoint still always answers
+  `204`, so a caller learns neither whether the VM exists nor whether the token
+  was right. A guest cannot hold an operator credential, which is why this is a
+  per-VM secret rather than RBAC. For
   guests the agentless ARP/neighbour sweep can't see (ICMP-filtered), generated
   cloud-init tells the guest to POST to a public control endpoint on first boot;
   the request's source IP is recorded as the VM's observed address. The agent

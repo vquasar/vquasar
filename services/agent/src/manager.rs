@@ -129,6 +129,7 @@ impl VmManager {
         spec: VirtualMachineSpec,
         bindings: Vec<NicBinding>,
         network_config: Option<String>,
+        phone_home_token: Option<String>,
     ) -> Result<ObservedVm> {
         spec.validate()
             .map_err(|e| ManagerError::InvalidSpec(e.to_string()))?;
@@ -138,7 +139,13 @@ impl VmManager {
         // Idempotent, so a repeated reconcile reuses existing files.
         let mut spec = self
             .storage
-            .prepare(id, &name, spec, network_config.as_deref())
+            .prepare(
+                id,
+                &name,
+                spec,
+                network_config.as_deref(),
+                phone_home_token.as_deref(),
+            )
             .await?;
         // Persist the control-allocated NIC MACs in the record so agentless IP
         // discovery can match neighbor-table entries to this VM (design M11).
@@ -172,7 +179,13 @@ impl VmManager {
             // file lock, then apply any pending offline change (e.g. disk grow).
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             self.storage
-                .prepare(id, &name, spec, network_config.as_deref())
+                .prepare(
+                    id,
+                    &name,
+                    spec,
+                    network_config.as_deref(),
+                    phone_home_token.as_deref(),
+                )
                 .await?;
             return Ok(ObservedVm {
                 id,
@@ -665,6 +678,7 @@ mod tests {
                 spec(DesiredPowerState::Running),
                 vec![],
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -678,10 +692,10 @@ mod tests {
         let (mgr, backend) = manager(dir.path());
         let id = VmId::new();
         let s = spec(DesiredPowerState::Running);
-        mgr.ensure(id, "web-1".into(), s.clone(), vec![], None)
+        mgr.ensure(id, "web-1".into(), s.clone(), vec![], None, None)
             .await
             .unwrap();
-        mgr.ensure(id, "web-1".into(), s, vec![], None)
+        mgr.ensure(id, "web-1".into(), s, vec![], None, None)
             .await
             .unwrap();
         // The fake records create calls; a second ensure must not create twice.
@@ -701,6 +715,7 @@ mod tests {
             spec(DesiredPowerState::Running),
             vec![],
             None,
+            None,
         )
         .await
         .unwrap();
@@ -718,6 +733,7 @@ mod tests {
             "tmp".into(),
             spec(DesiredPowerState::Running),
             vec![],
+            None,
             None,
         )
         .await
@@ -739,6 +755,7 @@ mod tests {
                 "survivor".into(),
                 spec(DesiredPowerState::Running),
                 vec![],
+                None,
                 None,
             )
             .await

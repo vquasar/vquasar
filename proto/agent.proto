@@ -127,6 +127,10 @@ message ListVmsRequest {}
 message ListVmsResponse { repeated VmObservedState vms = 1; }
 
 message EnsureVmRequest {
+  // Per-VM secret for the cloud-init phone_home callback (design M13e). The
+  // agent injects it into the seed; the control plane requires it back. Empty
+  // when phone_home is not in use.
+  string phone_home_token = 20;
   string vm_id = 1;
   // User-friendly VM name (host-local resources are still derived from vm_id).
   string name = 2;
