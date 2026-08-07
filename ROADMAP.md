@@ -397,7 +397,9 @@ needs a control-plane change first, and the UI change after it is small.
   `vquasar-vm-shutdown.service` terminates CH VMs before NFS unmount so reboots don't
   hang on the orphaned (KillMode=process) hypervisor processes. Verified live.
 - Control-plane HA (multiple control nodes; PostgreSQL HA).
-- **M19 — multi-tenancy.** In progress.
+- **M19 — multi-tenancy.** ✅ **Complete.** Still gated on `[tenancy] enabled`,
+  off by default: an existing deployment behaves exactly as it did until an
+  operator opts in. Every piece the gate was waiting on has landed.
   - **M19a — projects: schema, objects, permissions.** ✅ **Done.** A `projects`
     table with a deletion-protected `default`, and `project_id` on the
     project-owned tables (VMs, volumes, templates, security groups, tasks),
@@ -479,9 +481,7 @@ needs a control-plane change first, and the UI change after it is small.
     is refused when writing a platform binding. That is the only place this can
     be tested — the e2e harness runs with auth disabled, where every caller is a
     superuser. ADR-020.
-    **Remaining before the gate can be turned on by default:** the UI needs a
-    project selector — it sends no header today, so it acts in the default
-    project.
+    The console now carries the selection (M19f).
   - **M19d — quotas.** ✅ **Done.** A ceiling on committed intent — VMs, vCPUs,
     memory, volumes and storage bytes — enforced only at API admission, in the
     transaction that persists the intent. A resource counts from the moment its
@@ -508,9 +508,33 @@ needs a control-plane change first, and the UI change after it is small.
     counting only volumes would leave the cap bypassable. vCPU and memory count
     the hot-plug ceiling, which is what was committed to. Refusals are `409`
     `QUOTA_EXCEEDED` carrying the dimension, the limit and the usage. ADR-019.
-  - **M19e — scoped task and event streams.** Currently global and carrying
-    resource names in free text; folded in here because it needs the same
-    `project_id` column.
+  - **M19e — scoped task and event streams.** ✅ **Done.** Both feeds carry the
+    same predicate as everything else, and both derive their project from the
+    resource they are about rather than from the request that produced them: a
+    task inherits its VM's project, an event the project of the VM, volume or
+    template it describes.
+    Platform work belongs to **no** project and is invisible from inside one — a
+    host going NotReady describes the fleet, and the fleet is not a tenant's
+    business. `tasks.project_id` became nullable for this (0024); 0021 had made
+    it NOT NULL with a default, which would have put host work in whatever
+    project the default happened to be. Every task today names a VM, so this is
+    the modelling being fixed before the first host task exists rather than a
+    live leak.
+  - **M19f — the console acts in a project.** ✅ **Done.** One selection in the
+    top bar, applied to every request by the API client — a console showing one
+    project's VMs beside another's networks would be worse than not having
+    projects. It survives a reload and is dropped automatically when the project
+    disappears or the binding is revoked, so a tab left open over a permission
+    change does not stay pinned to something it will now be refused from.
+    `GET /me` gained `tenancy` and `platform`: the selector is hidden entirely
+    when tenancy is off, and "All projects" is offered only to callers holding a
+    platform-wide binding — an option that answers 403 is worse than no option.
+    Both are reported rather than inferred; absence of `project` would conflate
+    "tenancy is off" with "you are in the platform view".
+    The console WebSocket carries the project as `?project=`, for the same
+    reason it carries the token that way.
+    Not included: creating projects or editing quotas from the console. That is
+    a platform-admin surface and remains API-only.
 
 ### Quality & delivery
 - **Console wired as the official UI.** ✅ **Done, deployed to the lab.** The

@@ -387,7 +387,23 @@ export interface Me {
   authenticated: boolean;
   username?: string | null;
   email?: string | null;
+  /** Effective permissions **in `project`** — not globally. */
   permissions: string[];
+  /** The project this answer is about; absent in the platform view. */
+  project?: string | null;
+  /** Whether requests are project-scoped at all. */
+  tenancy: boolean;
+  /** Whether the caller may take the cross-project view. */
+  platform: boolean;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Role {

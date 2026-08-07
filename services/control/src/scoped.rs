@@ -28,7 +28,7 @@
 use uuid::Uuid;
 use vquasar_model::Scope;
 
-use crate::store::{Image, Network, SecurityGroup, Store, Template, Vm, Volume};
+use crate::store::{Event, Image, Network, SecurityGroup, Store, Task, Template, Vm, Volume};
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
 
@@ -234,6 +234,47 @@ impl ScopedStore {
               ORDER BY name",
         )
         .bind(self.filter())
+        .fetch_all(self.store.pool())
+        .await
+    }
+
+    // ---- task and event feeds ---------------------------------------------
+    //
+    // Both use the owned predicate, so a NULL project — platform work — is
+    // invisible from inside a project. That is the point: "a host went
+    // NotReady" describes the fleet, and the fleet is not a tenant's business.
+    // A platform admin sees them from platform scope (`X-Vquasar-Project: *`).
+
+    pub async fn list_tasks(&self) -> Result<Vec<Task>> {
+        sqlx::query_as::<_, Task>(
+            "SELECT * FROM tasks
+              WHERE ($1::uuid IS NULL OR project_id = $1)
+              ORDER BY created_at DESC",
+        )
+        .bind(self.filter())
+        .fetch_all(self.store.pool())
+        .await
+    }
+
+    pub async fn get_task(&self, id: Uuid) -> Result<Option<Task>> {
+        sqlx::query_as::<_, Task>(
+            "SELECT * FROM tasks
+              WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+        )
+        .bind(id)
+        .bind(self.filter())
+        .fetch_optional(self.store.pool())
+        .await
+    }
+
+    pub async fn list_events(&self, limit: i64) -> Result<Vec<Event>> {
+        sqlx::query_as::<_, Event>(
+            "SELECT * FROM events
+              WHERE ($1::uuid IS NULL OR project_id = $1)
+              ORDER BY ts DESC LIMIT $2",
+        )
+        .bind(self.filter())
+        .bind(limit)
         .fetch_all(self.store.pool())
         .await
     }
