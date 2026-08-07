@@ -98,6 +98,18 @@ pub async fn create(
     if !matches!(body.format.as_str(), "raw" | "qcow2") {
         return Err(ApiError::invalid("format must be raw or qcow2"));
     }
+    // This path runs qemu-img on shared storage *before* anything is persisted,
+    // so an absurd size is real work and real disk, not just a bad row.
+    if body.size_bytes < 0 {
+        return Err(ApiError::invalid("size_bytes must not be negative"));
+    }
+    if body.size_bytes as u64 > vquasar_model::validation::MAX_DISK_BYTES {
+        return Err(ApiError::invalid(format!(
+            "size_bytes {} exceeds the limit of {} bytes",
+            body.size_bytes,
+            vquasar_model::validation::MAX_DISK_BYTES
+        )));
+    }
 
     let id = Uuid::new_v4();
 

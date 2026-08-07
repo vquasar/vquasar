@@ -1082,3 +1082,44 @@ async fn phone_home_requires_the_guests_own_token() {
     )
     .await;
 }
+
+/// Validation enforced only minimums, so a single request could ask for 4096
+/// vCPUs or a 64 TiB volume. The VM case is admitted-then-retried-forever; the
+/// volume case does the work on shared storage immediately.
+#[tokio::test]
+async fn absurd_resource_requests_are_refused() {
+    let h = Harness::start().await;
+
+    let mut spec = vm_spec();
+    spec["cpu"] = json!({"boot_vcpus": 4096, "max_vcpus": 4096});
+    let (st, body) = h
+        .post("/vms", json!({"name": "huge-cpu", "spec": spec}))
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    let mut spec = vm_spec();
+    spec["memory"] = json!({"size_mib": 64u64 * 1024 * 1024});
+    let (st, body) = h
+        .post("/vms", json!({"name": "huge-mem", "spec": spec}))
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // The volume path is the one that consumes shared storage before anything
+    // is persisted.
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "huge", "format": "raw", "size_bytes": 1u64 << 60}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // And an ordinary request is untouched.
+    let (st, body) = h
+        .post("/vms", json!({"name": "normal", "spec": vm_spec()}))
+        .await;
+    assert!(
+        st.is_success(),
+        "a reasonable spec must still be accepted: {body}"
+    );
+}
