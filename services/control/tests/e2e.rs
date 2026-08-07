@@ -424,6 +424,50 @@ impl Harness {
         (st, body)
     }
 
+    /// GET within a project's scope.
+    async fn get_in(&self, project: &str, path: &str) -> Value {
+        self.client
+            .get(format!("{}/api/v1{path}", self.base))
+            .header("X-Vquasar-Project", project)
+            .send()
+            .await
+            .expect("get")
+            .json()
+            .await
+            .unwrap_or(Value::Null)
+    }
+
+    async fn get_status_in(&self, project: &str, path: &str) -> (u16, Value) {
+        let r = self
+            .client
+            .get(format!("{}/api/v1{path}", self.base))
+            .header("X-Vquasar-Project", project)
+            .send()
+            .await
+            .expect("get");
+        let st = r.status().as_u16();
+        (st, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// POST within a project's scope.
+    async fn post_in(
+        &self,
+        project: &str,
+        path: &str,
+        body: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let r = self
+            .client
+            .post(format!("{}/api/v1{path}", self.base))
+            .header("X-Vquasar-Project", project)
+            .json(&body)
+            .send()
+            .await
+            .expect("post");
+        let st = r.status();
+        (st, r.json().await.unwrap_or(Value::Null))
+    }
+
     async fn get(&self, path: &str) -> Value {
         let r = self
             .client
@@ -1182,4 +1226,58 @@ async fn projects_are_created_and_refuse_to_vanish_with_contents() {
     let (st, _) = h.delete_status(&format!("/projects/{id}")).await;
     assert_eq!(st, 204);
     assert_eq!(h.get("/projects").await.as_array().unwrap().len(), 1);
+}
+
+/// With tenancy on, a caller sees its own project and the shared catalogues —
+/// and cannot reach another project's resources by naming their ids (ADR-018).
+#[tokio::test]
+async fn tenancy_scopes_reads_and_refuses_foreign_references() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_TENANCY__ENABLED", "true")]).await;
+
+    let (st, blue) = h.post("/projects", json!({"name": "blue"})).await;
+    assert!(st.is_success(), "{blue}");
+    let blue = blue["id"].as_str().unwrap().to_string();
+
+    // A VM in the default project.
+    let (st, created) = h
+        .post("/vms", json!({"name": "in-default", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{created}");
+    let vm = created["vm_id"].as_str().unwrap().to_string();
+
+    // The default project sees it...
+    assert_eq!(h.get("/vms").await.as_array().unwrap().len(), 1);
+    // ...and blue does not, by list or by id. Naming the id gets the same
+    // answer an unknown one would: not found, never "forbidden".
+    assert_eq!(
+        h.get_in(&blue, "/vms").await.as_array().unwrap().len(),
+        0,
+        "another project's VM must not be listed"
+    );
+    let (st, _) = h.get_status_in(&blue, &format!("/vms/{vm}")).await;
+    assert_eq!(st, 404, "another project's VM must not be readable by id");
+
+    // Reference smuggling: blue creating a VM on the default project's network.
+    // Networks created before tenancy are shared (project_id NULL), so make one
+    // owned by default to have something genuinely foreign.
+    let (st, net) = h
+        .post("/networks", json!({"name": "owned", "kind": "tenant"}))
+        .await;
+    assert!(st.is_success(), "{net}");
+    let net = net["id"].as_str().unwrap().to_string();
+    h.sql(&format!(
+        "UPDATE networks SET project_id='00000000-0000-0000-0000-000000000001' WHERE id='{net}'"
+    ))
+    .await;
+
+    let mut spec = vm_spec();
+    spec["network_interfaces"] = json!([{"network_id": net}]);
+    let (st, body) = h
+        .post_in(&blue, "/vms", json!({"name": "smuggle", "spec": spec}))
+        .await;
+    assert_eq!(
+        st.as_u16(),
+        404,
+        "a create body must not be able to name another project's network: {body}"
+    );
 }
