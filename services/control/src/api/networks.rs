@@ -277,6 +277,115 @@ pub async fn allocations(
     Ok(Json(store.allocations_for_network(id).await?))
 }
 
+/// Body for `POST /networks/:id/adopt-segment`.
+#[derive(Debug, Deserialize)]
+pub struct AdoptSegment {
+    /// Uplink the network attaches to. Defaults to the one it already has, or
+    /// `default`.
+    #[serde(default)]
+    pub physical_network: Option<String>,
+    /// 802.1Q tag to adopt. Omit to keep the network untagged.
+    #[serde(default)]
+    pub vlan: Option<i32>,
+    /// Required when the tag differs from what the network uses today, because
+    /// that re-tags every attached NIC and changes what they can reach.
+    #[serde(default)]
+    pub retag_ok: bool,
+}
+
+/// `POST /networks/:id/adopt-segment` — give a grandfathered network a real
+/// segment identity (design §18, ADR-016).
+///
+/// Networks that predate the kind model carry `segment_key = NULL`: they are
+/// excluded from the uniqueness constraint, so nothing guarantees they are not
+/// sharing a broadcast domain with another network. Adopting a segment records
+/// which one they occupy.
+///
+/// Adopting the segment a network *already* occupies changes no packets — it
+/// only writes down what is true. Adopting a different tag does re-tag every
+/// attached NIC, so that needs `retag_ok`.
+///
+/// This is deliberately not `PATCH /networks/:id`: a network *with* a segment
+/// may never change it, because that would move every attached VM to a
+/// different broadcast domain. Adoption is only ever NULL → set.
+pub async fn adopt_segment(
+    State(store): State<Store>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AdoptSegment>,
+) -> ApiResult<Json<Network>> {
+    let net = store
+        .get_network(id)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))?;
+
+    let kind: NetworkKind =
+        net.kind
+            .parse()
+            .map_err(|e: vquasar_model::network::InvalidNetworkKind| {
+                ApiError::internal(e.to_string())
+            })?;
+    if kind.is_platform_only() {
+        user.require("network:create:provider")?;
+    } else {
+        user.require("network:update")?;
+    }
+
+    if net.segment_key.is_some() {
+        return Err(ApiError::invalid(
+            "this network already has a segment, and a segment cannot be changed: \
+             every attached VM would move to a different broadcast domain. Retarget \
+             the NICs instead (PUT /vms/:id/nics/:index)",
+        ));
+    }
+
+    let policy = store.network_policy();
+    let uplink = body
+        .physical_network
+        .clone()
+        .or_else(|| net.physical_network.clone())
+        .unwrap_or_else(|| "default".to_string());
+    if !policy.permits_uplink(&uplink) {
+        return Err(ApiError::invalid(format!(
+            "unknown physical_network {uplink:?} — configure it in [network] physical_networks"
+        )));
+    }
+    if let Some(tag) = body.vlan {
+        if !policy.permits_vlan(tag) {
+            return Err(ApiError::invalid(format!(
+                "vlan {tag} is not in the permitted range ({})",
+                policy.describe_vlans()
+            )));
+        }
+    }
+    if body.vlan != net.vlan && !body.retag_ok {
+        return Err(ApiError::invalid(
+            "adopting a different vlan re-tags every NIC on this network and changes \
+             what they can reach; pass retag_ok=true to confirm",
+        ));
+    }
+
+    let key = SegmentKey::Physical {
+        physical_network: uplink.clone(),
+        vlan: body.vlan.map(|v| v as u16),
+    }
+    .canonical();
+
+    store
+        .adopt_network_segment(id, &uplink, body.vlan, &key)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => ApiError::invalid(format!(
+                "segment {key} is already taken by another network — they are the same \
+                 broadcast domain, so only one of them can describe it. Consolidate them \
+                 (retarget the NICs and delete the spare), or adopt a distinct vlan"
+            )),
+            _ => e.into(),
+        })?
+        .map(Json)
+        .ok_or_else(|| ApiError::invalid("network already has a segment"))
+}
+
 pub async fn delete(
     State(store): State<Store>,
     user: AuthUser,

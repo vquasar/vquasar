@@ -288,6 +288,7 @@ struct Harness {
     base: String,
     client: reqwest::Client,
     db_name: String,
+    db_url: String,
 }
 
 impl Harness {
@@ -339,6 +340,7 @@ impl Harness {
             base,
             client: reqwest::Client::new(),
             db_name,
+            db_url: db_url.clone(),
         };
         h.wait_healthy().await;
         h
@@ -375,6 +377,18 @@ impl Harness {
             .expect("console request")
             .status()
             .as_u16()
+    }
+
+    /// Run a statement against the harness database, for setting up states the
+    /// API deliberately will not create (here: a pre-kind-model network).
+    async fn sql(&self, stmt: &str) {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&self.db_url)
+            .await
+            .expect("connect to the harness DB");
+        sqlx::query(stmt).execute(&pool).await.expect("statement");
+        pool.close().await;
     }
 
     async fn get(&self, path: &str) -> Value {
@@ -932,4 +946,75 @@ async fn console_rejects_an_unknown_vm_before_upgrading() {
     let vm = created["vm_id"].as_str().unwrap();
     let code = h.ws_status(&format!("/vms/{vm}/console")).await;
     assert_ne!(code, 404, "a real VM must get past the resolution check");
+}
+
+/// A grandfathered network can be given a real segment identity, but only once
+/// and only if nothing else already occupies it (ADR-016).
+#[tokio::test]
+async fn a_legacy_network_can_adopt_a_segment_exactly_once() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_NETWORK__PROVIDER_VLANS", "100-200")]).await;
+
+    // Two networks standing in for the grandfathered pair: no segment key, so
+    // nothing says they are not the same broadcast domain.
+    // One at a time: the second could not even be created while the first holds
+    // the untagged segment — which is the constraint working. Clearing each
+    // segment right after reproduces the state migration 0016 leaves behind.
+    let mut ids = Vec::new();
+    for name in ["legacy-a", "legacy-b"] {
+        let (st, n) = h
+            .post("/networks", json!({"name": name, "kind": "provider"}))
+            .await;
+        assert!(st.is_success(), "{n}");
+        let id = n["id"].as_str().unwrap().to_string();
+        h.sql(&format!(
+            "UPDATE networks SET segment_key=NULL, legacy_segment=true WHERE id='{id}'"
+        ))
+        .await;
+        ids.push(id);
+    }
+
+    // The first adopts the untagged segment it already occupies.
+    let (st, a) = h
+        .post(&format!("/networks/{}/adopt-segment", ids[0]), json!({}))
+        .await;
+    assert!(st.is_success(), "first adoption should succeed: {a}");
+    assert_eq!(a["segment_key"], json!("default:untagged"));
+    assert_eq!(a["legacy_segment"], json!(false));
+
+    // The second cannot: it is the *same* broadcast domain.
+    let (st, b) = h
+        .post(&format!("/networks/{}/adopt-segment", ids[1]), json!({}))
+        .await;
+    assert_eq!(st.as_u16(), 400, "a duplicate segment must be refused: {b}");
+    assert!(
+        b["error"]["message"].as_str().unwrap().contains("same"),
+        "the error should explain why: {b}"
+    );
+
+    // ...but it can take a distinct tag, once the caller confirms the re-tag.
+    let (st, b) = h
+        .post(
+            &format!("/networks/{}/adopt-segment", ids[1]),
+            json!({"vlan": 150}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "re-tagging needs confirmation: {b}");
+    let (st, b) = h
+        .post(
+            &format!("/networks/{}/adopt-segment", ids[1]),
+            json!({"vlan": 150, "retag_ok": true}),
+        )
+        .await;
+    assert!(st.is_success(), "{b}");
+    assert_eq!(b["segment_key"], json!("default:150"));
+
+    // Adoption is one-way: a network with a segment may never change it.
+    let (st, again) = h
+        .post(&format!("/networks/{}/adopt-segment", ids[0]), json!({}))
+        .await;
+    assert_eq!(st.as_u16(), 400, "{again}");
+    assert!(again["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("cannot be changed"));
 }
