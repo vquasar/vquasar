@@ -100,9 +100,17 @@ pub async fn update(
         .ok_or_else(|| ApiError::invalid(format!("image not found: {id}")))
 }
 
-pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Image>>> {
+pub async fn list(
+    State(store): State<Store>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+) -> ApiResult<Json<Vec<Image>>> {
     user.require("image:read")?;
-    Ok(Json(store.list_images().await?))
+    Ok(Json(
+        crate::scoped::ScopedStore::new(store, scope.0)
+            .list_images()
+            .await?,
+    ))
 }
 
 /// An ISO available for read-only attachment as install/driver media (design

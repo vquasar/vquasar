@@ -196,20 +196,26 @@ pub async fn update(
         .ok_or_else(|| ApiError::invalid(format!("template not found: {id}")))
 }
 
-pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Template>>> {
+pub async fn list(
+    State(store): State<Store>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+) -> ApiResult<Json<Vec<Template>>> {
     user.require("template:read")?;
+    let scoped = crate::scoped::ScopedStore::new(store, scope.0);
     Ok(Json(crate::api::redact::templates(
-        store.list_templates().await?,
+        scoped.list_templates().await?,
     )))
 }
 
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Template>> {
     user.require("template:read")?;
-    store
+    crate::scoped::ScopedStore::new(store, scope.0)
         .get_template(id)
         .await?
         .map(crate::api::redact::template)

@@ -272,14 +272,17 @@ pub struct VmMetricsView {
 /// unreachable, rather than erroring.
 pub async fn metrics(
     State(store): State<Store>,
+    scope: crate::authz::RequestScope,
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<VmMetricsView>> {
     user.require("vm:read")?;
-    let vm = store
+    // Per-VM metrics are a side channel — activity profiling — so the id has to
+    // resolve in scope like any other read.
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_vm(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+        .ok_or_else(|| ApiError::vm_not_found(id))?;
     let Some(host_id) = vm.host_id else {
         return Ok(Json(VmMetricsView::default()));
     };
@@ -375,13 +378,25 @@ pub struct ChangeNic {
 pub async fn change_nic(
     State(store): State<Store>,
     _: RequireVmUpdate,
+    scope: crate::authz::RequestScope,
     Path((id, index)): Path<(Uuid, usize)>,
     Json(body): Json<ChangeNic>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
-    let vm = store
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    // Retargeting a NIC names a network and optionally security groups — the
+    // same smuggling surface as create, on a VM that already exists.
+    if !scoped.network_visible(body.network_id).await? {
+        return Err(ApiError::not_found("network"));
+    }
+    if let Some(groups) = &body.security_groups {
+        if !scoped.security_groups_in_scope(groups).await? {
+            return Err(ApiError::not_found("security group"));
+        }
+    }
+    let vm = scoped
         .get_vm(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+        .ok_or_else(|| ApiError::vm_not_found(id))?;
     let mut spec = vm.spec.0.clone();
     if index >= spec.network_interfaces.len() {
         return Err(ApiError::invalid(format!("nic index {index} out of range")));
@@ -758,14 +773,15 @@ pub struct AddNic {
 
 pub async fn update(
     State(store): State<Store>,
+    scope: crate::authz::RequestScope,
     _: RequireVmUpdate,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateVm>,
 ) -> ApiResult<(StatusCode, Json<Accepted>)> {
-    let vm = store
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_vm(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("vm not found: {id}")))?;
+        .ok_or_else(|| ApiError::vm_not_found(id))?;
     let mut spec = vm.spec.0.clone();
 
     if let Some(v) = body.boot_vcpus {

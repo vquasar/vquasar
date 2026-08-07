@@ -985,6 +985,12 @@ impl Store {
         .await
     }
 
+    // Note: the unscoped `list_*` for VMs, volumes, networks, images,
+    // templates and security groups deliberately do not exist. They live on
+    // `ScopedStore`, which cannot be built without a caller's scope — an
+    // unscoped list method that still exists is one somebody will eventually
+    // call (design §47, ADR-018).
+
     // ---- projects (design §47, ADR-018) ----------------------------------
 
     pub async fn list_projects(&self) -> Result<Vec<Project>> {
@@ -1123,12 +1129,6 @@ impl Store {
         sqlx::query_as::<_, Network>("SELECT * FROM networks WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await
-    }
-
-    pub async fn list_networks(&self) -> Result<Vec<Network>> {
-        sqlx::query_as::<_, Network>("SELECT * FROM networks ORDER BY created_at")
-            .fetch_all(&self.pool)
             .await
     }
 
@@ -1273,12 +1273,6 @@ impl Store {
     }
 
     // ---- security groups (design M13c) -----------------------------------
-
-    pub async fn list_security_groups(&self) -> Result<Vec<SecurityGroup>> {
-        sqlx::query_as::<_, SecurityGroup>("SELECT * FROM security_groups ORDER BY name")
-            .fetch_all(&self.pool)
-            .await
-    }
 
     pub async fn get_security_group(&self, id: Uuid) -> Result<Option<SecurityGroup>> {
         sqlx::query_as::<_, SecurityGroup>("SELECT * FROM security_groups WHERE id=$1")
@@ -1632,12 +1626,6 @@ impl Store {
             .await
     }
 
-    pub async fn list_images(&self) -> Result<Vec<Image>> {
-        sqlx::query_as::<_, Image>("SELECT * FROM images ORDER BY created_at")
-            .fetch_all(&self.pool)
-            .await
-    }
-
     pub async fn delete_image(&self, id: Uuid) -> Result<bool> {
         let res = sqlx::query("DELETE FROM images WHERE id=$1")
             .bind(id)
@@ -1724,16 +1712,6 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         self.open_template_opt(t)
-    }
-
-    pub async fn list_templates(&self) -> Result<Vec<Template>> {
-        let mut ts = sqlx::query_as::<_, Template>("SELECT * FROM templates ORDER BY created_at")
-            .fetch_all(&self.pool)
-            .await?;
-        for t in ts.iter_mut() {
-            self.open_template(t)?;
-        }
-        Ok(ts)
     }
 
     pub async fn delete_template(&self, id: Uuid) -> Result<bool> {

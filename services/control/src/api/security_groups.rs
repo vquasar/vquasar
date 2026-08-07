@@ -21,10 +21,12 @@ pub struct SecurityGroupView {
 pub async fn list(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
 ) -> ApiResult<Json<Vec<SecurityGroupView>>> {
     user.require("network:read")?;
     let mut out = Vec::new();
-    for g in store.list_security_groups().await? {
+    let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    for g in scoped.list_security_groups().await? {
         let rules = store.list_sg_rules(g.id).await?;
         out.push(SecurityGroupView { group: g, rules });
     }
@@ -34,13 +36,14 @@ pub async fn list(
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<SecurityGroupView>> {
     user.require("network:read")?;
-    let group = store
+    let group = crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .get_security_group(id)
         .await?
-        .ok_or_else(|| ApiError::invalid(format!("security group not found: {id}")))?;
+        .ok_or_else(|| ApiError::not_found("security group"))?;
     let rules = store.list_sg_rules(id).await?;
     Ok(Json(SecurityGroupView { group, rules }))
 }

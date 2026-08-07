@@ -249,18 +249,27 @@ pub async fn update(
         .ok_or_else(|| ApiError::invalid(format!("network not found: {id}")))
 }
 
-pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<Vec<Network>>> {
+pub async fn list(
+    State(store): State<Store>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+) -> ApiResult<Json<Vec<Network>>> {
     user.require("network:read")?;
-    Ok(Json(store.list_networks().await?))
+    Ok(Json(
+        crate::scoped::ScopedStore::new(store, scope.0)
+            .list_networks()
+            .await?,
+    ))
 }
 
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
+    scope: crate::authz::RequestScope,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Network>> {
     user.require("network:read")?;
-    store
+    crate::scoped::ScopedStore::new(store, scope.0)
         .get_network(id)
         .await?
         .map(Json)
