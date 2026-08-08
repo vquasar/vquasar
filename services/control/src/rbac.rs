@@ -23,6 +23,12 @@ pub const CATALOG: &[&str] = &[
     "network:read",
     "network:update",
     "network:delete",
+    // A storage pool is a platform resource, like a host: it says where a
+    // fleet's bytes go, and creating one names a directory the agents open
+    // with privilege. Read is broad, management is `admin` only — the same
+    // split as `host:read` / `host:manage` (ADR-023).
+    "storagepool:read",
+    "storagepool:manage",
     "volume:create",
     "volume:read",
     "volume:update",
@@ -74,6 +80,7 @@ pub fn builtin_roles() -> Vec<BuiltinRole> {
         .filter(|p| {
             !p.starts_with("iam:")
                 && *p != "host:manage"
+                && *p != "storagepool:manage"
                 && *p != "network:create:provider"
                 // Reading the project list is fine; shaping tenancy is not.
                 && !matches!(*p, "project:create" | "project:update" | "project:delete")
@@ -142,6 +149,10 @@ mod tests {
         let operator = roles.iter().find(|r| r.name == "operator").unwrap();
         assert!(!operator.permissions.contains(&"iam:manage"));
         assert!(!operator.permissions.contains(&"host:manage"));
+        // Where the fleet's bytes go is a platform decision (ADR-023) — but an
+        // operator still needs to see which pools exist to place a volume.
+        assert!(!operator.permissions.contains(&"storagepool:manage"));
+        assert!(operator.permissions.contains(&"storagepool:read"));
         // Physical attachment is platform-only (ADR-016).
         assert!(!operator.permissions.contains(&"network:create:provider"));
         // Tenancy boundaries are platform-shaped, not workload-shaped.

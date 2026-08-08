@@ -10,6 +10,7 @@ mod iam;
 mod images;
 mod networks;
 pub mod pathsafe;
+mod pools;
 mod projects;
 pub mod redact;
 mod security_groups;
@@ -133,6 +134,12 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
         .route(
             "/security-groups/:id/rules/:rule_id",
             axum::routing::delete(security_groups::delete_rule),
+        )
+        // Storage pools are platform resources, so these are unscoped (ADR-023).
+        .route("/storage-pools", get(pools::list).post(pools::create))
+        .route(
+            "/storage-pools/:id",
+            get(pools::get).patch(pools::update).delete(pools::delete),
         )
         .route("/volumes", get(volumes::list).post(volumes::create))
         .route("/volumes/:id", get(volumes::get).delete(volumes::delete))

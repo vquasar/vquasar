@@ -371,6 +371,41 @@ pub struct HostInventory {
     pub vm_count: i32,
 }
 
+/// A storage pool row: desired state only (design §20, ADR-023).
+///
+/// `kind` and `params` are immutable after creation. A pool's identity *is*
+/// where its bytes are; repointing it would strand every volume already in it
+/// while leaving the row looking correct. Moving storage is a migration, not
+/// an edit.
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct StoragePool {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub kind: String,
+    pub params: Json<vquasar_model::PoolParams>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// What the fleet reports about a pool (design §7, ADR-023).
+///
+/// Never declared. `reachable_hosts` is how many agents currently report the
+/// pool, and zero of them is what makes a pool `Pending` however correct its
+/// configuration looks.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PoolReachability {
+    pub reachable_hosts: i64,
+    /// The *smallest* capacity any reporting host sees, not the sum.
+    ///
+    /// A `shared_dir` pool is one filesystem that several hosts have mounted,
+    /// so summing would multiply one disk by its number of mounts. Taking the
+    /// minimum also stays right if hosts disagree — the pessimistic number is
+    /// the one a scheduler can act on.
+    pub capacity_bytes: Option<i64>,
+    pub available_bytes: Option<i64>,
+}
+
 /// The persistence layer.
 #[derive(Clone)]
 pub struct Store {
@@ -1630,6 +1665,144 @@ impl Store {
             .execute(&self.pool)
             .await
             .map(|_| ())
+    }
+
+    // ---- storage pools (design §20, ADR-023) -----------------------------
+
+    // Unscoped by design. A pool is a platform resource like a host, not a
+    // tenant one: any project may place a volume in any pool, and per-project
+    // restrictions belong with quotas rather than ownership (ADR-023). That is
+    // why these are here and not on `ScopedStore`.
+
+    pub async fn list_storage_pools(&self) -> Result<Vec<StoragePool>> {
+        sqlx::query_as::<_, StoragePool>("SELECT * FROM storage_pools ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_storage_pool(&self, id: Uuid) -> Result<Option<StoragePool>> {
+        sqlx::query_as::<_, StoragePool>("SELECT * FROM storage_pools WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn insert_storage_pool(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        params: &vquasar_model::PoolParams,
+    ) -> Result<StoragePool> {
+        let now = Utc::now();
+        sqlx::query_as::<_, StoragePool>(
+            "INSERT INTO storage_pools (id, name, description, kind, params, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$6)
+             RETURNING *",
+        )
+        .bind(Uuid::new_v4())
+        .bind(name)
+        .bind(description)
+        // The kind column and the tag inside `params` come from one value, so
+        // the CHECK constraint in 0028 can only fire on a coding error.
+        .bind(params.kind().as_str())
+        .bind(Json(params))
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Rename a pool or change its description. Deliberately cannot touch
+    /// `kind` or `params` — see [`StoragePool`].
+    pub async fn update_storage_pool(
+        &self,
+        id: Uuid,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<Option<StoragePool>> {
+        sqlx::query_as::<_, StoragePool>(
+            "UPDATE storage_pools SET name=$2, description=$3, updated_at=$4
+             WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(description)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Delete a pool. Returns whether a row was removed.
+    pub async fn delete_storage_pool(&self, id: Uuid) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM storage_pools WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// What the fleet currently reports about one pool.
+    pub async fn pool_reachability(&self, id: Uuid) -> Result<PoolReachability> {
+        Ok(self
+            .pool_reachability_all()
+            .await?
+            .remove(&id)
+            .unwrap_or_default())
+    }
+
+    /// The same, for every pool at once — the list endpoint asks about all of
+    /// them, and one query is not N.
+    pub async fn pool_reachability_all(
+        &self,
+    ) -> Result<std::collections::HashMap<Uuid, PoolReachability>> {
+        let rows: Vec<(Uuid, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT pool_id, COUNT(*), MIN(capacity_bytes), MIN(available_bytes)
+               FROM storage_pool_reachability GROUP BY pool_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, hosts, capacity_bytes, available_bytes)| {
+                (
+                    id,
+                    PoolReachability {
+                        reachable_hosts: hosts,
+                        capacity_bytes,
+                        available_bytes,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    /// Make sure the `default` pool exists, seeded from `[storage]
+    /// shared_volumes_dir` (ADR-023).
+    ///
+    /// Runs at startup, and inserts only when the name is free. Re-syncing it
+    /// on every boot — the way built-in roles are — would be wrong here: an
+    /// operator who renames or repoints their default pool has said something,
+    /// and config would silently overrule them on the next restart.
+    pub async fn ensure_default_pool(&self) -> Result<()> {
+        let params = vquasar_model::PoolParams::SharedDir {
+            path: self.shared_volumes_dir.to_string(),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO storage_pools (id, name, description, kind, params, created_at, updated_at)
+             VALUES ($1,'default',$2,$3,$4,$5,$5)
+             -- Untargeted, so it also covers the unique index on a shared_dir
+             -- path: if this directory is already a pool under another name,
+             -- there is nothing to seed.
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(Uuid::new_v4())
+        .bind("The shared directory this cluster used before pools existed.")
+        .bind(params.kind().as_str())
+        .bind(Json(&params))
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
     }
 
     // ---- volume snapshots (design M14c) ----------------------------------
