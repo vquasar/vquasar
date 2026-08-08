@@ -817,10 +817,26 @@ upgraded first, then controllers begin stamping. Once a fleet is fully upgraded
 an operator can make the agent strict; until then the field is advisory, and the
 warning is what tells you the fleet is not yet ready to enforce it.
 
-*Consequences.* `proto/agent.proto` gains a field on every controller-initiated
-request, which is the first time the control plane's internal bookkeeping
-crosses the privilege boundary. It is deliberately the *only* such field, and it
-is opaque to the agent.
+*Amended during implementation.* The epoch travels as **gRPC metadata**, not as
+a field on every request message. Implementation made the difference obvious:
+the agent already enforces the control plane's identity in a tonic interceptor
+(`RequireControlIdentity`), which sees request metadata and sits in front of
+every one of the thirteen RPCs. Putting the epoch there means:
+
+* `proto/agent.proto` does not change at all, so there is no generated-code
+  skew to sequence — a strictly smaller upgrade than the one described below;
+* the check lives beside the identity check, which is the same kind of question
+  asked at the same point, rather than being repeated in thirteen handlers;
+* the domain contract stays free of control-plane bookkeeping, which is a better
+  answer to the boundary concern than "one field, deliberately the only one".
+
+Everything else stands: persisted across restarts, per-RPC, absent-is-accepted.
+The original wording is kept below because the reasoning that led to it is still
+the reasoning for the mechanism — only the carrier changed.
+
+*Consequences.* The epoch crosses the privilege boundary, which is the first
+time the control plane's internal bookkeeping does. It is deliberately the only
+such value, and it is opaque to the agent.
 
 A rejected call surfaces to the controller as an error, so it counts against the
 reconcile budget (M20a) and eventually marks the VM `Failed` — correct, since a
