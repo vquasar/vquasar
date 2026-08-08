@@ -65,6 +65,14 @@ fn free_port() -> u16 {
 struct AgentState {
     /// vm_id -> observed phase.
     vms: HashMap<String, Phase>,
+    /// Hold `ensure_vm` open for this long before answering. The fault-
+    /// injection hook: a real create takes seconds, a fake one takes
+    /// microseconds, so without a way to widen that window a test cannot kill
+    /// the leader *during* a create — which is the case that broke on the lab
+    /// (#35).
+    ensure_delay_ms: u64,
+    /// Number of `ensure_vm` calls that have arrived, across leaders.
+    ensure_calls: u32,
     /// When set, `ensure_vm` fails with this message — standing in for the
     /// residue of an interrupted create, which fails identically every time
     /// however often it is retried (#35).
@@ -157,7 +165,15 @@ impl HostAgent for FakeAgent {
         r: Request<EnsureVmRequest>,
     ) -> Result<Response<EnsureVmResponse>, Status> {
         let req = r.into_inner();
-        if let Some(msg) = self.state.lock().unwrap().ensure_error.clone() {
+        let (delay, err) = {
+            let mut st = self.state.lock().unwrap();
+            st.ensure_calls += 1;
+            (st.ensure_delay_ms, st.ensure_error.clone())
+        };
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        if let Some(msg) = err {
             return Err(Status::internal(msg));
         }
         // Mirror the real agent: reconcile to the spec's desired power state.
@@ -760,6 +776,35 @@ impl Peer {
             .json()
             .await
             .unwrap_or(Value::Null)
+    }
+
+    /// Block until this instance is the one running the controllers.
+    async fn wait_until_leader(&self) {
+        for _ in 0..120 {
+            if self
+                .metrics()
+                .await
+                .contains("vquasar_controller_is_leader 1")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("peer never became the controller");
+    }
+
+    /// Poll this instance until `pred` holds — asserting against the *peer*,
+    /// so the test proves the peer finished the work rather than that the row
+    /// changed somehow.
+    async fn wait_for(&self, path: &str, pred: impl Fn(&Value) -> bool, what: &str) -> Value {
+        for _ in 0..120 {
+            let v = self.get(path).await;
+            if pred(&v) {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("timed out waiting for: {what} (peer, at {path})");
     }
 }
 
@@ -2233,4 +2278,67 @@ async fn a_recovered_reconcile_forgets_its_failures() {
         "0",
         "a success must reset the consecutive-failure count"
     );
+}
+
+/// The case that broke on the lab, in CI: a leader killed *during* a create.
+///
+/// The window is the point. A real create takes seconds and a fake one takes
+/// microseconds, so the agent holds `ensure_vm` open long enough for the leader
+/// to be stopped inside it — otherwise this test would pass by never
+/// interrupting anything (#35).
+#[tokio::test]
+async fn a_create_interrupted_by_a_failover_is_finished_by_the_peer() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+
+    let peer = h.start_peer("beta").await;
+    h.wait_for(
+        "/leader",
+        |v| v["leader"]["holder"] == "alpha",
+        "alpha leading",
+    )
+    .await;
+
+    // Widen the create window so the kill lands inside it.
+    agent.lock().unwrap().ensure_delay_ms = 3_000;
+
+    let (st, v) = h
+        .post("/vms", json!({"name": "interrupted", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let id = v["vm_id"].as_str().unwrap().to_string();
+
+    // Wait until an ensure is actually in flight, then kill the leader. Killing
+    // before the first call would test a failover, not an *interrupted* one.
+    for _ in 0..100 {
+        if agent.lock().unwrap().ensure_calls > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        agent.lock().unwrap().ensure_calls > 0,
+        "the leader should have started a create before it is interrupted"
+    );
+    // The create must still be *unfinished* when the leader dies, or this test
+    // is watching an ordinary failover rather than an interrupted create. This
+    // is what makes the injected window load-bearing instead of decorative.
+    let phase = h.get(&format!("/vms/{id}")).await["phase"].clone();
+    assert_ne!(
+        phase, "Running",
+        "the create completed before the interruption; the injected window is not working"
+    );
+    h.stop_gracefully().await;
+
+    // The peer takes over and finishes the job, with nobody intervening.
+    peer.wait_until_leader().await;
+    agent.lock().unwrap().ensure_delay_ms = 0;
+    peer.wait_for(
+        &format!("/vms/{id}"),
+        |v| v["phase"] == "Running",
+        "Running",
+    )
+    .await;
 }
