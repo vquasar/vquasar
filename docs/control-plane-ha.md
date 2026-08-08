@@ -20,6 +20,16 @@ need an address that outlives any one instance: `POST /phone-home/{vm}` from
 guests, and agent enrollment. A VIP or a DNS name resolving to all instances is
 enough; there is nothing to make sticky, because any instance can answer.
 
+**Every address the console answers on must be registered with the identity
+provider.** The console is served by *every* instance, so it can be reached at
+the VIP and at each node — but the OIDC client only permits the redirect URIs
+and web origins it was told about, and a login anywhere else fails with
+`redirect_uri`. Pass `--ui-origin` once per address to
+[`keycloak-setup.sh`](../scripts/keycloak-setup.sh), or add them to the client
+afterwards. Registering the per-node addresses as well as the VIP is
+deliberate: reaching a node directly is exactly what you want when the VIP is
+somewhere else.
+
 **That address must be in every certificate's SAN.** The VIP is the name
 clients connect to, so each instance's certificate needs it alongside its own
 host — otherwise the connection fails verification exactly when the VIP moves.

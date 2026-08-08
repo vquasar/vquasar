@@ -32,6 +32,10 @@ Options:
   --client ID         OIDC client id for the web UI     (default: vquasar)
   --ui-origin URL     Where the UI is served from; sets the redirect URI and
                       web origin. Repeatable. Defaults to http://localhost:5173
+                      Repeat it once per address the console can be reached at.
+                      With more than one control plane that means the VIP *and*
+                      each node: the console is served by every instance, and a
+                      login at an unregistered address fails with redirect_uri.
                       (the Vite dev server) when not given.
   --admin-user NAME   Keycloak admin username           (default: admin)
   --admin-realm NAME  Realm the admin lives in          (default: master)
