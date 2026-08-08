@@ -421,6 +421,11 @@ needs a control-plane change first, and the UI change after it is small.
   database** and asserts, from each instance's own gauge rather than the shared
   row, that they are never both running the controllers — mutation-checked, and
   the first version of that test did *not* catch a lease that let both act.
+  Validated on the lab with two instances against the live database and three
+  running VMs: one leader, kill it and the peer takes over, restart the first
+  and it stands by rather than stealing, stop the peer and the first resumes —
+  epoch 1→2→3, hosts polled continuously throughout, no VM disturbed. That
+  exercise found the SIGTERM defect below.
   **Still open:** PostgreSQL HA itself (Patroni or managed — deliberately not
   vquasar's job), splitting the leader per controller, and the agent-side
   fencing token. Two deployment constraints are documented rather than enforced:
@@ -579,6 +584,13 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
+- **Graceful shutdown actually runs.** ✅ **Done.** `shutdown_signal` waited only
+  on Ctrl-C in both control and agent, and systemd sends SIGTERM — so under the
+  unit that actually ships, the graceful path had never run in either service.
+  Found by a control-plane failover on the lab taking the full 15s lease TTL
+  instead of the ~1s a clean handover costs: the lease was never released
+  because the code that releases it was never reached. The same gap skipped the
+  HTTP drain, so in-flight requests were cut on every restart.
 - **In-flight work is reclaimed after a restart.** ✅ **Done.** Importing an
   image and provisioning a volume both do expensive external work in a detached
   task after their row is persisted. A restart killed that task and nothing ever
