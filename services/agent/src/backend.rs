@@ -226,6 +226,9 @@ pub struct FakeBackend {
     /// here as well as on the fake, so a VM launched *after* the flag is set
     /// still gets it.
     fail_boot: Mutex<std::collections::HashSet<VmId>>,
+    /// How many times `launch` has been called per VM. One migration receiver
+    /// is one launched VMM, so this is how a test says "not two" (#45).
+    launches: Mutex<HashMap<VmId, u32>>,
 }
 
 #[cfg(test)]
@@ -252,6 +255,11 @@ impl FakeBackend {
         }
     }
 
+    /// How many VMMs have been launched for this VM.
+    pub fn launch_count(&self, id: VmId) -> u32 {
+        self.launches.lock().unwrap().get(&id).copied().unwrap_or(0)
+    }
+
     /// Inspect the fake for a VM (test assertions).
     pub fn get(&self, id: VmId) -> Option<FakeHypervisor> {
         self.states.lock().unwrap().get(&id).cloned()
@@ -268,6 +276,7 @@ impl Backend for FakeBackend {
         _taps: Vec<TapBinding>,
         _layout: &RuntimeLayout,
     ) -> Result<Box<dyn ManagedVmm>> {
+        *self.launches.lock().unwrap().entry(id).or_insert(0) += 1;
         let hv = self.states.lock().unwrap().entry(id).or_default().clone();
         // A VM launched after the flag was set still gets it: the reclaim path
         // discards the VMM, so the retry launches a fresh one (#35).
