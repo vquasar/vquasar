@@ -376,6 +376,60 @@ impl Harness {
         h
     }
 
+    async fn metrics(&self) -> String {
+        self.client
+            .get(format!("{}/metrics", self.base))
+            .send()
+            .await
+            .expect("metrics")
+            .text()
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Start a second control plane against the same database, on its own port
+    /// and with its own instance id. Returns a handle that kills it on drop.
+    ///
+    /// This is the whole point of the HA work: two processes, one database.
+    async fn start_peer(&self, instance_id: &str) -> Peer {
+        let port = free_port();
+        let mut env: Vec<(String, String)> = self
+            .env
+            .iter()
+            .map(|(k, v)| {
+                if k == "VQUASAR_CONTROL_SERVER__LISTEN" {
+                    (k.clone(), format!("127.0.0.1:{port}"))
+                } else {
+                    (k.clone(), v.clone())
+                }
+            })
+            .collect();
+        env.push((
+            "VQUASAR_CONTROL_SERVER__INSTANCE_ID".into(),
+            instance_id.to_string(),
+        ));
+        let child = spawn_control(&env);
+        let peer = Peer {
+            child,
+            base: format!("http://127.0.0.1:{port}"),
+            client: reqwest::Client::new(),
+        };
+        for _ in 0..100 {
+            if let Ok(r) = peer
+                .client
+                .get(format!("{}/healthz", peer.base))
+                .send()
+                .await
+            {
+                if r.status().is_success() {
+                    return peer;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        panic!("peer control plane did not become healthy");
+    }
+
     /// Kill the control plane and start it again on the same address and
     /// database — the only way to exercise what startup does.
     async fn restart(&mut self) {
@@ -640,6 +694,56 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         panic!("timed out waiting for: {what} (at {path})");
+    }
+}
+
+/// Whether this instance's own metrics say it is running the controllers.
+fn leading(metrics: &str) -> bool {
+    metrics
+        .lines()
+        .find(|l| l.starts_with("vquasar_controller_is_leader "))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .map(|v| v.starts_with('1'))
+        .unwrap_or(false)
+}
+
+/// A second control plane sharing the harness's database.
+struct Peer {
+    child: Child,
+    base: String,
+    client: reqwest::Client,
+}
+
+impl Peer {
+    /// Raw `/metrics` text, for asserting on this instance's own gauges rather
+    /// than on shared database state.
+    async fn metrics(&self) -> String {
+        self.client
+            .get(format!("{}/metrics", self.base))
+            .send()
+            .await
+            .expect("peer metrics")
+            .text()
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn get(&self, path: &str) -> Value {
+        self.client
+            .get(format!("{}/api/v1{path}", self.base))
+            .send()
+            .await
+            .expect("peer get")
+            .json()
+            .await
+            .unwrap_or(Value::Null)
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -1841,4 +1945,149 @@ async fn in_flight_work_is_reclaimed_after_a_restart() {
         "1",
         "a ready volume must survive a restart"
     );
+}
+
+/// Two control planes over one database (design §48, ADR-021).
+///
+/// The claim is not "two processes start" — it is that exactly one of them runs
+/// the controllers, both serve the API, and leadership moves when the holder
+/// goes away. Each of those is checked separately, because each fails
+/// differently.
+#[tokio::test]
+async fn two_control_planes_share_one_database_and_one_leader() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    let peer = h.start_peer("beta").await;
+
+    // Exactly one leader, and both instances name the same one — the answer
+    // comes from the database, not from whichever instance was asked.
+    let a = h.get("/leader").await;
+    let b = peer.get("/leader").await;
+    assert_eq!(
+        a["leader"]["holder"], b["leader"]["holder"],
+        "the two instances must agree on who leads: {a} vs {b}"
+    );
+    assert_eq!(a["leader"]["valid"], true);
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM controller_lease")
+            .await,
+        "1",
+        "there is one lease row, ever"
+    );
+
+    // Each instance knows whether it is the one.
+    let leader_is_alpha = a["is_self"].as_bool().unwrap();
+    assert_eq!(
+        leader_is_alpha,
+        !b["is_self"].as_bool().unwrap(),
+        "exactly one instance may believe it is the leader"
+    );
+
+    // The property that actually matters, and the one the lease exists for:
+    // only the holder *runs the controllers*. Read from each instance's own
+    // gauge rather than from the shared row, because a broken lease that let
+    // both instances act would still leave a single, agreed-upon row — the two
+    // would simply take it from each other. Sampled repeatedly: a lease that
+    // ping-pongs shows up as both instances reporting 1 at some point.
+    let mut leaders_seen = 0;
+    for _ in 0..8 {
+        let a_leads = leading(&h.metrics().await);
+        let b_leads = leading(&peer.metrics().await);
+        assert!(
+            !(a_leads && b_leads),
+            "two instances must never both be running the controllers"
+        );
+        if a_leads || b_leads {
+            leaders_seen += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    assert!(
+        leaders_seen > 0,
+        "somebody has to be running the controllers"
+    );
+
+    // Both serve the API regardless of who leads: the API is active/active, and
+    // a standby answering 503 would make half the fleet useless.
+    let (st, v) = h
+        .post("/vms", json!({"name": "ha-vm", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "the API works on this instance: {v}");
+    assert_eq!(
+        peer.get("/vms").await.as_array().unwrap().len(),
+        1,
+        "and the other instance sees the same state"
+    );
+
+    // Leadership moves. Killing the holder frees the lease — on a clean stop it
+    // is handed back rather than waiting out the TTL.
+    let holder = a["leader"]["holder"].as_str().unwrap().to_string();
+    let epoch_before = a["leader"]["epoch"].as_i64().unwrap();
+    drop(peer);
+    h.restart().await;
+
+    let after = h
+        .wait_for(
+            "/leader",
+            |v| v["leader"]["valid"] == true,
+            "a live leader after both were bounced",
+        )
+        .await;
+    assert_eq!(after["leader"]["holder"], "alpha");
+    // Alpha reclaiming its own lease is a renewal, not a new term; beta taking
+    // over from alpha would have been. Either way the epoch never goes
+    // backwards, which is what makes it usable as a fencing token later.
+    assert!(
+        after["leader"]["epoch"].as_i64().unwrap() >= epoch_before,
+        "epoch must be monotonic (was {epoch_before}, now {})",
+        after["leader"]["epoch"]
+    );
+    assert!(!holder.is_empty());
+}
+
+/// A restart reclaims its *own* orphaned work and leaves another instance's
+/// alone (ADR-021). Without the owner column, bringing one instance back would
+/// kill a download another instance was still running.
+#[tokio::test]
+async fn a_restart_reclaims_only_its_own_in_flight_work() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+
+    // One row each: alpha's, beta's, and one from before the column existed.
+    for (name, owner) in [
+        ("alphas", "'alpha'"),
+        ("betas", "'beta'"),
+        ("legacy", "NULL"),
+    ] {
+        h.sql(&format!(
+            "INSERT INTO images
+                (id, name, source_path, format, boot, default_size_bytes, cloud_init, os,
+                 status, managed, owner, created_at, updated_at)
+             VALUES (gen_random_uuid(), '{name}', '/x/{name}.qcow2', 'qcow2',
+                     '{{\"type\":\"firmware\",\"firmware\":\"/x/CLOUDHV.fd\"}}'::jsonb,
+                     NULL, false, NULL, 'importing', TRUE, {owner}, now(), now())"
+        ))
+        .await;
+    }
+
+    h.restart().await;
+
+    let by_name = |v: &Value, name: &str| -> String {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == name)
+            .unwrap()["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let images = h.get("/images").await;
+    assert_eq!(by_name(&images, "alphas"), "failed", "its own orphan");
+    assert_eq!(
+        by_name(&images, "betas"),
+        "importing",
+        "another instance's live import must survive"
+    );
+    // A row with no owner predates the column, so it can only have been written
+    // by a binary that is no longer running.
+    assert_eq!(by_name(&images, "legacy"), "failed");
 }

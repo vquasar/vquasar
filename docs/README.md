@@ -8,6 +8,9 @@ Guides for running and developing vquasar. Start at the
 * [**Booting VMs**](booting-vms.md) — host prerequisites, image preparation,
   the firmware (UEFI) and direct-kernel boot styles, attaching a VM to a
   network, and live migration.
+* [**Running more than one control plane**](control-plane-ha.md) — what an
+  extra instance needs (one certificate CN, a stable address in front), how to
+  tell who is leading, and what happens when the leader goes away.
 * [**Windows guests**](windows-guests.md) — what Cloud Hypervisor's headless,
   virtio-only device model means for Windows, and the two workable install
   paths.
@@ -43,7 +46,7 @@ Guides for running and developing vquasar. Start at the
   does: systemd install/uninstall, OVS setup, image prep, certificate
   generation, Keycloak realm setup, firmware build.
 * [`../DESIGN.md`](../DESIGN.md) — the architecture in full. Section 44 records
-  the load-bearing decisions as ADR-001 … ADR-020; code comments cite design
+  the load-bearing decisions as ADR-001 … ADR-021; code comments cite design
   sections by number.
 * [`../ROADMAP.md`](../ROADMAP.md) — what has landed, and what is queued.
 * [`../proto/agent.proto`](../proto/agent.proto) — the control ↔ agent gRPC

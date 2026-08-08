@@ -26,6 +26,27 @@ use crate::store::Store;
 
 pub use enroll::EnrollmentState;
 
+/// `GET /leader` — which instance is running the controllers (ADR-021).
+///
+/// The answer comes from the database, not from the instance that was asked, so
+/// every instance gives the same one. `is_self` is how an operator tells which
+/// instance they happened to reach through the load balancer.
+async fn leader(
+    axum::extract::State(store): axum::extract::State<Store>,
+    user: crate::authz::AuthUser,
+) -> error::ApiResult<axum::Json<serde_json::Value>> {
+    user.require("host:read")?;
+    let status = crate::lease::status(store.pool()).await?;
+    let me = store.instance_id();
+    Ok(axum::Json(serde_json::json!({
+        "instance": me,
+        "leader": status,
+        "is_self": status
+            .as_ref()
+            .is_some_and(|s| s.valid && Some(s.holder.as_str()) == me),
+    })))
+}
+
 /// Build the `/api/v1` router bound to `store`, with auth wiring attached.
 /// When `enrollment` is set (the issuing CA is configured), the token-based
 /// agent auto-enrollment endpoints are mounted (design M16).
@@ -64,6 +85,10 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
                 .put(projects::set_quota)
                 .delete(projects::clear_quota),
         )
+        // Who is running the controllers, and is this instance it (ADR-021).
+        // Guarded by host:read: it describes the control plane, which is
+        // platform inventory, not a tenant's business.
+        .route("/leader", get(leader))
         .route("/hosts", get(hosts::list).post(hosts::register))
         .route("/hosts/:id", get(hosts::get).patch(hosts::update))
         .route("/hosts/:id/drain", post(hosts::drain))
