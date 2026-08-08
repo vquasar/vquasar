@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::HostInfo => {
             let resp = client
-                .get_host_info(GetHostInfoRequest {})
+                .get_host_info(GetHostInfoRequest::default())
                 .await?
                 .into_inner();
             println!("{resp:#?}");

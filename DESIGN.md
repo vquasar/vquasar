@@ -884,8 +884,9 @@ authority to decide who leads, undoing the boundary this design exists to hold.
 
 ### ADR-023 — A storage pool is a named place to put bytes, and reachability is observed
 
-*Status:* Accepted. The resource is implemented (M23a); agent reporting, the
-scheduler refusal, and volumes referencing a pool are not yet.
+*Status:* Accepted. The resource and agent reporting are implemented (M23a,
+M23b); volumes referencing a pool, and the scheduler refusal that depends on
+them, are not yet.
 
 *Context.* Storage today is one directory. `[storage] shared_volumes_dir` names
 it, every volume is a file under it, and every host is *assumed* to have it

@@ -55,10 +55,15 @@ impl AgentService {
 impl HostAgent for AgentService {
     async fn get_host_info(
         &self,
-        _request: Request<GetHostInfoRequest>,
+        request: Request<GetHostInfoRequest>,
     ) -> Result<Response<GetHostInfoResponse>, Status> {
+        let probes = request.into_inner().pools;
         let host = inventory::collect();
         let vm_count = self.manager.list().await.len() as u32;
+        // Observed, per tick, alongside the rest of the inventory: whether this
+        // host can really use each pool the control plane knows about, and how
+        // much room it has (ADR-023).
+        let storage_pools = crate::pools::probe_all(&probes, &self.host_id).await;
         Ok(Response::new(GetHostInfoResponse {
             host_id: self.host_id.clone(),
             hostname: host.hostname.unwrap_or_default(),
@@ -73,6 +78,7 @@ impl HostAgent for AgentService {
             total_memory_bytes: host.total_memory_bytes.unwrap_or_default(),
             available_memory_bytes: host.available_memory_bytes.unwrap_or_default(),
             vm_count,
+            storage_pools,
         }))
     }
 
@@ -425,7 +431,7 @@ pub(crate) mod tests {
 
         // Host info reflects the CH version and VM count.
         let info = svc
-            .get_host_info(Request::new(GetHostInfoRequest {}))
+            .get_host_info(Request::new(GetHostInfoRequest::default()))
             .await
             .unwrap()
             .into_inner();

@@ -75,7 +75,39 @@ message ConsoleServerMessage {
 
 // ---- Host ----------------------------------------------------------------
 
-message GetHostInfoRequest {}
+// A storage pool the control plane asks this host to check (design §20,
+// ADR-023).
+//
+// Pools are defined once, in the control plane. A host never carries its own
+// list, because per-host storage configuration drifting from the fleet's is
+// exactly what a pool exists to stop.
+message StoragePoolProbe {
+  string pool_id = 1;
+  string name = 2;
+  // shared_dir today; lvm_thin | nfs | rbd later.
+  string kind = 3;
+  // Root path, for kinds that have one.
+  string path = 4;
+}
+
+// What the host found when it looked.
+//
+// `usable = false` carries the reason: an operator whose placement was refused
+// should not have to log into the host to learn why it was refused.
+message StoragePoolReport {
+  string pool_id = 1;
+  bool usable = 2;
+  string message = 3;
+  uint64 capacity_bytes = 4;
+  uint64 available_bytes = 5;
+}
+
+message GetHostInfoRequest {
+  // Pools to check while collecting inventory. An agent that predates this
+  // field ignores it and reports nothing, which leaves every pool `pending` —
+  // the honest answer for a host that has not said it can use one.
+  repeated StoragePoolProbe pools = 1;
+}
 
 message GetHostInfoResponse {
   string host_id = 1;
@@ -97,6 +129,11 @@ message GetHostInfoResponse {
   // everywhere before handing the VNI to a different network — a host returning
   // with a stale vxbr<vni> and a live tunnel mesh must never have it adopted.
   repeated uint32 overlay_vnis = 13;
+  // One entry per probed pool, reporting what this host can actually do with
+  // it (ADR-023). Reachability and capacity are observed here rather than
+  // declared anywhere, because a declared mount is an intention the filesystem
+  // is free to contradict.
+  repeated StoragePoolReport storage_pools = 14;
 }
 
 // ---- VM lifecycle --------------------------------------------------------

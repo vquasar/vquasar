@@ -182,12 +182,53 @@ fn is_live_phase(proto_phase: i32) -> bool {
     )
 }
 
+/// The pools every agent is asked about this tick (ADR-023).
+async fn pool_probes(store: &Store) -> anyhow::Result<Vec<vquasar_proto::agent::StoragePoolProbe>> {
+    Ok(store
+        .list_storage_pools()
+        .await?
+        .into_iter()
+        .map(|p| vquasar_proto::agent::StoragePoolProbe {
+            pool_id: p.id.to_string(),
+            name: p.name,
+            kind: p.kind,
+            path: p.params.0.host_path().unwrap_or_default().to_string(),
+        })
+        .collect())
+}
+
+/// Translate an agent's reports for the store, dropping any whose pool id is
+/// not a UUID — a report the control plane cannot attribute is not a report.
+fn pool_reports(
+    reported: &[vquasar_proto::agent::StoragePoolReport],
+) -> Vec<crate::store::PoolReport> {
+    reported
+        .iter()
+        .filter_map(|r| {
+            let pool_id = r.pool_id.parse::<uuid::Uuid>().ok()?;
+            Some(crate::store::PoolReport {
+                pool_id,
+                usable: r.usable,
+                message: (!r.message.is_empty()).then(|| r.message.clone()),
+                // Sizes are only meaningful for a pool the host can use;
+                // recording zeroes for one it cannot would put a real-looking
+                // number where there is no measurement.
+                capacity_bytes: r.usable.then_some(r.capacity_bytes as i64),
+                available_bytes: r.usable.then_some(r.available_bytes as i64),
+            })
+        })
+        .collect()
+}
+
 /// Poll every host's agent and refresh its availability + inventory.
 #[tracing::instrument(skip_all)]
 pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
+    // Read once per tick, not once per host: every agent is asked about the
+    // same pools, because a pool is defined in one place (ADR-023).
+    let probes = pool_probes(store).await?;
     for host in store.list_hosts().await? {
         let agent = Agent::new(host.endpoint.clone());
-        match agent.get_host_info().await {
+        match agent.get_host_info(probes.clone()).await {
             Ok(info) => {
                 let inv = HostInventory {
                     overlay_vnis: info.overlay_vnis.iter().map(|v| *v as i32).collect(),
@@ -204,6 +245,9 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
                     vm_count: info.vm_count as i32,
                 };
                 store.update_host_ready(host.id, &inv).await?;
+                store
+                    .record_pool_reports(host.id, &pool_reports(&info.storage_pools))
+                    .await?;
                 if host.state != "Ready" {
                     store
                         .insert_event("host", Some(host.id), "host.ready", "info", &host.name)
@@ -224,6 +268,10 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
                 }
                 // Note: VMs are NOT relocated on unreachability (ADR-014).
                 store.mark_host_not_ready(host.id).await?;
+                // A host that cannot be polled is not reporting anything. Its
+                // last word about a pool must not keep that pool looking
+                // usable on the strength of a machine that is gone.
+                store.clear_pool_reports_for_host(host.id).await?;
             }
         }
     }

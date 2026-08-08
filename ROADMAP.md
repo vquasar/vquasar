@@ -340,14 +340,24 @@ Split into three shippable slices.
     pool (unique index), and a pool's path is confined to `[storage]
     allowed_paths` like any other caller-supplied host path (§30). State is
     derived, never stored: `pending` until some host reports the pool.
-  - **M23b — agent reporting and the scheduler refusal.** The agent reports the
-    pools it can actually use and what they measure; the scheduler refuses a
-    host that does not report every pool a VM's disks need, so a missing mount
-    becomes a placement refusal with a reason. `storage_pool_reachability` is
-    already the table it writes to.
+  - **M23b — agent reporting.** ✅ **Done.** `GetHostInfo` carries the pool list
+    down and a report per pool back, so every reconcile tick observes what each
+    host can really do with each pool. The agent proves it rather than
+    inferring it: the directory must exist (it is never created — a host that
+    conjured the mount point would write "shared" data nobody else can see),
+    must be writable by a real write, and `statvfs` supplies capacity. A pool
+    it cannot use is reported with the reason, and `GET /storage-pools/:id`
+    lists it per host, so "why can't this host see the storage" is not an ssh
+    session. An unreachable host's reports are dropped: a pool must not stay
+    `ready` on the word of a machine that is gone. Hosts hold no storage config
+    of their own — per-host drift is the thing a pool exists to remove.
   - **M23c — volumes and VM disks reference a pool**, with
     `<pool>/volumes/<uuid>.<fmt>` replacing the global directory, and the
     orphaned-seed sweep (#41) that a pool finally gives an addressable root.
+    **The scheduler refusal lands here**, not in M23b: refusing a host that
+    cannot see a VM's storage needs the VM's disks to name a pool, and until
+    they do there is nothing to refuse on. Matching by path prefix in the
+    meantime would be a guess built to be deleted.
   - **M23d — the console.**
 - **Storage, the rest of feature-complete.** Additional backends and per-VM
   storage policy (cache mode, discard/TRIM, IO throttling, thin vs thick). Both

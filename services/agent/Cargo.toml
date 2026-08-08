@@ -24,6 +24,9 @@ tonic.workspace = true
 x509-parser.workspace = true
 rustls.workspace = true
 prost.workspace = true
+# statvfs for storage-pool capacity reporting (ADR-023). rustix is already in
+# the tree; using its safe wrapper keeps this codebase free of `unsafe`.
+rustix = { version = "1", features = ["fs"] }
 async-trait.workspace = true
 clap.workspace = true
 figment.workspace = true

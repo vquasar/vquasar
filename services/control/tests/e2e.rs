@@ -30,7 +30,7 @@ use vquasar_proto::agent::{
     EnsureVmResponse, FinalizeReceiveRequest, GetHostInfoRequest, GetHostInfoResponse,
     GetVmMetricsRequest, GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse,
     OperationResponse, PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest,
-    StartVmRequest, StopVmRequest, VmMetricsResponse, VmObservedState,
+    StartVmRequest, StopVmRequest, StoragePoolReport, VmMetricsResponse, VmObservedState,
 };
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -95,6 +95,12 @@ struct AgentState {
     prepare_delay_ms: u64,
     send_delay_ms: u64,
     finalize_delay_ms: u64,
+    /// Storage pools this host refuses to report as usable, keyed by pool name
+    /// with the reason it gives (ADR-023). Anything else it is asked about, it
+    /// can use. Refusing by *name* is deliberate: the control plane is what
+    /// hands out ids, so a test that used them would be asserting on its own
+    /// bookkeeping rather than on the host's answer.
+    pools_refused: HashMap<String, String>,
     /// Every controller lease epoch seen on an `ensure_vm`, in arrival order.
     /// The agent-side check is unit-tested; what this proves is the *wiring* —
     /// that the control plane actually puts its epoch on the wire (ADR-022).
@@ -133,9 +139,32 @@ impl FakeAgent {
 impl HostAgent for FakeAgent {
     async fn get_host_info(
         &self,
-        _r: Request<GetHostInfoRequest>,
+        r: Request<GetHostInfoRequest>,
     ) -> Result<Response<GetHostInfoResponse>, Status> {
-        let vm_count = self.state.lock().unwrap().vms.len() as u32;
+        let probes = r.into_inner().pools;
+        let (vm_count, storage_pools) = {
+            let st = self.state.lock().unwrap();
+            let reports: Vec<_> = probes
+                .iter()
+                .map(|p| match st.pools_refused.get(&p.name) {
+                    Some(why) => StoragePoolReport {
+                        pool_id: p.pool_id.clone(),
+                        usable: false,
+                        message: why.clone(),
+                        capacity_bytes: 0,
+                        available_bytes: 0,
+                    },
+                    None => StoragePoolReport {
+                        pool_id: p.pool_id.clone(),
+                        usable: true,
+                        message: String::new(),
+                        capacity_bytes: FAKE_POOL_CAPACITY,
+                        available_bytes: FAKE_POOL_CAPACITY / 2,
+                    },
+                })
+                .collect();
+            (st.vms.len() as u32, reports)
+        };
         Ok(Response::new(GetHostInfoResponse {
             overlay_vnis: vec![],
             host_id: self.host_id.clone(),
@@ -150,6 +179,7 @@ impl HostAgent for FakeAgent {
             total_memory_bytes: 16 * 1024 * 1024 * 1024,
             available_memory_bytes: 16 * 1024 * 1024 * 1024,
             vm_count,
+            storage_pools,
         }))
     }
 
@@ -400,22 +430,45 @@ impl HostAgent for FakeAgent {
     }
 }
 
+/// What a fake host says a usable storage pool measures. A constant so a test
+/// can tell "the number came from the host" apart from "the number came from
+/// anywhere else" (ADR-023).
+const FAKE_POOL_CAPACITY: u64 = 1 << 40;
+
 /// Start a fake agent on `port`; returns its shared state (for assertions).
 fn spawn_agent(host_id: &str, port: u16) -> Arc<Mutex<AgentState>> {
+    spawn_agent_stoppable(host_id, port).0
+}
+
+/// The same, with a handle that stops the server — so a test can make a host
+/// genuinely unreachable rather than merely unregistered.
+fn spawn_agent_stoppable(
+    host_id: &str,
+    port: u16,
+) -> (Arc<Mutex<AgentState>>, tokio::sync::oneshot::Sender<()>) {
     let state = Arc::new(Mutex::new(AgentState::default()));
     let agent = FakeAgent {
         host_id: host_id.to_string(),
         state: state.clone(),
     };
     let addr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         Server::builder()
             .add_service(HostAgentServer::new(agent))
-            .serve(addr)
+            .serve_with_shutdown(addr, async {
+                // Only an explicit send stops the server. Most tests never want
+                // to stop theirs and drop the handle immediately, and a dropped
+                // oneshot resolves — so without this the agent would shut down
+                // the moment `spawn_agent` returned.
+                if stopped.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            })
             .await
             .unwrap();
     });
-    state
+    (state, stop)
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,6 +1490,101 @@ async fn storage_pools_are_seeded_confined_and_usable_only_when_reported() {
         h.delete(&format!("/storage-pools/{id}")).await.as_u16(),
         404
     );
+}
+
+/// A pool is usable exactly while some host says it is (ADR-023). Nothing an
+/// operator types makes it so, and nothing keeps it so once the host stops
+/// saying it.
+#[tokio::test]
+async fn a_pool_is_usable_only_while_a_host_reports_it() {
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR",
+        "/x/shared/volumes",
+    )])
+    .await;
+
+    // Two pools: one the host will report, one it will refuse. Both look
+    // equally correct from the control plane's side, which is the point.
+    let (st, unmounted) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "unmounted", "kind": "shared_dir", "path": "/x/unmounted"}),
+        )
+        .await;
+    assert!(st.is_success(), "{unmounted}");
+    let unmounted_id = unmounted["id"].as_str().unwrap().to_string();
+    let pools = h.get("/storage-pools").await;
+    let default_id = pools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "default")
+        .and_then(|p| p["id"].as_str())
+        .expect("the seeded default pool")
+        .to_string();
+
+    let port = free_port();
+    let (agent, stop_agent) = spawn_agent_stoppable("hostA", port);
+    agent.lock().unwrap().pools_refused.insert(
+        "unmounted".into(),
+        "/x/unmounted does not exist here — the pool is probably not mounted on this host".into(),
+    );
+    let host = h.register_host("hostA", port).await;
+
+    // The pool the host can use becomes ready, carrying the host's numbers.
+    // Nothing typed them: they arrived over the wire from the agent.
+    let d = h
+        .wait_for(
+            &format!("/storage-pools/{default_id}"),
+            |p| p["state"] == "ready",
+            "the reported pool becoming ready",
+        )
+        .await;
+    assert_eq!(d["reachable_hosts"], 1, "{d}");
+    assert_eq!(d["capacity_bytes"], json!(FAKE_POOL_CAPACITY));
+    assert_eq!(d["available_bytes"], json!(FAKE_POOL_CAPACITY / 2));
+
+    // The refused one stays pending — and says who refused it and why, so the
+    // answer to "why was my placement refused" is not an ssh session.
+    let u = h
+        .wait_for(
+            &format!("/storage-pools/{unmounted_id}"),
+            |p| !p["hosts"].as_array().map(Vec::is_empty).unwrap_or(true),
+            "a report about the unmounted pool",
+        )
+        .await;
+    assert_eq!(u["state"], "pending", "{u}");
+    assert_eq!(u["reachable_hosts"], 0);
+    assert!(
+        u["capacity_bytes"].is_null(),
+        "unusable pool got a size: {u}"
+    );
+    let report = &u["hosts"][0];
+    assert_eq!(report["host_id"], json!(host));
+    assert_eq!(report["host_name"], "hostA");
+    assert_eq!(report["usable"], json!(false));
+    // No measurement, rather than a measurement of zero: a host that cannot use
+    // a pool did not find it empty, it did not find it at all.
+    assert!(report["capacity_bytes"].is_null(), "{report}");
+    assert!(report["available_bytes"].is_null(), "{report}");
+    assert!(
+        report["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not mounted"),
+        "{report}"
+    );
+
+    // A host that stops answering stops vouching for anything. Leaving its last
+    // word in place would keep a pool `ready` on the strength of a machine that
+    // is gone — the stale-declaration failure, one level up.
+    let _ = stop_agent.send(());
+    h.wait_for(
+        &format!("/storage-pools/{default_id}"),
+        |p| p["state"] == "pending",
+        "the pool going pending once its only host is unreachable",
+    )
+    .await;
 }
 
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
