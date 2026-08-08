@@ -7,6 +7,8 @@
 
 use std::time::Duration;
 
+use chrono::Utc;
+
 use tokio::time::sleep;
 use tracing::{debug, warn};
 use vquasar_proto::agent::vm_observed_state::Phase;
@@ -236,16 +238,112 @@ pub async fn reconcile_vms(store: &Store) -> anyhow::Result<()> {
         if vm.phase == "Migrating" {
             continue;
         }
+        // A VM that is failing gets progressively more room between attempts.
+        if !due(&vm) {
+            continue;
+        }
         let result = if vm.phase == "Deleting" {
             reconcile_delete(store, &vm).await
         } else {
             reconcile_ensure(store, &vm).await
         };
-        if let Err(e) = result {
-            warn!(vm = %vm.id, error = %e, "vm reconcile failed; will retry");
+        match result {
+            Ok(()) => {
+                if vm.reconcile_failures > 0 {
+                    if let Err(e) = store.clear_reconcile_failures(vm.id).await {
+                        warn!(vm = %vm.id, error = %e, "could not clear reconcile failures");
+                    }
+                }
+            }
+            Err(e) => note_reconcile_failure(store, &vm, &e).await,
         }
     }
     Ok(())
+}
+
+/// How many consecutive failures before a VM is called `Failed`.
+///
+/// Retrying is right for a transient agent hiccup and wrong for a create whose
+/// residue makes every attempt fail identically (#35). This is the line between
+/// them, and with the backoff below it puts the whole budget at roughly half a
+/// minute: long enough to ride out an agent restart, short enough that an
+/// operator sees the problem rather than never.
+const MAX_RECONCILE_FAILURES: i32 = 5;
+
+/// Back off between attempts once a VM has started failing, so a permanently
+/// broken one does not hammer its agent every tick.
+fn backoff(failures: i32) -> Duration {
+    // 2s, 4s, 8s, then a 10s ceiling — ~30s of retries before giving up.
+    let secs = 2u64.saturating_mul(1 << failures.clamp(0, 3) as u64);
+    Duration::from_secs(secs.min(10))
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    /// The budget has to fit inside the time an operator would wait before
+    /// concluding the platform is broken — and inside the e2e wait window,
+    /// which is the same question asked mechanically.
+    #[test]
+    fn giving_up_takes_about_half_a_minute() {
+        let total: u64 = (1..MAX_RECONCILE_FAILURES)
+            .map(|n| backoff(n).as_secs())
+            .sum();
+        assert!(
+            (20..=40).contains(&total),
+            "retry budget drifted to {total}s; the comment above promises ~30s"
+        );
+    }
+
+    #[test]
+    fn backoff_is_capped() {
+        assert_eq!(backoff(99), Duration::from_secs(10));
+    }
+}
+
+/// Whether enough time has passed to try this VM again.
+fn due(vm: &Vm) -> bool {
+    if vm.reconcile_failures == 0 {
+        return true;
+    }
+    match vm.last_reconcile_at {
+        None => true,
+        Some(last) => {
+            Utc::now()
+                .signed_duration_since(last)
+                .to_std()
+                .unwrap_or_default()
+                >= backoff(vm.reconcile_failures)
+        }
+    }
+}
+
+/// Count a failure, and stop pretending a VM is on its way once it plainly is
+/// not: at the limit it becomes `Failed` and carries the agent's own error, so
+/// the API says what happened instead of showing `Scheduling` for ever (#35).
+async fn note_reconcile_failure(store: &Store, vm: &Vm, e: &anyhow::Error) {
+    let msg = format!("{e:#}");
+    let failures = match store.record_reconcile_failure(vm.id, &msg).await {
+        Ok(n) => n,
+        Err(db) => {
+            warn!(vm = %vm.id, error = %db, "could not record a reconcile failure");
+            return;
+        }
+    };
+    if failures < MAX_RECONCILE_FAILURES {
+        warn!(vm = %vm.id, error = %msg, attempt = failures, "vm reconcile failed; will retry");
+        return;
+    }
+    warn!(vm = %vm.id, error = %msg, attempts = failures, "vm reconcile giving up; marking Failed");
+    let summary = format!("reconcile failed {failures} times: {msg}");
+    if let Err(db) = store.fail_vm(vm.id, &summary).await {
+        warn!(vm = %vm.id, error = %db, "could not mark the vm Failed");
+        return;
+    }
+    let _ = store
+        .insert_event("vm", Some(vm.id), "vm.reconcile_failed", "error", &summary)
+        .await;
 }
 
 /// Advance each in-flight live migration by one step (design section 28). The
@@ -499,13 +597,16 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
                 .await?;
         }
         Err(e) => {
-            // Transient: leave the phase for the next tick to retry.
             if let Some(task) = store.latest_open_task_for_vm(vm.id).await? {
                 store
                     .update_task(task.id, "Running", 50, Some(&e.to_string()))
                     .await?;
             }
-            warn!(vm = %vm.id, error = %e, "ensure_vm failed on agent");
+            // Propagate rather than swallow. This used to log and return Ok,
+            // which made every agent failure look transient to the caller: the
+            // tick retried immediately, for ever, and nothing counted the
+            // attempts or ever gave up (#35).
+            return Err(anyhow::Error::new(e).context("ensure_vm failed on agent"));
         }
     }
     Ok(())

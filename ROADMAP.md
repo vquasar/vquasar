@@ -584,6 +584,23 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
+- **M20a — a failing reconcile is visible.** ✅ **Done.** Half of #35, and the
+  half that stands on its own. `reconcile_ensure` logged the agent's error and
+  returned `Ok`, so every failure looked transient to its caller: the tick
+  retried immediately, for ever, nothing counted attempts and nothing ever gave
+  up. On the lab a VM sat in `Scheduling` through ~130 identical attempts with
+  `message` still NULL.
+  The error now propagates. Consecutive failures are counted, attempts back off
+  (2s, 4s, 8s, 10s ceiling), and after five the VM becomes `Failed` carrying the
+  agent's own error — with an `error`-severity event, so it shows up in the feed
+  as well as on the VM. A success resets the count, so a VM that stumbles and
+  recovers has spent nothing.
+  The budget is ~30s end to end, and a unit test asserts that, because the
+  number is a promise to an operator about how long "stuck" takes to become
+  "failed" and it would otherwise drift silently.
+  **Still open in #35:** the underlying cause — an interrupted create leaves a
+  TAP and a disk lock that make every retry fail identically. That is agent-side
+  and wants its own change; this one makes it diagnosable instead of invisible.
 - **Graceful shutdown actually runs.** ✅ **Done.** `shutdown_signal` waited only
   on Ctrl-C in both control and agent, and systemd sends SIGTERM — so under the
   unit that actually ships, the graceful path had never run in either service.
