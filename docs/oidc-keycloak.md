@@ -20,6 +20,11 @@ KEYCLOAK_ADMIN_PASSWORD=... scripts/keycloak-setup.sh \
   --ui-origin https://control.lab:8080
 ```
 
+`--ui-origin` is repeatable, and with more than one control plane it has to be:
+the console is served by every instance, so pass the VIP *and* each node.
+An address that is not registered fails at login with `redirect_uri`, which
+looks like a broken console rather than a missing registration.
+
 It creates a realm (`vquasar`), a public client for the web UI (Authorization
 Code + PKCE, no client secret in the browser), the groups
 `vquasar-admins` / `vquasar-operators` / `vquasar-viewers`, and two protocol
