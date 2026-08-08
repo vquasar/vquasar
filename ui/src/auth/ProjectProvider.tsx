@@ -58,7 +58,15 @@ function readStored(): string | null {
 }
 
 export function ProjectProvider({ children }: { children: ReactNode }) {
-  const [project, setState] = useState<string | null>(selected);
+  // Sync module state from storage during the first render rather than in an
+  // effect: children fire their queries as soon as they mount, and an effect
+  // runs after that — the first request of the session would go out under a
+  // stale selection. The getter lives at module scope so it is registered
+  // before any request; this is what keeps it *correct* on every mount.
+  const [project, setState] = useState<string | null>(() => {
+    selected = readStored();
+    return selected;
+  });
   const qc = useQueryClient();
   const { data: me } = useMe();
   const enabled = me?.tenancy ?? false;

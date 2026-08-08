@@ -17,7 +17,8 @@ cargo deny check          # requires: cargo install cargo-deny
 ```
 
 CI ([`../.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs the same
-set on a pinned toolchain, plus the e2e suite and the UI build. Pin bumps are
+set on a pinned toolchain, plus the e2e suite, the console's component tests
+and the UI build. Pin bumps are
 deliberate — clippy lint sets drift between releases.
 
 ## Database
@@ -75,6 +76,7 @@ cd ui
 npm install
 npm run dev        # http://localhost:5173
 npm run typecheck
+npm run test       # vitest, jsdom
 npm run build      # tsc --noEmit && vite build -> ui/dist
 ```
 
@@ -112,6 +114,23 @@ change.
 
   It creates a uniquely-named database per run and drops it on teardown. Auth
   is disabled, so no IdP is needed.
+* **Console component tests** — `cd ui && npm run test` (vitest in jsdom).
+  These stub `fetch` and **nothing else**: the provider, the query client, MUI
+  and the component under test are all real, so a passing test exercises the
+  same path a browser does right up to the wire. Mocking a hook to make an
+  assertion pass proves the mock works, not the console.
+
+  `src/test/setup.ts` gives you `stubFetch(routes)`, which answers from a path →
+  body table and records the project header each request carried; an unrouted
+  path answers 404 so a forgotten stub fails loudly instead of leaving a
+  component loading forever. `src/test/render.tsx` wraps a component in the
+  providers the real app wraps it in, with retries and background refetching
+  off.
+
+  What they are for is behaviour with consequences — the project header a
+  request would carry, a stale selection being dropped — not that a menu opens.
+  Both were checked by mutation: breaking the header emission fails five of
+  them, and keeping a revoked selection fails one.
 * **Boot integration** — `crates/client/tests/boot_integration.rs` boots a real
   VM. Opt-in: it skips unless its `CH_IT_*` environment variables are set.
 
