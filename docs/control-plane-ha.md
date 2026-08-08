@@ -20,6 +20,16 @@ need an address that outlives any one instance: `POST /phone-home/{vm}` from
 guests, and agent enrollment. A VIP or a DNS name resolving to all instances is
 enough; there is nothing to make sticky, because any instance can answer.
 
+**That address must be in every certificate's SAN.** The VIP is the name
+clients connect to, so each instance's certificate needs it alongside its own
+host — otherwise the connection fails verification exactly when the VIP moves.
+Easy to miss, because it works until the first failover.
+
+**`[enrollment] control_url` must be the VIP, before you create any VMs.** It is
+rendered into cloud-init at seed time, so a guest keeps whatever address it was
+built with. Changing it later does not move existing guests; they have to be
+re-seeded or recreated.
+
 **Distinct instance ids if you run two on one host.** The identity defaults to
 the hostname and is deliberately stable across restarts. Two processes sharing a
 hostname would each believe the other's lease and in-flight work were their own.
@@ -38,6 +48,67 @@ because the database *is* the membership.
 
 Migrations run at startup on whichever instance starts first; the others find
 them already applied.
+
+In practice, the things that are easy to forget:
+
+1. **The whole config, not just the database URL.** The encryption key and key
+   id especially: an instance with a different key cannot decrypt sealed
+   cloud-init, so every VM it reconciles fails. The issuing CA (`[tls]
+   issuer_cert` / `issuer_key`) too, or that instance cannot sign enrolments.
+   The PostgreSQL CA if you use `verify-full` — the startup check names the
+   missing path, which is the intended way to find this out.
+2. **Shared storage.** Control runs `qemu-img` on it for image and volume work,
+   so every instance needs the same mount at the same path.
+3. **Verify the binary you deployed.** Compare checksums with the build host
+   rather than trusting that a copy succeeded — a copy that raced a rebuild
+   produces a plausible-looking file of the same size, and the symptom is a
+   behaviour that "should work" mysteriously not working.
+
+## A VIP with keepalived
+
+One package, no cluster manager. The health check is what matters:
+
+```
+vrrp_script check_control {
+    script "/usr/bin/curl -sk -f -m 2 https://127.0.0.1:8080/healthz"
+    interval 2
+    rise 2
+    fall 2
+    weight 0
+}
+
+vrrp_instance vquasar_api {
+    state MASTER           # BACKUP on the others
+    interface br0
+    virtual_router_id 85
+    priority 110           # lower on the others
+    advert_int 1
+    authentication { auth_type PASS
+                     auth_pass <something> }
+    virtual_ipaddress { 10.0.0.85/24 }
+    track_script { check_control }
+}
+```
+
+**The VIP follows a serving instance, not the leader.** The API is
+active/active — every instance answers every request, and only the background
+loops are single-leader. Tying the address to leadership would move it for no
+reason and route around a perfectly healthy node.
+
+`/healthz` rather than `systemctl is-active`: it proves the process is answering
+HTTPS, and an instance that cannot reach PostgreSQL fails it while systemd still
+calls the unit active.
+
+Two things that will silently stop this working, both found the hard way:
+
+* **SELinux.** `keepalived_connect_any` is off by default on RHEL-family
+  systems, so the daemon cannot connect to the API it is checking. The node sits
+  in `FAULT` and refuses the VIP while looking healthy, and running the same
+  curl by hand works — which is what makes it confusing.
+  `setsebool -P keepalived_connect_any on`.
+* **The firewall.** VRRP is IP protocol 112, not a TCP port:
+  `firewall-cmd --add-protocol=vrrp --permanent`. Use `--permanent` — a reload
+  drops anything that was only added at runtime.
 
 ## Checking it
 
@@ -88,6 +159,24 @@ before acting again: the controllers only run while more than half the lease
 remains. The one operation where an overlap would corrupt rather than converge
 is migration, and the migration controller re-checks the lease against the
 database immediately before each step.
+
+## What it measures out at
+
+From a two-node lab (one VIP, three hypervisor hosts, three running VMs):
+
+| Event | Time to recover |
+| --- | --- |
+| Leader stopped cleanly (`systemctl stop`) | **~4s** — the lease is handed back immediately, and the standby acquires on its next 5s tick |
+| Leader lost without warning (crash, power) | **~15s** — the full lease TTL, which is what the TTL is for |
+| VIP move when an instance stops serving | **~5s** — two failed health checks at 2s intervals |
+
+Nothing was disturbed on the fleet during any of it: hosts stayed polled within
+a second, and no VM changed state. That is the point of the design — the loops
+are idempotent, so a gap in leadership is a gap in *progress*, not in service.
+
+If a clean stop is taking the full TTL, the process is not receiving SIGTERM or
+is being killed outright. Check for `vquasar-control stopped` in the journal: if
+it is absent, the graceful path did not run.
 
 ## Limits
 

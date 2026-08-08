@@ -421,8 +421,13 @@ needs a control-plane change first, and the UI change after it is small.
   database** and asserts, from each instance's own gauge rather than the shared
   row, that they are never both running the controllers — mutation-checked, and
   the first version of that test did *not* catch a lease that let both act.
-  Validated on the lab with two instances against the live database and three
-  running VMs: one leader, kill it and the peer takes over, restart the first
+  Validated on a genuine two-node cluster (`dome` + `vquasar-ctrl2`) with a
+  keepalived VIP, against the live database and three running VMs: failover
+  drives the real fleet from the peer, agents accept the peer's certificate
+  (same CN), Postgres is reached over the network with `verify-full`, and the
+  VIP follows service health rather than leadership. Clean stop recovers in
+  ~4s, an abrupt loss in ~15s (the TTL), a VIP move in ~5s.
+  Earlier, on one host: one leader, kill it and the peer takes over, restart the first
   and it stands by rather than stealing, stop the peer and the first resumes —
   epoch 1→2→3, hosts polled continuously throughout, no VM disturbed. That
   exercise found the SIGTERM defect below.
