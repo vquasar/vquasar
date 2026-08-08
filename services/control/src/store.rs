@@ -2287,10 +2287,14 @@ impl Store {
         let now = Utc::now();
         let id = Uuid::new_v4();
         sqlx::query_as::<_, Task>(
+            // Derived rather than passed in: a task's project is a property of
+            // the thing it acts on, not of the request that queued it. A task
+            // naming no VM is platform work (host registration, drain) and
+            // belongs to no project — NULL, so it stays out of every tenant's
+            // feed rather than landing in `default` (0024).
             "INSERT INTO tasks (id, task_type, vm_id, project_id, created_at, updated_at)
              VALUES ($1, $2, $3,
-                     COALESCE((SELECT project_id FROM virtual_machines WHERE id = $3),
-                              '00000000-0000-0000-0000-000000000001'::uuid),
+                     (SELECT project_id FROM virtual_machines WHERE id = $3),
                      $4, $4)
              RETURNING *",
         )
@@ -2302,13 +2306,10 @@ impl Store {
         .await
     }
 
-    pub async fn get_task(&self, id: Uuid) -> Result<Option<Task>> {
-        sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id=$1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-    }
-
+    /// Every task, across projects. The API feed is
+    /// [`ScopedStore::list_tasks`](crate::scoped::ScopedStore::list_tasks); this
+    /// one exists for the metrics exporter, which reports on the whole fleet
+    /// and is not answering a caller.
     pub async fn list_tasks(&self) -> Result<Vec<Task>> {
         sqlx::query_as::<_, Task>("SELECT * FROM tasks ORDER BY created_at DESC")
             .fetch_all(&self.pool)
@@ -2439,8 +2440,18 @@ impl Store {
         message: &str,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO events (id, ts, resource_type, resource_id, event_type, severity, message)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            // An event belongs to whatever it is about. A host event belongs to
+            // no project, which is why the column is nullable: the fleet's
+            // shape is not a tenant's business (design §47).
+            "INSERT INTO events
+                (id, ts, resource_type, resource_id, event_type, severity, message, project_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7,
+                     CASE $3
+                       WHEN 'vm'       THEN (SELECT project_id FROM virtual_machines WHERE id = $4)
+                       WHEN 'volume'   THEN (SELECT project_id FROM volumes WHERE id = $4)
+                       WHEN 'template' THEN (SELECT project_id FROM templates WHERE id = $4)
+                       ELSE NULL
+                     END)",
         )
         .bind(Uuid::new_v4())
         .bind(Utc::now())
@@ -2452,12 +2463,5 @@ impl Store {
         .execute(&self.pool)
         .await
         .map(|_| ())
-    }
-
-    pub async fn list_events(&self, limit: i64) -> Result<Vec<Event>> {
-        sqlx::query_as::<_, Event>("SELECT * FROM events ORDER BY ts DESC LIMIT $1")
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
     }
 }

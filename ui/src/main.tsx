@@ -16,6 +16,7 @@ import { buildTheme } from "./theme";
 import { ThemeModeProvider, useThemeMode } from "./theme/ThemeMode";
 import { App } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
+import { ProjectProvider } from "./auth/ProjectProvider";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -36,7 +37,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <MuiBridge>
           <BrowserRouter>
             <AuthProvider>
-              <App />
+              <ProjectProvider>
+                <App />
+              </ProjectProvider>
             </AuthProvider>
           </BrowserRouter>
         </MuiBridge>

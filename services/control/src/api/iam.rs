@@ -48,23 +48,47 @@ pub struct Me {
     /// The project this answer is about; absent means the platform view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Uuid>,
+    /// Whether requests are project-scoped at all. The UI needs this to decide
+    /// whether to show a project selector; inferring it from `project` being
+    /// absent would conflate "tenancy is off" with "you are in the platform
+    /// view", which are different answers to a different question.
+    pub tenancy: bool,
+    /// Whether the caller holds a platform-wide binding, and so may take the
+    /// cross-project view. Reported rather than discovered by trying, so the UI
+    /// does not have to offer an option that answers 403.
+    pub platform: bool,
 }
 
 /// The current caller's identity + effective permissions (drives the UI).
-pub async fn me(user: AuthUser, scope: crate::authz::RequestScope) -> Json<Me> {
+pub async fn me(
+    State(store): State<Store>,
+    Extension(auth): Extension<AuthState>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+) -> ApiResult<Json<Me>> {
     let mut permissions: Vec<String> = if user.superuser {
         rbac::CATALOG.iter().map(|s| s.to_string()).collect()
     } else {
         user.permissions.iter().cloned().collect()
     };
     permissions.sort();
-    Json(Me {
+    let platform = match user.user.as_ref() {
+        // Dev superuser: no bindings exist, and everything is permitted.
+        None => true,
+        Some(u) => store
+            .projects_for_caller(u.id, &user.groups)
+            .await?
+            .is_none(),
+    };
+    Ok(Json(Me {
         authenticated: user.user.is_some() || user.superuser,
         username: user.user.as_ref().map(|u| u.username.clone()),
         email: user.user.as_ref().and_then(|u| u.email.clone()),
         permissions,
         project: scope.0.project_filter(),
-    })
+        tenancy: auth.tenancy_enabled,
+        platform,
+    }))
 }
 
 /// The full permission catalog (for building custom roles).
