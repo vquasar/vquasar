@@ -41,6 +41,14 @@ fn admin_url() -> String {
 }
 
 /// Grab a currently-free localhost port (small TOCTOU window, fine for tests).
+fn spawn_control(env: &[(String, String)]) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_vquasar-control"))
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .spawn()
+        .expect("spawn vquasar-control")
+}
+
+/// Grab a currently-free localhost port (small TOCTOU window, fine for tests).
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -289,6 +297,11 @@ struct Harness {
     client: reqwest::Client,
     db_name: String,
     db_url: String,
+    /// Kept so the process can be restarted on the same address with the same
+    /// settings — startup behaviour (migrations, orphan recovery) is only
+    /// testable across a restart. The listen address is in here too, so the
+    /// restart lands on the same port.
+    env: Vec<(String, String)>,
 }
 
 impl Harness {
@@ -318,36 +331,58 @@ impl Harness {
         let port = free_port();
         let base = format!("http://127.0.0.1:{port}");
 
-        let control_bin = env!("CARGO_BIN_EXE_vquasar-control");
-        let control = Command::new(control_bin)
-            .env("VQUASAR_CONTROL_DATABASE__URL", &db_url)
-            .env(
-                "VQUASAR_CONTROL_SERVER__LISTEN",
+        let mut env: Vec<(String, String)> = vec![
+            ("VQUASAR_CONTROL_DATABASE__URL".into(), db_url.clone()),
+            (
+                "VQUASAR_CONTROL_SERVER__LISTEN".into(),
                 format!("127.0.0.1:{port}"),
-            )
-            .env("VQUASAR_CONTROL_AUTH__DISABLED", "true")
+            ),
+            ("VQUASAR_CONTROL_AUTH__DISABLED".into(), "true".into()),
             // The harness database is a throwaway with no TLS. Encryption is
             // the default now, so opting out has to be explicit — which is the
             // point: it is visible here rather than assumed.
-            .env("VQUASAR_CONTROL_DATABASE__SSL_MODE", "disable")
+            (
+                "VQUASAR_CONTROL_DATABASE__SSL_MODE".into(),
+                "disable".into(),
+            ),
             // The harness's specs use synthetic paths, so declare the root they
             // live under; a real install keeps the default (/var/lib/vquasar).
-            .env("VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS", "[\"/x\"]")
-            .env("VQUASAR_CONTROL_RECONCILE__INTERVAL_SECS", "1")
-            .env("RUST_LOG", "warn")
-            .envs(extra_env.iter().copied())
-            .spawn()
-            .expect("spawn vquasar-control");
+            (
+                "VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS".into(),
+                "[\"/x\"]".into(),
+            ),
+            (
+                "VQUASAR_CONTROL_RECONCILE__INTERVAL_SECS".into(),
+                "1".into(),
+            ),
+            ("RUST_LOG".into(), "warn".into()),
+        ];
+        env.extend(
+            extra_env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
 
+        let control = spawn_control(&env);
         let h = Harness {
             control,
             base,
             client: reqwest::Client::new(),
             db_name,
             db_url: db_url.clone(),
+            env,
         };
         h.wait_healthy().await;
         h
+    }
+
+    /// Kill the control plane and start it again on the same address and
+    /// database — the only way to exercise what startup does.
+    async fn restart(&mut self) {
+        let _ = self.control.kill();
+        let _ = self.control.wait();
+        self.control = spawn_control(&self.env);
+        self.wait_healthy().await;
     }
 
     async fn wait_healthy(&self) {
@@ -422,6 +457,18 @@ impl Harness {
         let st = r.status().as_u16();
         let body = r.json::<Value>().await.unwrap_or(Value::Null);
         (st, body)
+    }
+
+    /// GET returning status and body.
+    async fn get_status(&self, path: &str) -> (u16, Value) {
+        let r = self
+            .client
+            .get(format!("{}/api/v1{path}", self.base))
+            .send()
+            .await
+            .expect("get");
+        let st = r.status().as_u16();
+        (st, r.json().await.unwrap_or(Value::Null))
     }
 
     /// GET within a project's scope.
@@ -1706,5 +1753,92 @@ async fn task_and_event_feeds_are_scoped_and_platform_work_is_not_a_tenants() {
             .iter()
             .any(|e| e["resource_type"] == "host"),
         "the platform view does carry them"
+    );
+}
+
+/// Work that was in flight when the process died is reclaimed at startup.
+///
+/// Nothing else ever clears a transitional row: the detached task that owns it
+/// dies with the process. A stuck `provisioning` volume is the worse of the two
+/// — it holds quota for a file that will never exist (design §7, ADR-019).
+#[tokio::test]
+async fn in_flight_work_is_reclaimed_after_a_restart() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_TENANCY__ENABLED", "true")]).await;
+    let default = "00000000-0000-0000-0000-000000000001";
+
+    // Stand in for the states a killed process leaves behind. Creating them
+    // through the API would mean racing a real download to kill it mid-flight;
+    // the row is what the sweep acts on, and this is exactly the row.
+    h.sql(
+        "INSERT INTO images
+            (id, name, source_path, format, boot, default_size_bytes, cloud_init, os,
+             status, managed, created_at, updated_at)
+         VALUES (gen_random_uuid(), 'half-downloaded', '/x/img.qcow2', 'qcow2',
+                 '{\"type\":\"firmware\",\"firmware\":\"/x/CLOUDHV.fd\"}'::jsonb,
+                 NULL, false, NULL, 'importing', TRUE, now(), now())",
+    )
+    .await;
+    h.sql(
+        "INSERT INTO volumes
+            (id, name, size_bytes, format, project_id, status, created_at, updated_at)
+         VALUES (gen_random_uuid(), 'half-provisioned', 500, 'qcow2',
+                 '00000000-0000-0000-0000-000000000001', 'provisioning', now(), now())",
+    )
+    .await;
+
+    // The reservation counts against quota while it exists — that is the point
+    // of reserving, and the reason a stuck one has to be reclaimed.
+    let (st, q) = h.get_status(&format!("/projects/{default}/quota")).await;
+    assert_eq!(st, 200, "{q}");
+    assert_eq!(q["usage"]["volumes"], 1);
+    assert_eq!(q["usage"]["storage_bytes"], 500);
+
+    h.restart().await;
+
+    // The image is failed, and says why rather than sitting in `importing`.
+    let images = h.get("/images").await;
+    let orphan = images
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "half-downloaded")
+        .expect("the image row survives; only its status changes");
+    assert_eq!(orphan["status"], "failed");
+    assert!(
+        orphan["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("restart"),
+        "the failure should name its cause: {orphan}"
+    );
+
+    // The reservation is gone, and with it the quota it was holding.
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM volumes WHERE status='provisioning'")
+            .await,
+        "0"
+    );
+    let (_, q) = h.get_status(&format!("/projects/{default}/quota")).await;
+    assert_eq!(
+        q["usage"]["volumes"], 0,
+        "the reclaimed reservation frees quota"
+    );
+    assert_eq!(q["usage"]["storage_bytes"], 0);
+
+    // A ready volume is untouched: the sweep must reclaim orphans, not
+    // everything that happens to be a volume.
+    h.sql(
+        "INSERT INTO volumes
+            (id, name, size_bytes, format, project_id, status, created_at, updated_at)
+         VALUES (gen_random_uuid(), 'finished', 100, 'qcow2',
+                 '00000000-0000-0000-0000-000000000001', 'ready', now(), now())",
+    )
+    .await;
+    h.restart().await;
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM volumes WHERE name='finished'")
+            .await,
+        "1",
+        "a ready volume must survive a restart"
     );
 }

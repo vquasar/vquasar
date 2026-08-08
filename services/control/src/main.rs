@@ -19,6 +19,7 @@ mod overlay;
 mod quota;
 mod rbac;
 mod reconcile;
+mod recovery;
 mod scheduler;
 mod scoped;
 mod segments;
@@ -153,6 +154,11 @@ async fn main() -> anyhow::Result<()> {
     if config.tenancy.enabled {
         info!("tenancy enabled — requests are scoped to a project");
     }
+
+    // Anything left mid-flight by a previous process is orphaned: its detached
+    // task died with that process. Reclaim before the API opens, so a caller
+    // never sees a volume reservation that will never be finished (design §7).
+    recovery::reclaim_orphaned_work(&store).await;
 
     // Reconcile loop (host polling + VM reconciliation).
     let interval = Duration::from_secs(config.reconcile.interval_secs);

@@ -16,7 +16,7 @@ mod security_groups;
 mod tasks;
 mod templates;
 mod vms;
-mod volumes;
+pub(crate) mod volumes;
 
 use axum::routing::{get, post};
 use axum::{Extension, Router};
