@@ -56,6 +56,9 @@ pub struct Vm {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub generation: i64,
+    /// Consecutive failed reconcile attempts; reset to 0 on success (#35).
+    pub reconcile_failures: i32,
+    pub last_reconcile_at: Option<DateTime<Utc>>,
 }
 
 /// A project row (design §47, ADR-018).
@@ -2361,6 +2364,52 @@ impl Store {
         .bind(now)
         .fetch_one(&self.pool)
         .await
+    }
+
+    /// Record a failed reconcile attempt and return the new consecutive count.
+    pub async fn record_reconcile_failure(&self, id: Uuid, error: &str) -> Result<i32> {
+        sqlx::query_scalar(
+            "UPDATE virtual_machines
+                SET reconcile_failures = reconcile_failures + 1,
+                    last_reconcile_at = $2,
+                    message = $3
+              WHERE id = $1
+             RETURNING reconcile_failures",
+        )
+        .bind(id)
+        .bind(Utc::now())
+        .bind(error)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Clear the failure state after a reconcile that got through.
+    pub async fn clear_reconcile_failures(&self, id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE virtual_machines
+                SET reconcile_failures = 0, last_reconcile_at = $2
+              WHERE id = $1 AND reconcile_failures <> 0",
+        )
+        .bind(id)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// Give up: the VM is `Failed` and carries the reason a caller can read.
+    pub async fn fail_vm(&self, id: Uuid, message: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE virtual_machines
+                SET phase = 'Failed', message = $2, updated_at = $3
+              WHERE id = $1",
+        )
+        .bind(id)
+        .bind(message)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
     }
 
     /// Every task, across projects. The API feed is

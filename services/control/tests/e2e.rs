@@ -65,6 +65,10 @@ fn free_port() -> u16 {
 struct AgentState {
     /// vm_id -> observed phase.
     vms: HashMap<String, Phase>,
+    /// When set, `ensure_vm` fails with this message — standing in for the
+    /// residue of an interrupted create, which fails identically every time
+    /// however often it is retried (#35).
+    ensure_error: Option<String>,
     /// vm_ids a migration receiver is expecting (prepare_receive → finalize).
     pending_receive: HashMap<String, ()>,
 }
@@ -153,6 +157,9 @@ impl HostAgent for FakeAgent {
         r: Request<EnsureVmRequest>,
     ) -> Result<Response<EnsureVmResponse>, Status> {
         let req = r.into_inner();
+        if let Some(msg) = self.state.lock().unwrap().ensure_error.clone() {
+            return Err(Status::internal(msg));
+        }
         // Mirror the real agent: reconcile to the spec's desired power state.
         let stopped = serde_json::from_slice::<Value>(&req.spec_json)
             .ok()
@@ -699,7 +706,10 @@ impl Harness {
 
     /// Poll a GET endpoint until `pred` holds, or panic after a timeout.
     async fn wait_for(&self, path: &str, pred: impl Fn(&Value) -> bool, what: &str) -> Value {
-        for _ in 0..60 {
+        // 60s. Long enough for the reconcile retry budget (#35) to run out,
+        // which is the slowest thing any test legitimately waits for. This
+        // bounds failures only — a passing test returns as soon as it can.
+        for _ in 0..120 {
             let v = self.get(path).await;
             if pred(&v) {
                 return v;
@@ -2129,5 +2139,98 @@ async fn a_clean_stop_hands_the_lease_back() {
     assert_eq!(
         expired, "true",
         "a graceful stop must release the lease rather than leave it to time out"
+    );
+}
+
+/// A reconcile that cannot succeed stops being invisible (#35).
+///
+/// Found on a two-node lab: a leader killed mid-create left the VM in
+/// `Scheduling` for as long as anyone watched — ~130 attempts over 400s — with
+/// `message` NULL and nothing in the API to say anything was wrong. Retrying
+/// forever is right for a transient hiccup and wrong for residue that makes
+/// every attempt fail identically.
+#[tokio::test]
+async fn a_reconcile_that_cannot_succeed_ends_in_failed_and_says_why() {
+    let h = Harness::start().await;
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+
+    // The agent now fails ensure the way an interrupted create does: the same
+    // error, every time.
+    agent.lock().unwrap().ensure_error =
+        Some("cloud-hypervisor API returned 500: VM is already created".into());
+
+    let (st, v) = h
+        .post("/vms", json!({"name": "wedged", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let id = v["vm_id"].as_str().unwrap().to_string();
+
+    // It gives up rather than retrying for ever, and lands somewhere terminal.
+    let vm = h
+        .wait_for(&format!("/vms/{id}"), |v| v["phase"] == "Failed", "Failed")
+        .await;
+
+    // And it says what happened — the agent's own error, not a generic one.
+    let msg = vm["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("VM is already created"), "{msg}");
+    assert!(msg.contains("reconcile failed"), "{msg}");
+
+    // An operator watching events sees it too, at error severity.
+    let events = h.get("/events").await;
+    assert!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| { e["event_type"] == "vm.reconcile_failed" && e["severity"] == "error" }),
+        "the give-up should raise an event: {events}"
+    );
+}
+
+/// Recovery clears the count, so a VM that fails a few times and then succeeds
+/// has not spent any of its budget.
+#[tokio::test]
+async fn a_recovered_reconcile_forgets_its_failures() {
+    let h = Harness::start().await;
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+
+    agent.lock().unwrap().ensure_error = Some("agent restarting".into());
+    let (st, v) = h
+        .post("/vms", json!({"name": "flaky", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let id = v["vm_id"].as_str().unwrap().to_string();
+
+    // Let it fail at least once, then let the agent recover.
+    h.wait_for(
+        &format!("/vms/{id}"),
+        |v| {
+            v["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("restarting")
+        },
+        "a recorded failure",
+    )
+    .await;
+    agent.lock().unwrap().ensure_error = None;
+
+    h.wait_for(
+        &format!("/vms/{id}"),
+        |v| v["phase"] == "Running",
+        "Running",
+    )
+    .await;
+    assert_eq!(
+        h.query_one(&format!(
+            "SELECT reconcile_failures::text FROM virtual_machines WHERE id='{id}'"
+        ))
+        .await,
+        "0",
+        "a success must reset the consecutive-failure count"
     );
 }
