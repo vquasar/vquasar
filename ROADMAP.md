@@ -317,11 +317,26 @@ Split into three shippable slices.
   in-memory buffering; body limit disabled on the route), then registers it
   ready+managed with the detected size. UI: an "Upload" dialog with a file
   picker on the Images page. Completes the upload/download/register lifecycle.
-- **Storage, to feature-complete.** Additional backends and per-VM storage
-  policy. Storage is a first-class concern in vquasar rather than a detail, and
-  this is the theme that takes it from "one shared directory that works" to
-  something an operator can shape per workload. **Queued behind M21**, and the
-  largest remaining piece of product work.
+- **M23 — storage pools** (ADR-023). *Designed, not built.* Storage today is one
+  directory that every host is *assumed* to have mounted at the same path.
+  Nothing records that assumption and nothing checks it, so a host without the
+  mount fails at launch with a path error rather than being refused at
+  placement — and live migration depends on it silently.
+  A pool becomes a first-class resource: id, name, kind, kind-specific
+  parameters, with `shared_dir` first and `lvm_thin`/`nfs`/`rbd` the shapes it
+  is built to accept. A volume belongs to exactly one pool. **Reachability and
+  capacity are observed from the agents, not declared**, because an operator
+  typing either one records an intention the filesystem is free to contradict —
+  which is the failure this exists to remove.
+  Migration seeds a `default` pool from `shared_volumes_dir` and points every
+  existing volume at it, so a running cluster keeps working and no path moves.
+  Order: the resource (model, migration, store, API, RBAC), then agent reporting
+  plus the scheduler refusal, then volumes and VM disks referencing a pool, then
+  the console.
+- **Storage, the rest of feature-complete.** Additional backends and per-VM
+  storage policy (cache mode, discard/TRIM, IO throttling, thin vs thick). Both
+  need pools to exist first: a backend has nowhere to live without one, and
+  "this VM'''s disks go on fast storage" is unsayable. Queued behind M23.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`

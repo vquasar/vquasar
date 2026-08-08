@@ -266,13 +266,21 @@ as the cloud-management system above OVN.
 
 ## 20. Storage
 
-Storage must eventually be pluggable via a `StorageBackend` trait
-(`create_volume`, `delete_volume`, `prepare_volume`, `release_volume`). Do not
-implement distributed storage. Initial types: local file
-(`/var/lib/vquasar/volumes/<uuid>.raw`) and shared path
-(`/mnt/shared/...`, assumed identically mounted on participating hosts — enough
-for early live-migration experiments). Future: LVM thin, NFS, Ceph RBD/CephFS,
-iSCSI, NVMe-oF, SPDK, vhost-user-blk.
+Storage is organised around **pools** (ADR-023): a pool is a named place to put
+bytes, a volume belongs to exactly one, and which hosts can reach a pool is
+*observed from the agents* rather than declared. The scheduler refuses a host
+that does not report the pools a VM's disks need, so a missing mount is a
+placement refusal with a reason instead of a launch failure.
+
+The initial kind is `shared_dir` — a path assumed mounted on the hosts that
+report it, which is what live migration has always depended on. Planned kinds:
+LVM thin, NFS, Ceph RBD/CephFS, iSCSI, NVMe-oF, SPDK, vhost-user-blk. Do not
+implement distributed storage.
+
+This supersedes the original sketch here, which proposed a `StorageBackend`
+trait in the agent as the first move. See ADR-023 for why the pool came first:
+the trait puts an abstraction where the plugin goes, and the problem was the
+undeclared assumption about who can see what.
 
 ## 21. Images
 
@@ -525,6 +533,8 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-021** The control plane is active/active for the API and single-leader
   for the controllers, elected by a lease row in PostgreSQL.
 * **ADR-022** The agent rejects a superseded controller by lease epoch.
+* **ADR-023** A storage pool is a named place to put bytes, and reachability is
+  observed rather than declared.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -871,6 +881,66 @@ Rejected: fencing by connection identity (the control plane presents one CN by
 design, so every instance looks alike — ADR-021); and having the agent read the
 lease from PostgreSQL, which would give the agent a database credential and the
 authority to decide who leads, undoing the boundary this design exists to hold.
+
+### ADR-023 — A storage pool is a named place to put bytes, and reachability is observed
+
+*Status:* Accepted, not yet implemented.
+
+*Context.* Storage today is one directory. `[storage] shared_volumes_dir` names
+it, every volume is a file under it, and every host is *assumed* to have it
+mounted at the same path. That assumption is invisible: nothing records it,
+nothing checks it, and a host that does not have the mount fails at launch with
+a path error rather than being refused at placement. §20 has always said storage
+must become pluggable; the reason to do it now is not the plugins but the
+assumption, which live migration silently depends on.
+
+Two things are tangled in that one config value: *where bytes go* and *which
+hosts can reach them*. Adding backends without separating them would multiply
+the assumption rather than remove it.
+
+*Decision.* A **storage pool** is a first-class resource: an id, a name, a
+`kind`, and kind-specific parameters. The initial kind is `shared_dir` (a path
+assumed mounted on the hosts that report it); `lvm_thin`, `nfs` and `rbd` are
+the shapes it was designed to accept. A volume belongs to exactly one pool, and
+a pool is where its file lives — `<pool>/volumes/<uuid>.<fmt>` replaces the
+global directory.
+
+**Reachability is observed, not declared.** Each agent reports which pools it can
+actually use, and the control plane records that as observed state (§7). The
+scheduler then refuses a host that does not report every pool a VM's disks need,
+so "this host cannot see that storage" becomes a placement refusal with a reason
+instead of a launch failure. An operator declaring reachability would be
+recording an intention that the filesystem is free to contradict — which is the
+failure this ADR exists to remove, restated one level up.
+
+Capacity is reported the same way and for the same reason: a number the operator
+typed is a number that goes stale.
+
+**Pools are platform resources**, like hosts and unlike images. Any project may
+place a volume in any pool. Per-project pool restrictions are a real requirement
+and deliberately not this change: they belong with quotas (ADR-019), which
+already count storage per project, rather than with ownership.
+
+*Consequences.* Migration creates a `default` pool from the existing
+`shared_volumes_dir` and points every existing volume at it, so a running cluster
+keeps working and its paths do not move — the backward-compatibility requirement
+in ADR-005. `shared_volumes_dir` becomes the seed for that one row rather than a
+value read at run time.
+
+The `Pending`/`Ready` distinction a pool needs is the same one hosts have: a pool
+no host reports is not usable, however correct its configuration looks. It is
+reported as such rather than being deleted or hidden, because the usual cause is
+a mount that has not come back yet.
+
+This also gives the orphaned-seed sweep (#41) a root it can address. The agent
+cannot sweep shared storage — a seed there may belong to a VM on any host — but
+the control plane can, once a pool tells it where "there" is.
+
+Rejected: a `StorageBackend` trait in the agent as the first move (§20's original
+sketch), which puts the abstraction where the plugin goes rather than where the
+assumption is, and would have to be re-cut once pools exist; and letting a VM
+name a raw path per disk, which is the current behaviour and the reason
+`allowed_paths` has to exist at all.
 
 ### ADR-019 — Quotas are admission control on committed intent
 
