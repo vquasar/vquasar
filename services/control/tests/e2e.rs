@@ -11,7 +11,7 @@
 //! defaults to that. The test creates a uniquely-named database per run and
 //! drops it on teardown. Auth is disabled (dev superuser), so no OIDC is needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -77,8 +77,36 @@ struct AgentState {
     /// residue of an interrupted create, which fails identically every time
     /// however often it is retried (#35).
     ensure_error: Option<String>,
-    /// vm_ids a migration receiver is expecting (prepare_receive → finalize).
-    pending_receive: HashMap<String, ()>,
+    /// vm_id -> how many receivers `prepare_receive` has started for it.
+    ///
+    /// A count rather than a set because the number is the whole question:
+    /// `Manager::prepare_receive` launches a VMM and inserts into `pending`
+    /// unconditionally, so calling it twice really does leave two receivers for
+    /// one guest. ADR-021 names that as the one non-idempotent step in the
+    /// system; counting is how a test can say so (#42).
+    pending_receive: HashMap<String, u32>,
+    /// vm_ids whose live state has been sent away. Cloud Hypervisor cannot send
+    /// a VM twice — the source is left with a husk — so the fake refuses too,
+    /// rather than cheerfully accepting a retry the real thing would reject.
+    sent: HashSet<String>,
+    /// Per-step windows, in the same spirit as `ensure_delay_ms`: hold the RPC
+    /// open long enough for a test to interrupt the leader *inside* the step
+    /// rather than between ticks.
+    prepare_delay_ms: u64,
+    send_delay_ms: u64,
+    finalize_delay_ms: u64,
+    /// Call counts, across leaders. These are the assertions.
+    prepare_calls: u32,
+    send_calls: u32,
+    finalize_calls: u32,
+    discard_calls: u32,
+    /// Calls that ran to completion. tonic drops a handler future when the
+    /// client disconnects, so a control plane dying mid-RPC *cancels* the
+    /// agent's work at whatever await it had reached. The gap between
+    /// `_calls` and `_completed` is that cancellation, and both real handlers
+    /// mutate agent state before their await — so the gap is not harmless.
+    prepare_completed: u32,
+    finalize_completed: u32,
 }
 
 struct FakeAgent {
@@ -250,7 +278,19 @@ impl HostAgent for FakeAgent {
         r: Request<PrepareReceiveRequest>,
     ) -> Result<Response<PrepareReceiveResponse>, Status> {
         let id = r.into_inner().vm_id;
-        self.state.lock().unwrap().pending_receive.insert(id, ());
+        let delay = {
+            let mut st = self.state.lock().unwrap();
+            st.prepare_calls += 1;
+            // Deliberately unconditional, exactly like `Manager::prepare_receive`:
+            // a second call launches a second receiver rather than returning the
+            // first one's URL.
+            *st.pending_receive.entry(id).or_insert(0) += 1;
+            st.prepare_delay_ms
+        };
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        self.state.lock().unwrap().prepare_completed += 1;
         Ok(Response::new(PrepareReceiveResponse {
             migration_url: "tcp:127.0.0.1:0".into(),
         }))
@@ -258,8 +298,35 @@ impl HostAgent for FakeAgent {
 
     async fn send_migration(
         &self,
-        _r: Request<SendMigrationRequest>,
+        r: Request<SendMigrationRequest>,
     ) -> Result<Response<OperationResponse>, Status> {
+        let id = r.into_inner().vm_id;
+        let delay = {
+            let mut st = self.state.lock().unwrap();
+            st.send_calls += 1;
+            // `Manager::send_migration` looks the VM up in `vms` and fails if it
+            // is not there; CH then refuses to send a VM whose state has already
+            // gone. Both refusals matter to an interrupted `Sending`.
+            if !st.vms.contains_key(&id) {
+                return Err(Status::not_found(format!("vm {id} not managed here")));
+            }
+            if st.sent.contains(&id) {
+                return Err(Status::failed_precondition(format!(
+                    "vm {id} has already sent its state"
+                )));
+            }
+            st.send_delay_ms
+        };
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        // The source is left holding a husk: CH shuts the VM down once its state
+        // has gone, and `discard_vm` collects it later. Leaving it `Running`
+        // here would let a test claiming "the VM is still on its source host"
+        // pass over a guest that is not running anywhere.
+        let mut st = self.state.lock().unwrap();
+        st.sent.insert(id.clone());
+        st.vms.insert(id, Phase::Stopped);
         Ok(Response::new(OperationResponse {
             accepted: true,
             message: "sent".into(),
@@ -271,8 +338,24 @@ impl HostAgent for FakeAgent {
         r: Request<FinalizeReceiveRequest>,
     ) -> Result<Response<EnsureVmResponse>, Status> {
         let id = r.into_inner().vm_id;
+        let delay = {
+            let mut st = self.state.lock().unwrap();
+            st.finalize_calls += 1;
+            // `Manager::finalize_receive` removes from `pending` and returns
+            // `NotFound` when there is nothing to finalise. A second call after
+            // a successful one therefore fails, which is what makes an
+            // interrupted `Finalizing` interesting.
+            match st.pending_receive.get_mut(&id) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => return Err(Status::not_found(format!("no pending receive for {id}"))),
+            }
+            st.finalize_delay_ms
+        };
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
         let mut st = self.state.lock().unwrap();
-        st.pending_receive.remove(&id);
+        st.finalize_completed += 1;
         st.vms.insert(id.clone(), Phase::Running);
         Ok(Response::new(EnsureVmResponse {
             state: Some(Self::observed(&id, Phase::Running)),
@@ -284,7 +367,9 @@ impl HostAgent for FakeAgent {
         r: Request<DiscardVmRequest>,
     ) -> Result<Response<OperationResponse>, Status> {
         let id = r.into_inner().vm_id;
-        self.state.lock().unwrap().vms.remove(&id);
+        let mut st = self.state.lock().unwrap();
+        st.discard_calls += 1;
+        st.vms.remove(&id);
         Ok(Response::new(OperationResponse {
             accepted: true,
             message: "discarded".into(),
@@ -533,6 +618,22 @@ impl Harness {
             .expect("query");
         pool.close().await;
         v.unwrap_or_default()
+    }
+
+    /// Poll a single-value query until it satisfies `pred`. Migration state is
+    /// not on the API — a migration is reported through the VM's phase and its
+    /// task — so an interruption test that wants to know which *step* was
+    /// interrupted has to ask the database.
+    async fn wait_sql(&self, sql: &str, pred: impl Fn(&str) -> bool, what: &str) -> String {
+        let mut last = String::new();
+        for _ in 0..600 {
+            last = self.query_one(sql).await;
+            if pred(&last) {
+                return last;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("timed out waiting for {what}; last value was {last:?}");
     }
 
     /// DELETE, returning the status and body — some deletions are refusals
@@ -2341,4 +2442,268 @@ async fn a_create_interrupted_by_a_failover_is_finished_by_the_peer() {
         "Running",
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Live migration under interruption (#42).
+//
+// ADR-021 singles migration out: every other pass converges, so a duplicated
+// action is wasted work, but `prepare_receive` does not — two calls mean two
+// receivers for one guest. That is the stated justification for epoch fencing,
+// and until now nobody had interrupted a migration to see what actually
+// happens. Each step of the state machine gets a case, and the question is the
+// same every time: after the peer takes over, is the control plane's account of
+// where the VM lives still true?
+// ---------------------------------------------------------------------------
+
+/// Two hosts, a VM running on A, and a standby ready to take over. Returns the
+/// host ids, the agent states and the VM id.
+async fn migration_fixture(
+    h: &Harness,
+) -> (
+    String,
+    String,
+    Arc<Mutex<AgentState>>,
+    Arc<Mutex<AgentState>>,
+    String,
+) {
+    let (pa, pb) = (free_port(), free_port());
+    let sa = spawn_agent("hostA", pa);
+    let sb = spawn_agent("hostB", pb);
+    let a = h.register_host("hostA", pa).await;
+    let b = h.register_host("hostB", pb).await;
+
+    // Cordon B so the VM lands on A, then uncordon it as a migration target.
+    assert!(h
+        .patch(&format!("/hosts/{b}"), json!({"schedulable": false}))
+        .await
+        .is_success());
+    let (st, v) = h
+        .post("/vms", json!({"name": "mig-interrupt", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "create vm: {st} {v}");
+    let vm = v["vm_id"].as_str().unwrap().to_string();
+    h.wait_for(
+        &format!("/vms/{vm}"),
+        |v| v["phase"] == "Running",
+        "VM Running on A",
+    )
+    .await;
+    assert!(h
+        .patch(&format!("/hosts/{b}"), json!({"schedulable": true}))
+        .await
+        .is_success());
+    (a, b, sa, sb, vm)
+}
+
+/// Does this agent report the guest as actually running? Holding a record is
+/// not the same thing — a sent-away source still has one.
+fn running_here(state: &Arc<Mutex<AgentState>>, vm: &str) -> bool {
+    matches!(state.lock().unwrap().vms.get(vm), Some(Phase::Running))
+}
+
+/// Wait until an RPC has arrived at the fake agent, so the leader is stopped
+/// *inside* a step rather than before it.
+async fn wait_for_call(state: &Arc<Mutex<AgentState>>, count: impl Fn(&AgentState) -> u32) {
+    for _ in 0..150 {
+        if count(&state.lock().unwrap()) > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the leader never reached the step this test means to interrupt");
+}
+
+/// `Pending`: the leader dies between `prepare_receive` succeeding on the target
+/// and the `Sending` write that records it.
+///
+/// This is the case ADR-021 predicts. It fails today: the peer retries and
+/// `Manager::prepare_receive` launches a second VMM rather than returning the
+/// first one's URL.
+///
+/// Note what it is *not*: epoch fencing does not fix this. ADR-022 refuses a
+/// superseded controller, and here the old leader is dead — the second call
+/// comes from the legitimate current leader carrying a *higher* epoch, which
+/// the agent accepts by design. The dead-leader case needs `prepare_receive` to
+/// be idempotent (#45).
+#[tokio::test]
+#[ignore = "fails: two receivers for one guest — see #45"]
+async fn a_migration_interrupted_inside_prepare_receive_leaves_one_receiver() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    let (_a, b, _sa, sb, vm) = migration_fixture(&h).await;
+    let peer = h.start_peer("beta").await;
+    h.wait_for(
+        "/leader",
+        |v| v["leader"]["holder"] == "alpha",
+        "alpha leading",
+    )
+    .await;
+
+    // Widen the step so the stop lands inside it.
+    sb.lock().unwrap().prepare_delay_ms = 5_000;
+    let (st, v) = h
+        .post(&format!("/vms/{vm}/migrate"), json!({"target_host_id": b}))
+        .await;
+    assert!(st.is_success(), "migrate: {st} {v}");
+
+    wait_for_call(&sb, |s| s.prepare_calls).await;
+    // The step must still be unfinished, or this test is watching an ordinary
+    // failover rather than an interrupted migration.
+    assert_eq!(
+        h.query_one(&format!("SELECT state FROM migrations WHERE vm_id='{vm}'"))
+            .await,
+        "Pending",
+        "prepare_receive finished before the interruption; the injected window is not working"
+    );
+    h.stop_gracefully().await;
+
+    peer.wait_until_leader().await;
+    sb.lock().unwrap().prepare_delay_ms = 0;
+    h.wait_sql(
+        &format!("SELECT state FROM migrations WHERE vm_id='{vm}'"),
+        |s| s == "Completed" || s == "Failed",
+        "the migration to reach a terminal state",
+    )
+    .await;
+
+    // Either outcome is defensible — finish the migration, or fail it and leave
+    // the VM on its source. What is not defensible is two receivers.
+    let st = sb.lock().unwrap();
+    assert_eq!(
+        st.prepare_calls, 1,
+        "the peer started a second receiver for the same guest: {} receivers on the target",
+        st.prepare_calls
+    );
+    assert_eq!(
+        st.pending_receive.get(&vm).copied().unwrap_or(0),
+        0,
+        "a receiver was left running on the target with nothing to receive"
+    );
+}
+
+/// `Sending`: the leader dies after the source has sent its state but before the
+/// `Finalizing` write.
+///
+/// The guest is gone from the source at this point. Whatever the peer does, the
+/// control plane must not end up claiming the VM runs somewhere it does not.
+#[tokio::test]
+async fn a_migration_interrupted_inside_send_does_not_strand_the_guest() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    let (a, b, sa, sb, vm) = migration_fixture(&h).await;
+    let peer = h.start_peer("beta").await;
+    h.wait_for(
+        "/leader",
+        |v| v["leader"]["holder"] == "alpha",
+        "alpha leading",
+    )
+    .await;
+
+    sa.lock().unwrap().send_delay_ms = 5_000;
+    let (st, v) = h
+        .post(&format!("/vms/{vm}/migrate"), json!({"target_host_id": b}))
+        .await;
+    assert!(st.is_success(), "migrate: {st} {v}");
+
+    wait_for_call(&sa, |s| s.send_calls).await;
+    assert_eq!(
+        h.query_one(&format!("SELECT state FROM migrations WHERE vm_id='{vm}'"))
+            .await,
+        "Sending",
+        "send_migration finished before the interruption; the injected window is not working"
+    );
+    h.stop_gracefully().await;
+
+    peer.wait_until_leader().await;
+    sa.lock().unwrap().send_delay_ms = 0;
+    h.wait_sql(
+        &format!("SELECT state FROM migrations WHERE vm_id='{vm}'"),
+        |s| s == "Completed" || s == "Failed",
+        "the migration to reach a terminal state",
+    )
+    .await;
+
+    // The invariant: wherever the control plane says the VM is, that host has
+    // to actually be running it.
+    let vm_row = peer.get(&format!("/vms/{vm}")).await;
+    let host = vm_row["host_id"].as_str().unwrap_or_default().to_string();
+    let phase = vm_row["phase"].as_str().unwrap_or_default().to_string();
+    let (on_a, on_b) = (running_here(&sa, &vm), running_here(&sb, &vm));
+    assert!(
+        !(on_a && on_b),
+        "the guest is running on both hosts after an interrupted send"
+    );
+    if phase == "Running" {
+        let claimed_here = if host == a { on_a } else { on_b };
+        assert!(
+            claimed_here,
+            "the control plane reports the VM Running on {host} (A={a}, B={b}) but no host \
+             is running it (A: {on_a}, B: {on_b})"
+        );
+    }
+}
+
+/// `Finalizing`: the leader dies after the target has adopted the guest but
+/// before the write that moves the VM's host.
+///
+/// This fails today, and worse than "the migration is marked failed": the
+/// guest ends up running on neither host. tonic drops a handler future when its
+/// client disconnects, so the dying leader *cancels* the agent's finalise — and
+/// `Manager::finalize_receive` takes the entry out of `pending` before its
+/// await, so the cancelled call destroys the receiver on its way out. The
+/// peer's retry then gets `NotFound` (#45).
+#[tokio::test]
+#[ignore = "fails: an interrupted finalise loses the guest — see #45"]
+async fn a_migration_interrupted_inside_finalize_does_not_lose_the_vm() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    let (a, b, sa, sb, vm) = migration_fixture(&h).await;
+    let peer = h.start_peer("beta").await;
+    h.wait_for(
+        "/leader",
+        |v| v["leader"]["holder"] == "alpha",
+        "alpha leading",
+    )
+    .await;
+
+    sb.lock().unwrap().finalize_delay_ms = 5_000;
+    let (st, v) = h
+        .post(&format!("/vms/{vm}/migrate"), json!({"target_host_id": b}))
+        .await;
+    assert!(st.is_success(), "migrate: {st} {v}");
+
+    wait_for_call(&sb, |s| s.finalize_calls).await;
+    assert_eq!(
+        h.query_one(&format!("SELECT state FROM migrations WHERE vm_id='{vm}'"))
+            .await,
+        "Finalizing",
+        "finalize_receive finished before the interruption; the injected window is not working"
+    );
+    h.stop_gracefully().await;
+
+    peer.wait_until_leader().await;
+    sb.lock().unwrap().finalize_delay_ms = 0;
+    h.wait_sql(
+        &format!("SELECT state FROM migrations WHERE vm_id='{vm}'"),
+        |s| s == "Completed" || s == "Failed",
+        "the migration to reach a terminal state",
+    )
+    .await;
+
+    let vm_row = peer.get(&format!("/vms/{vm}")).await;
+    let host = vm_row["host_id"].as_str().unwrap_or_default().to_string();
+    let (on_a, on_b) = (running_here(&sa, &vm), running_here(&sb, &vm));
+    let (calls, completed) = {
+        let s = sb.lock().unwrap();
+        (s.finalize_calls, s.finalize_completed)
+    };
+    assert!(
+        on_a || on_b,
+        "the VM is running on neither host after an interrupted finalize \
+         ({calls} finalize calls, {completed} of them completed)"
+    );
+    let claimed_here = if host == a { on_a } else { on_b };
+    assert!(
+        claimed_here,
+        "the control plane reports the VM on {host} (A={a}, B={b}) but it is running \
+         elsewhere (A: {on_a}, B: {on_b})"
+    );
 }
