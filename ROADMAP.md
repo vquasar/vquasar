@@ -251,7 +251,7 @@ Split into three shippable slices.
   (per-TAP cookie + conntrack zone; ARP/DHCP/ICMPv6 permitted), so it filters
   guest-to-guest traffic on the same L2 too. Follow-ups: remote-group refs,
   egress enforcement, per-tenant default groups.
-- Per-tenant network isolation (tenancy/projects).
+- Per-tenant network isolation beyond M18/M19. **Queued behind M21.**
 - **M13d — Change a NIC's network on a running VM.** ✅ **Done.** `PUT
   /vms/:id/nics/:index` retargets a NIC (network + optional security groups). The
   TAP name is stable per (vm, nic), so the agent re-homes it on OVS — move it to
@@ -317,7 +317,11 @@ Split into three shippable slices.
   in-memory buffering; body limit disabled on the route), then registers it
   ready+managed with the detected size. UI: an "Upload" dialog with a file
   picker on the Images page. Completes the upload/download/register lifecycle.
-- Additional storage backends and per-VM storage policy.
+- **Storage, to feature-complete.** Additional backends and per-VM storage
+  policy. Storage is a first-class concern in vquasar rather than a detail, and
+  this is the theme that takes it from "one shared directory that works" to
+  something an operator can shape per workload. **Queued behind M21**, and the
+  largest remaining piece of product work.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
@@ -589,6 +593,16 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
+- **Deleted VMs leave their seed ISOs behind** ([#41](https://github.com/vquasar/vquasar/issues/41)).
+  Found on the lab: 7 ISOs in the shared seed directory, 3 of them live. A slow,
+  unbounded leak — and it made a verification step confusing, because grepping
+  the directory matched stale seeds from deleted VMs.
+- **The migration controller is untested under interruption**
+  ([#42](https://github.com/vquasar/vquasar/issues/42)). ADR-021 names migration
+  as the one path where a duplicated controller action corrupts a guest rather
+  than wasting work — which is the justification for M21 — and no test has ever
+  interrupted it. The #39 hook makes it testable: widen `prepare_receive`, kill
+  the leader inside it, assert exactly one receiver.
 - **M21 — agent-side epoch fencing (ADR-022).** Designed, not built. Closes the
   window ADR-021 only bounds: a leader paused past its margin can still reach an
   agent. The controller stamps each RPC with its lease epoch; the agent refuses
@@ -641,9 +655,8 @@ needs a control-plane change first, and the UI change after it is small.
   The budget is ~30s end to end, and a unit test asserts that, because the
   number is a promise to an operator about how long "stuck" takes to become
   "failed" and it would otherwise drift silently.
-  **Still open in #35:** the underlying cause — an interrupted create leaves a
-  TAP and a disk lock that make every retry fail identically. That is agent-side
-  and wants its own change; this one makes it diagnosable instead of invisible.
+  The cause was fixed separately (M20b) and the whole path is now tested in CI
+  (M20c), so #35 is closed.
 - **Graceful shutdown actually runs.** ✅ **Done.** `shutdown_signal` waited only
   on Ctrl-C in both control and agent, and systemd sends SIGTERM — so under the
   unit that actually ships, the graceful path had never run in either service.
