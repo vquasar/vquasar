@@ -743,6 +743,20 @@ change into what is otherwise a control-plane-only feature, and it must be
 sequenced across two releases so a deployed fleet keeps working. The epoch
 column exists and is monotonic per term, so the token is ready when that lands.
 
+Two deployment constraints follow from decisions made elsewhere, and both were
+confirmed on a two-node lab rather than predicted. **Every instance must present
+a certificate with the same CN**, because the agent pins it (ADR-001, §30) — a
+peer with a different CN is refused by every agent, and the symptom is an
+unreachable host rather than an authentication error. And **the shared address
+must appear in every instance's SAN**, or verification fails precisely when the
+VIP moves. Neither is enforced by code; both belong in the runbook, because the
+alternative — relaxing the pin — would give back the property it exists for.
+
+The shared address also has to be settled *before* any VM is created:
+`[enrollment] control_url` is rendered into cloud-init at seed time, so a guest
+keeps the address it was built with. That is the same class of problem as
+overlay MTU (ADR-016) and has the same remedy, which is to decide it early.
+
 *Consequences.* The instance identity is **stable across restarts** (hostname by
 default, `[server] instance_id` to override). That is deliberate on two counts:
 a restarted instance resumes its own lease immediately instead of making the
