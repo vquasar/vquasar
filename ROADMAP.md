@@ -589,6 +589,16 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
+- **M21 — agent-side epoch fencing (ADR-022).** Designed, not built. Closes the
+  window ADR-021 only bounds: a leader paused past its margin can still reach an
+  agent. The controller stamps each RPC with its lease epoch; the agent refuses
+  anything lower than the highest it has seen, persists that number across
+  restarts, and accepts an absent epoch so a rolling upgrade works — agents
+  first, controllers second, strict mode last.
+  Migration is why it is worth doing: everywhere else a stale duplicate is
+  wasted work, but two `PrepareReceive` calls are two receivers for one guest.
+  The e2e fault-injection hook (M20c) is what will test it — the same widened
+  window, with the leader superseded rather than killed.
 - **M20c — the interrupted create is tested in CI.** ✅ **Done.** #35 was found
   by hand on a two-node lab and could only be confirmed there, because the
   window it needs — between `vm.create` and `vm.boot` — is a few hundred

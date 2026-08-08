@@ -524,6 +524,7 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
   project is resolved, never believed.
 * **ADR-021** The control plane is active/active for the API and single-leader
   for the controllers, elected by a lease row in PostgreSQL.
+* **ADR-022** The agent rejects a superseded controller by lease epoch.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -773,6 +774,68 @@ Not addressed here: PostgreSQL's own availability, which is Patroni or a managed
 instance and not something vquasar should grow a worse version of; and splitting
 the leader per controller, which the same mechanism supports and which should
 wait until something demonstrates it is needed.
+
+### ADR-022 — The agent rejects a superseded controller by lease epoch
+
+*Status:* Accepted, not yet implemented.
+
+*Context.* ADR-021 bounds — but does not close — the window in which a leader
+that has lost its lease can still act. A process paused past its margin (a long
+GC pause, a frozen VM, a partitioned host) can wake and issue an agent RPC after
+another instance has taken over. The lease-margin check narrows this to roughly
+half a TTL; it cannot eliminate it, because the check happens in the caller,
+which is precisely the component that cannot be trusted to be running.
+
+Most of the surface tolerates this. `EnsureVm` converges, so a stale duplicate
+is wasted work. Migration does not: two `PrepareReceive` calls mean two
+receivers for one guest, which is a corrupted VM rather than a retryable error.
+
+*Decision.* The controller stamps every agent RPC with the **epoch** of the
+lease it holds, and the agent refuses any request whose epoch is lower than the
+highest it has seen. The epoch already exists — `controller_lease.epoch`
+increments on every acquisition — so this adds a field, not a mechanism.
+
+The check belongs in the agent because the agent is the only party that can
+still be right when the caller is wrong. That is uncomfortable next to ADR-001
+and §30, which keep the agent free of orchestration authority, and the shape is
+chosen to keep it that way: the agent does not evaluate *who* should be leader,
+does not read the lease, and holds no opinion about the control plane. It
+compares one integer against the largest it has been told, which is bookkeeping,
+not judgement.
+
+**The epoch is persisted** alongside the agent's other runtime state. A restart
+that forgot it would reopen exactly the window this closes — a stale controller
+would be believed by an agent that had just come back.
+
+**Rejection is per-RPC, not per-connection.** A connection outlives a lease, and
+tearing one down on a stale call would take working requests with it.
+
+**An absent epoch is accepted, and logged.** This is the migration path: agents
+must tolerate a controller that does not send one, or a rolling upgrade breaks a
+deployed cluster — which §44/ADR-005 treats as a hard requirement. Agents are
+upgraded first, then controllers begin stamping. Once a fleet is fully upgraded
+an operator can make the agent strict; until then the field is advisory, and the
+warning is what tells you the fleet is not yet ready to enforce it.
+
+*Consequences.* `proto/agent.proto` gains a field on every controller-initiated
+request, which is the first time the control plane's internal bookkeeping
+crosses the privilege boundary. It is deliberately the *only* such field, and it
+is opaque to the agent.
+
+A rejected call surfaces to the controller as an error, so it counts against the
+reconcile budget (M20a) and eventually marks the VM `Failed` — correct, since a
+controller being refused by its agents is not going to converge and should say
+so rather than retry silently.
+
+The window does not close until the fleet is upgraded *and* strict mode is on.
+Between those points this is observability: the warning says a superseded
+controller reached an agent, which is a fact worth knowing even when it is
+tolerated.
+
+Rejected: fencing by connection identity (the control plane presents one CN by
+design, so every instance looks alike — ADR-021); and having the agent read the
+lease from PostgreSQL, which would give the agent a database credential and the
+authority to decide who leads, undoing the boundary this design exists to hold.
 
 ### ADR-019 — Quotas are admission control on committed intent
 

@@ -46,7 +46,7 @@ Guides for running and developing vquasar. Start at the
   does: systemd install/uninstall, OVS setup, image prep, certificate
   generation, Keycloak realm setup, firmware build.
 * [`../DESIGN.md`](../DESIGN.md) — the architecture in full. Section 44 records
-  the load-bearing decisions as ADR-001 … ADR-021; code comments cite design
+  the load-bearing decisions as ADR-001 … ADR-022; code comments cite design
   sections by number.
 * [`../ROADMAP.md`](../ROADMAP.md) — what has landed, and what is queued.
 * [`../proto/agent.proto`](../proto/agent.proto) — the control ↔ agent gRPC
