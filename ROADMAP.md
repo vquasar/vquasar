@@ -537,6 +537,20 @@ needs a control-plane change first, and the UI change after it is small.
     a platform-admin surface and remains API-only.
 
 ### Quality & delivery
+- **Console component tests.** ✅ **Done.** vitest + jsdom + testing-library,
+  run in CI alongside the bundle build. The rule they follow is that `fetch` is
+  stubbed and nothing else — provider, query client, MUI and the component are
+  all real, so a passing test exercises the same path a browser does right up to
+  the wire. Mocking a hook to make an assertion pass proves the mock works.
+  Fourteen tests over the project selector and the API client: the header a
+  request would carry under each selection, the platform view being a value
+  rather than an absence, a stored selection surviving a reload, and a revoked
+  one being dropped. Mutation-checked — breaking header emission fails five,
+  keeping a revoked selection fails one.
+  Writing them found one real thing: the selection was synced from storage in an
+  effect, which runs *after* children mount and fire their first queries, so the
+  first request of a session could go out under a stale project. It now syncs
+  during the first render.
 - **Console wired as the official UI.** ✅ **Done, deployed to the lab.** The
   new bundle and the control binary that serves it are installed on `dome`; the
   console is `https://<control>:8080/`, same origin as the API, over the

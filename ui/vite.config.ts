@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -50,6 +51,17 @@ export default defineConfig({
         ws: true,
       },
     },
+  },
+  // Component tests run in jsdom against the real components — no shallow
+  // rendering and no mocked React. What is stubbed is `fetch` and nothing else,
+  // so a test exercises the same code path a browser does right up to the wire.
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    globals: true,
+    // Excluded by default, but the UI has no other kind of test yet and a
+    // stray dependency scan is a slow, confusing failure.
+    include: ["src/**/*.test.{ts,tsx}"],
   },
   build: {
     outDir: "dist",

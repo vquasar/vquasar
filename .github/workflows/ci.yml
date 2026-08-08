@@ -64,7 +64,7 @@ jobs:
         run: cargo test -p vquasar-control --test e2e -- --test-threads=1
 
   ui:
-    name: web UI build
+    name: web UI build · test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -77,6 +77,9 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
+      # Tests first: a type error or a broken component should fail here rather
+      # than in the slower bundle step.
+      - run: npm run test
       - run: npm run build
 
   # The OIDC path was verified by hand against a real Keycloak; this keeps it
