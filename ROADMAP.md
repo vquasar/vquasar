@@ -589,6 +589,18 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
+- **M20c — the interrupted create is tested in CI.** ✅ **Done.** #35 was found
+  by hand on a two-node lab and could only be confirmed there, because the
+  window it needs — between `vm.create` and `vm.boot` — is a few hundred
+  milliseconds wide on real hardware and microseconds wide against a fake agent.
+  The fake agent can now hold `ensure_vm` open for a set time. That is the whole
+  hook, and it is enough: the test starts two control planes against one
+  database, waits until an ensure is genuinely in flight, kills the leader
+  inside it, and asserts the *peer* — not the database — reports the VM Running.
+  The window is load-bearing rather than decorative, and there is an assertion
+  that says so: before killing the leader the test checks the VM is not already
+  Running, so removing the delay fails the test instead of passing trivially.
+  That was found by mutation — the first version passed with the delay removed.
 - **M20b — an unbootable VM that never ran is reclaimed.** ✅ **Done in code,
   not yet proven on the lab.** The other half of #35. A create interrupted
   between `vm.create` and `vm.boot` can leave a TAP and a disk lock that make
