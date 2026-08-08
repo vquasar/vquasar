@@ -522,6 +522,8 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-019** Quotas are admission control on committed intent.
 * **ADR-020** A role binding names the project it applies in; the request's
   project is resolved, never believed.
+* **ADR-021** The control plane is active/active for the API and single-leader
+  for the controllers, elected by a lease row in PostgreSQL.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -692,6 +694,72 @@ only those the caller holds a binding in; a platform-wide binding sees them all.
 Alone, this makes tenancy enforceable but does not bound consumption — a project
 can still exhaust the fleet. That is ADR-019.
 
+### ADR-021 — One leader for the controllers, elected by a lease row
+
+*Status:* Accepted and implemented, except for agent-side fencing (below).
+
+*Context.* A single `vquasar-control` is a single point of failure. Running two
+is safe for the API — the instances hold no authoritative state — but not for
+the controllers. Most of what they do is idempotent: `EnsureVm` against a
+generation counter converges to the same place however many times it runs, IP
+allocation is protected by a unique constraint, segment allocation and quota
+admission both take `FOR UPDATE`. The migration controller is not. It is a
+persisted state machine advanced one step per tick with no claim on the row, so
+two instances would both call `prepare_receive` and produce two receivers for
+one guest — a broken guest, not a retryable error.
+
+*Decision.* Every instance serves the API. Exactly one runs the controllers,
+and holds a **lease row** in PostgreSQL to say so: one row, a holder, an epoch,
+and an `expires_at` renewed on a timer. Acquisition is a single `UPDATE ...
+WHERE expires_at < now() OR holder = $me`, so two instances racing produce
+exactly one winner and the loser simply sees no row returned.
+
+A lease row rather than `pg_try_advisory_lock`, because **sqlx hands out
+arbitrary pooled connections**: a session-scoped lock ends up held by whichever
+connection took it rather than by the instance, and returning that connection to
+the pool makes ownership unobservable. A row also answers "who is the leader"
+with a `SELECT`, which is the question an operator actually has, and is what
+`GET /leader` returns.
+
+Every timestamp comes from PostgreSQL's clock. Instances whose clocks disagree
+still agree about the lease, because none of them is asked what time it is.
+
+*Fencing.* The failure to survive is a leader paused past its expiry — a long GC
+pause, a hypervisor freezing the control VM — that wakes after another instance
+has taken over. Renewal alone does not prevent it: the check and the act are not
+atomic, so any gap between them is a window.
+
+Two measures bound it. The controller acts only while **more than half the TTL
+remains**, so a pause longer than that is noticed before the next action rather
+than after it. And the migration controller **re-confirms the lease against the
+database immediately before each step**, because it is the one operation where a
+duplicate corrupts rather than converges. The residual window is a pause that
+begins inside the margin and outlasts it, on migration only.
+
+Closing it completely means the agent carrying and checking the epoch, so a
+stale caller is rejected at the far end. That is deferred as its own milestone:
+it changes `proto/agent.proto` and the privilege boundary, it forces agent-side
+change into what is otherwise a control-plane-only feature, and it must be
+sequenced across two releases so a deployed fleet keeps working. The epoch
+column exists and is monotonic per term, so the token is ready when that lands.
+
+*Consequences.* The instance identity is **stable across restarts** (hostname by
+default, `[server] instance_id` to override). That is deliberate on two counts:
+a restarted instance resumes its own lease immediately instead of making the
+fleet wait out the TTL, and it can recognise its own orphaned in-flight work.
+The trade is that two control planes on one host must be given distinct ids.
+
+Startup reclaim of orphaned work is now scoped by owner. Reclaiming everything
+transitional was exact for one control plane, and would be destructive with
+several — a restarting instance would kill a download another instance is still
+running. Rows record the instance that started the work; a NULL owner predates
+the column and can only have been written by a binary that is no longer running.
+
+Not addressed here: PostgreSQL's own availability, which is Patroni or a managed
+instance and not something vquasar should grow a worse version of; and splitting
+the leader per controller, which the same mechanism supports and which should
+wait until something demonstrates it is needed.
+
 ### ADR-019 — Quotas are admission control on committed intent
 
 *Status:* Accepted and implemented.
@@ -763,3 +831,65 @@ host; and observe migration and resource state in real time.
 At that point the project demonstrates its central proposition: Cloud Hypervisor
 can serve as the foundation for a standalone, modern, distributed virtualization
 platform without requiring libvirt or Kubernetes.
+
+## 47. Multi-tenancy
+
+A **project** is the unit of tenancy. VMs, volumes, templates, security groups
+and tasks belong to exactly one; images and networks are shareable, where no
+owner means platform-shared. Hosts, users, role definitions, enrollment tokens
+and the CA are platform resources and are never project-scoped.
+
+Scoping is enforced in the control plane by a scope-carrying store handle whose
+queries all share one predicate shape, not by PostgreSQL row-level security
+(ADR-018). A request resolves to exactly one project — from `X-Vquasar-Project`,
+or `?project=` where a WebSocket handshake cannot set headers, or the caller's
+default — never to "everything" by omission. `*` selects the platform view.
+
+Authority is scoped the same way: a role binding names the project it applies
+in, and a caller's permissions are resolved *in* the project the request names
+(ADR-020). A caller with no binding there resolves to the empty permission set,
+which is the whole enforcement — there is no separate membership check to
+forget. Consumption is bounded by quotas, admitted against committed intent in
+the transaction that persists it (ADR-019).
+
+The whole feature is gated on `[tenancy] enabled`, off by default: with it off
+every caller runs at platform scope and behaviour is exactly what a
+single-tenant deployment had. `project_id` is a column and never a field of
+`VirtualMachineSpec` — the agent learns nothing about projects, which preserves
+the privilege boundary of ADR-001 and §30.
+
+## 48. Control-plane high availability
+
+Several `vquasar-control` instances run against one PostgreSQL. All of them
+serve the REST API — they hold no authoritative state, so the API is
+active/active and any of them can answer any request. Exactly one runs the
+**controllers**: the reconcile loop, the migration controller and the sweeps.
+
+Which one is decided by a lease row rather than an advisory lock or an external
+coordinator (ADR-021). A standby keeps ticking and does nothing; the tick is
+where it notices it has been promoted, so there is no loop to start on promotion
+that could fail to start.
+
+Most controller work is idempotent by construction — `EnsureVm` against a
+generation counter converges however many times it runs — so a brief overlap
+between an old and a new leader is harmless. Migration is the exception, and is
+fenced separately (ADR-021).
+
+Three things this does *not* do, deliberately:
+
+* **PostgreSQL HA.** vquasar does not implement database failover; that is
+  Patroni or a managed instance. Growing a second, worse one here would put the
+  platform's durability in the least-tested part of it.
+* **Sharding the controllers.** One leader runs all of them. Splitting per
+  controller is possible on the same mechanism and is worth doing only when
+  something demonstrates it is needed.
+* **Fencing at the agent.** See ADR-021.
+
+Two deployment constraints follow and are not optional:
+
+* Every instance must present a certificate with the **same CN**, because the
+  agent pins the control plane's identity (§30, ADR-021). Otherwise agents
+  reject every instance but one.
+* Agent-to-control traffic — phone-home, enrollment — needs a stable address in
+  front of the instances: a VIP, or a DNS name resolving to all of them.
+

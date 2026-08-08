@@ -380,6 +380,9 @@ pub struct Store {
     allowed_paths: std::sync::Arc<[String]>,
     /// Platform policy over network segments (design §18).
     network_policy: std::sync::Arc<crate::config::NetworkPolicy>,
+    /// This control plane's identity, stamped on work it starts in a detached
+    /// task so a restart reclaims its own and nobody else's (ADR-021).
+    instance: Option<std::sync::Arc<str>>,
 }
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
@@ -411,6 +414,7 @@ impl Store {
             crypto: None,
             allowed_paths: vec!["/var/lib/vquasar".to_string()].into(),
             network_policy: std::sync::Arc::new(crate::config::NetworkPolicy::default()),
+            instance: None,
         }
     }
 
@@ -1552,8 +1556,8 @@ impl Store {
         let v = sqlx::query_as::<_, Volume>(
             "INSERT INTO volumes
                 (id, name, size_bytes, format, source_image_id, project_id,
-                 status, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$6,$6) RETURNING *",
+                 status, owner, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$8,$6,$6) RETURNING *",
         )
         .bind(id)
         .bind(name)
@@ -1562,6 +1566,7 @@ impl Store {
         .bind(source_image_id)
         .bind(now)
         .bind(project)
+        .bind(self.instance())
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1742,8 +1747,8 @@ impl Store {
         sqlx::query_as::<_, Image>(
             "INSERT INTO images
                 (id, name, source_path, format, boot, default_size_bytes, cloud_init, os,
-                 status, managed, project_id, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'importing',TRUE,$10,$9,$9)
+                 status, managed, project_id, owner, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'importing',TRUE,$10,$11,$9,$9)
              RETURNING *",
         )
         .bind(id)
@@ -1781,11 +1786,30 @@ impl Store {
         .map(|_| ())
     }
 
+    /// Record which instance's detached tasks this store's writes belong to
+    /// (ADR-021). Set once at startup; `None` before HA existed.
+    pub fn with_instance(mut self, id: &str) -> Self {
+        self.instance = Some(std::sync::Arc::from(id));
+        self
+    }
+
+    fn instance(&self) -> Option<&str> {
+        self.instance.as_deref()
+    }
+
+    /// This instance's identity, for `GET /leader`.
+    pub fn instance_id(&self) -> Option<&str> {
+        self.instance.as_deref()
+    }
+
     /// Fail every image whose import was in flight, returning their names.
     ///
     /// The file is left alone deliberately: a partial download under a
     /// platform-owned path is removed when the failed image is deleted, and
     /// keeping it means an operator can see how far the import got.
+    /// Only rows this instance owns, so a restart cannot kill another
+    /// instance's live download (ADR-021). A NULL owner predates the column and
+    /// can only have been written by a binary that is no longer running.
     pub async fn fail_orphaned_imports(&self) -> Result<Vec<String>> {
         sqlx::query_scalar(
             "UPDATE images
@@ -1793,9 +1817,11 @@ impl Store {
                     error = 'import did not survive a control-plane restart',
                     updated_at = $1
               WHERE status = 'importing'
+                AND (owner IS NULL OR owner IS NOT DISTINCT FROM $2)
              RETURNING name",
         )
         .bind(Utc::now())
+        .bind(self.instance())
         .fetch_all(&self.pool)
         .await
     }

@@ -372,6 +372,16 @@ pub struct ServerConfig {
     /// plane serves it as a single-page app alongside the API.
     #[serde(default)]
     pub ui_dir: Option<String>,
+    /// What this instance calls itself, in the controller lease and on the work
+    /// it owns (ADR-021). Defaults to the hostname.
+    ///
+    /// **Stable across restarts on purpose.** It is how a restarted instance
+    /// recognises its own orphaned work — and its own lease, so a restart
+    /// resumes leadership immediately instead of waiting out the TTL. The cost
+    /// is that two control planes on one host must be given distinct ids, or
+    /// they will each believe the other's lease and work are their own.
+    #[serde(default)]
+    pub instance_id: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -379,6 +389,7 @@ impl Default for ServerConfig {
         Self {
             listen: "0.0.0.0:8080".to_string(),
             ui_dir: None,
+            instance_id: None,
         }
     }
 }

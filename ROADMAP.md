@@ -396,7 +396,36 @@ needs a control-plane change first, and the UI change after it is small.
   persistent + the agent waits for it (`RequiresMountsFor`); and a
   `vquasar-vm-shutdown.service` terminates CH VMs before NFS unmount so reboots don't
   hang on the orphaned (KillMode=process) hypervisor processes. Verified live.
-- Control-plane HA (multiple control nodes; PostgreSQL HA).
+- **Control-plane HA.** ✅ **First pass done.** Several `vquasar-control`
+  instances over one PostgreSQL: all serve the API, exactly one runs the
+  controllers. Leadership is a lease row — one row, a holder, an epoch, an
+  `expires_at` renewed on a timer, acquired with a single conditional `UPDATE`
+  so two instances racing produce exactly one winner.
+  A row rather than `pg_try_advisory_lock`, because sqlx hands out arbitrary
+  pooled connections: a session lock is held by whichever connection took it,
+  not by the instance, and returning it to the pool makes ownership
+  unobservable. A row also answers "who leads" with a `SELECT` — `GET /leader`,
+  and a `vquasar_controller_is_leader` gauge per instance.
+  Fencing is Option A (ADR-021): the controllers act only while more than half
+  the lease TTL remains, and the migration controller re-confirms the lease
+  against the database immediately before each step — the one operation where a
+  duplicate corrupts a guest rather than converging. Agent-side epoch rejection
+  is deferred to its own milestone; the epoch column exists and is monotonic per
+  term, so the token is ready.
+  The instance identity is stable across restarts (hostname, or `[server]
+  instance_id`), which is what lets a restart resume its own lease immediately
+  and recognise its own orphaned work. That made the startup reclaim
+  owner-scoped: reclaiming everything transitional was exact for one control
+  plane and destructive with several.
+  Verified by an e2e test that runs **two real control planes against one
+  database** and asserts, from each instance's own gauge rather than the shared
+  row, that they are never both running the controllers — mutation-checked, and
+  the first version of that test did *not* catch a lease that let both act.
+  **Still open:** PostgreSQL HA itself (Patroni or managed — deliberately not
+  vquasar's job), splitting the leader per controller, and the agent-side
+  fencing token. Two deployment constraints are documented rather than enforced:
+  every instance needs a certificate with the same CN, and agent→control traffic
+  needs a VIP or DNS name in front.
 - **M19 — multi-tenancy.** ✅ **Complete.** Still gated on `[tenancy] enabled`,
   off by default: an existing deployment behaves exactly as it did until an
   operator opts in. Every piece the gate was waiting on has landed.

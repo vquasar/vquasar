@@ -13,6 +13,7 @@ mod console;
 mod cpucompat;
 mod crypto;
 mod ipam;
+mod lease;
 mod metrics;
 mod netalloc;
 mod overlay;
@@ -155,16 +156,37 @@ async fn main() -> anyhow::Result<()> {
         info!("tenancy enabled — requests are scoped to a project");
     }
 
-    // Anything left mid-flight by a previous process is orphaned: its detached
-    // task died with that process. Reclaim before the API opens, so a caller
-    // never sees a volume reservation that will never be finished (design §7).
+    // The controller lease. Every instance serves the API; only the holder runs
+    // the loops, so several control planes over one database is safe (ADR-021).
+    let instance_id = config
+        .server
+        .instance_id
+        .clone()
+        .unwrap_or_else(lease::Lease::default_identity);
+
+    // Stamp work this instance starts in a detached task, so a restart
+    // reclaims its own orphans and never another instance's (ADR-021).
+    let store = store.with_instance(&instance_id);
+
+    // Anything this instance left mid-flight is orphaned: its detached task
+    // died with the process that owned it. Reclaim before the API opens, so a
+    // caller never sees a volume reservation that will never be finished
+    // (design §7). After `with_instance`, because the sweep is scoped by owner.
     recovery::reclaim_orphaned_work(&store).await;
+    let lease = std::sync::Arc::new(lease::Lease::new(store.pool().clone(), &instance_id));
+    info!(
+        identity = %lease.identity(),
+        ttl_secs = lease::TTL.as_secs(),
+        "contending for the controller lease"
+    );
+    tokio::spawn(lease.clone().run());
 
     // Reconcile loop (host polling + VM reconciliation).
     let interval = Duration::from_secs(config.reconcile.interval_secs);
     let reconcile_store = store.clone();
+    let reconcile_lease = lease.clone();
     tokio::spawn(async move {
-        reconcile::run(reconcile_store, interval).await;
+        reconcile::run(reconcile_store, interval, reconcile_lease).await;
     });
     info!(
         interval_secs = config.reconcile.interval_secs,
@@ -256,6 +278,9 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     }
 
+    // Hand the lease back rather than making the fleet wait out its TTL. A
+    // crash skips this, which is what the TTL is for (ADR-021).
+    lease.release().await;
     info!("vquasar-control stopped");
     Ok(())
 }

@@ -17,19 +17,32 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::agent::Agent;
+use std::sync::Arc;
+
 use crate::netalloc::allocate_mac;
 use crate::scheduler::{schedule, HostCommit};
 use crate::store::{HostInventory, Store, Vm};
 
-/// Run the reconcile loop forever.
-pub async fn run(store: Store, interval: Duration) {
+/// Run the reconcile loop forever, acting only while this instance holds the
+/// controller lease (ADR-021).
+///
+/// A standby keeps ticking rather than parking: the tick is where it notices it
+/// has become the leader, and a loop that has to be started on promotion is a
+/// loop that can fail to start.
+pub async fn run(store: Store, interval: Duration, lease: Arc<crate::lease::Lease>) {
     loop {
+        if !lease.is_fresh() {
+            metrics::gauge!("vquasar_controller_is_leader").set(0.0);
+            sleep(interval).await;
+            continue;
+        }
+        metrics::gauge!("vquasar_controller_is_leader").set(1.0);
         metrics::counter!("vquasar_reconcile_passes_total").increment(1);
         if let Err(e) = reconcile_hosts(&store).await {
             warn!(error = %e, "host reconcile pass failed");
             metrics::counter!("vquasar_reconcile_errors_total", "pass" => "hosts").increment(1);
         }
-        if let Err(e) = reconcile_migrations(&store).await {
+        if let Err(e) = reconcile_migrations(&store, &lease).await {
             warn!(error = %e, "migration reconcile pass failed");
             metrics::counter!("vquasar_reconcile_errors_total", "pass" => "migrations")
                 .increment(1);
@@ -240,8 +253,19 @@ pub async fn reconcile_vms(store: &Store) -> anyhow::Result<()> {
 /// restart. One step runs per tick; failures move it to `Failed` and leave the
 /// VM on its source host.
 #[tracing::instrument(skip_all)]
-pub async fn reconcile_migrations(store: &Store) -> anyhow::Result<()> {
+pub async fn reconcile_migrations(
+    store: &Store,
+    lease: &crate::lease::Lease,
+) -> anyhow::Result<()> {
     for m in store.list_active_migrations().await? {
+        // The one place a duplicate is not idempotent: two `prepare_receive`
+        // calls mean two receivers for one guest. Every other pass converges
+        // however many times it runs, so this is the only pass that pays for a
+        // round trip to re-confirm the lease immediately before acting
+        // (ADR-021).
+        if !lease.confirm().await {
+            return Ok(());
+        }
         if let Err(e) = advance_migration(store, &m).await {
             warn!(migration = %m.id, vm = %m.vm_id, error = %e, "migration failed");
             metrics::counter!("vquasar_migrations_total", "result" => "failed").increment(1);
