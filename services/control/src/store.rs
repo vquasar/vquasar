@@ -1781,6 +1781,37 @@ impl Store {
         .map(|_| ())
     }
 
+    /// Fail every image whose import was in flight, returning their names.
+    ///
+    /// The file is left alone deliberately: a partial download under a
+    /// platform-owned path is removed when the failed image is deleted, and
+    /// keeping it means an operator can see how far the import got.
+    pub async fn fail_orphaned_imports(&self) -> Result<Vec<String>> {
+        sqlx::query_scalar(
+            "UPDATE images
+                SET status = 'failed',
+                    error = 'import did not survive a control-plane restart',
+                    updated_at = $1
+              WHERE status = 'importing'
+             RETURNING name",
+        )
+        .bind(Utc::now())
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Drop every volume reservation whose provisioning was in flight,
+    /// returning `(id, format)` so the caller can remove the partial files.
+    ///
+    /// Deleted rather than marked failed: the row is a quota reservation for a
+    /// file that will never exist, and nothing user-visible was promised — the
+    /// create call it belonged to died with the process that answered it.
+    pub async fn drop_orphaned_volume_reservations(&self) -> Result<Vec<(Uuid, String)>> {
+        sqlx::query_as("DELETE FROM volumes WHERE status = 'provisioning' RETURNING id, format")
+            .fetch_all(&self.pool)
+            .await
+    }
+
     pub async fn get_image(&self, id: Uuid) -> Result<Option<Image>> {
         sqlx::query_as::<_, Image>("SELECT * FROM images WHERE id=$1")
             .bind(id)

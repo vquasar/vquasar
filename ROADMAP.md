@@ -537,6 +537,23 @@ needs a control-plane change first, and the UI change after it is small.
     a platform-admin surface and remains API-only.
 
 ### Quality & delivery
+- **In-flight work is reclaimed after a restart.** ✅ **Done.** Importing an
+  image and provisioning a volume both do expensive external work in a detached
+  task after their row is persisted. A restart killed that task and nothing ever
+  cleared the row, so an image stayed `importing` forever and a volume stayed
+  `provisioning` forever — the latter holding its project's quota for a file
+  that would never exist.
+  The sweep runs once at startup and reclaims *everything* transitional, which
+  is exact rather than a guess: a process that has just started owns no detached
+  tasks, so any transitional row belonged to an instance that is gone. No
+  "stuck for longer than N minutes" heuristic — a slow 40 GB download and an
+  orphan are indistinguishable by age, and any timeout would eventually kill a
+  real import. Images become `failed` with the reason; volume reservations are
+  deleted, along with their partial files, because the row is a quota
+  reservation for a file that will never exist.
+  The exactness depends on there being one control plane; under HA the rows will
+  need to record their owner so a restarting instance does not reclaim another
+  instance's live work. That belongs with ADR-021, not ahead of it.
 - **Console component tests.** ✅ **Done.** vitest + jsdom + testing-library,
   run in CI alongside the bundle build. The rule they follow is that `fetch` is
   stubbed and nothing else — provider, query client, MUI and the component are
