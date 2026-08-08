@@ -777,7 +777,9 @@ wait until something demonstrates it is needed.
 
 ### ADR-022 — The agent rejects a superseded controller by lease epoch
 
-*Status:* Accepted, not yet implemented.
+*Status:* Accepted and implemented (M21), lenient by default. Strict mode is
+`[grpc] require_controller_epoch` on the agent and stays off until a fleet is
+fully upgraded.
 
 *Context.* ADR-021 bounds — but does not close — the window in which a leader
 that has lost its lease can still act. A process paused past its margin (a long
@@ -833,6 +835,16 @@ every one of the thirteen RPCs. Putting the epoch there means:
 Everything else stands: persisted across restarts, per-RPC, absent-is-accepted.
 The original wording is kept below because the reasoning that led to it is still
 the reasoning for the mechanism — only the carrier changed.
+
+*Scope, established by testing (#42, #45).* This fences a controller that is
+superseded **but alive**. It does not prevent the duplicate `PrepareReceive`
+described above when the old leader is *dead*: the successor carries a **higher**
+epoch and is admitted by design. Interrupting a real migration showed that the
+dead-leader case is the common one, so the corruption this ADR cites as its
+motivation is closed by at-most-once semantics on the agent (#45), not by
+fencing. Both are needed and neither substitutes for the other. What fencing
+uniquely closes is the paused-process window ADR-021 can only bound, which no
+amount of idempotency addresses.
 
 *Consequences.* The epoch crosses the privilege boundary, which is the first
 time the control plane's internal bookkeeping does. It is deliberately the only

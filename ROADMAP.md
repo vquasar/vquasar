@@ -611,21 +611,24 @@ needs a control-plane change first, and the UI change after it is small.
   out. The guest ends up running on neither host while the control plane reports
   it healthy on its source. Both failing cases are in the tree, `#[ignore]`d
   against #45; un-ignoring them is the acceptance criterion.
-- **M21 — agent-side epoch fencing (ADR-022).** Designed, not built — and #45
-  has changed what it is worth. ADR-022 fences a controller that is *superseded
-  but alive*: the mechanism is that the controller stamps each RPC with its
-  lease epoch and the agent refuses anything lower than the highest it has seen,
-  persisted across restarts, with an absent epoch accepted so a rolling upgrade
-  works — agents first, controllers second, strict mode last. That is still
-  worth building and still correct.
+- **M21 — agent-side epoch fencing (ADR-022).** ✅ **Done**, lenient by default.
+  The controller stamps every agent RPC with its lease epoch, carried as gRPC
+  metadata so `agent.proto` does not change; the agent refuses anything lower
+  than the highest it has seen, persists that number under `/var/lib` (not
+  `runtime_dir`, which is tmpfs — a reboot is a restart), and accepts an absent
+  epoch while warning once. Enforcement is bound to mTLS: without an identity to
+  bind it to, an epoch is a number any caller can pick.
+  The rollout is agents first, then control planes, then
+  `[grpc] require_controller_epoch = true` once the "not stamping" warning has
+  stopped. Until that last step this is observability — the warning says a
+  superseded controller reached an agent, which is worth knowing even while it
+  is tolerated.
   What it does **not** do is fix the migration corruption that motivated it.
-  When the old leader is *dead* rather than paused, the duplicate
-  `PrepareReceive` comes from the legitimate current leader carrying a *higher*
-  epoch, which the agent accepts by design. The dead-leader case is the common
-  one, and it needs at-most-once semantics on the agent — an idempotent
-  `prepare_receive`, and a finalise that survives its caller vanishing — not
-  fencing. #45 is therefore a prerequisite for M21 delivering the guarantee
-  ADR-021 asks for, not a follow-up to it.
+  #45 showed that when the old leader is *dead* the duplicate `PrepareReceive`
+  comes from the legitimate current leader carrying a *higher* epoch, which the
+  agent admits by design. That case needs at-most-once semantics on the agent;
+  fencing closes the different window ADR-021 can only bound, where a paused
+  process wakes and acts. Both are needed.
 - **M20c — the interrupted create is tested in CI.** ✅ **Done.** #35 was found
   by hand on a two-node lab and could only be confirmed there, because the
   window it needs — between `vm.create` and `vm.boot` — is a few hundred

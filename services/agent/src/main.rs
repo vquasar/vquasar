@@ -8,6 +8,7 @@
 mod backend;
 mod config;
 mod console;
+mod epoch;
 mod firewall;
 mod grpc;
 mod hostfw;
@@ -178,11 +179,32 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Chaining to the CA is not identity — see peerid (design §30).
-    let identity = crate::peerid::RequireControlIdentity::new(
+    let mut identity = crate::peerid::RequireControlIdentity::new(
         config.tls.enabled().then(|| config.tls.control_cn.clone()),
     );
     if config.tls.enabled() {
         info!(control_cn = %config.tls.control_cn, "requiring control-plane certificate identity");
+        // Epoch fencing only where there is an identity to bind it to: without
+        // mTLS the epoch is a number any caller can pick, and enforcing it
+        // would imply a guarantee that is not there (ADR-022).
+        let guard = std::sync::Arc::new(crate::epoch::EpochGuard::load(
+            &config.grpc.controller_epoch_file,
+            config.grpc.require_controller_epoch,
+        ));
+        info!(
+            strict = config.grpc.require_controller_epoch,
+            epoch = guard.highest(),
+            path = %config.grpc.controller_epoch_file.display(),
+            "refusing superseded controllers by lease epoch"
+        );
+        identity = identity.with_epoch(guard);
+    } else if config.grpc.require_controller_epoch {
+        // Say so rather than silently doing nothing: an operator who set this
+        // has asked for a guarantee, and needs to know it is not in force.
+        tracing::warn!(
+            "[grpc] require_controller_epoch is set but [tls] is not configured; \
+             epoch fencing is off (ADR-022)"
+        );
     }
 
     server

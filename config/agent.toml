@@ -16,6 +16,22 @@ serial_mode = "socket"
 # Directory for live-migration sockets (design section 28).
 socket_dir = "/var/lib/vquasar/migrations"
 
+[grpc]
+listen = "0.0.0.0:9500"
+# Refuse a control-plane RPC that carries no lease epoch (ADR-022). Every
+# control plane presents the same certificate CN by design, so mTLS cannot tell
+# a leader from one that has been superseded; the lease epoch can.
+#
+# Leave this off until the whole fleet is upgraded. Agents are upgraded before
+# control planes, and an agent that insisted on an epoch would refuse every
+# request from the control plane it is still running alongside. The agent logs
+# once when the control plane is not stamping — turn this on after that warning
+# has stopped appearing. Only enforced when [tls] is configured.
+require_controller_epoch = false
+# Where the highest seen epoch is kept. Under /var/lib rather than runtime_dir,
+# which is tmpfs: forgetting it on reboot would reopen the window this closes.
+controller_epoch_file = "/var/lib/vquasar/controller-epoch"
+
 [network]
 backend = "ovs"
 bridge = "br-int"
