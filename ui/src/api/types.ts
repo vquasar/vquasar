@@ -397,6 +397,32 @@ export interface Me {
   platform: boolean;
 }
 
+/// Per-project limits (ADR-019). A null field is unlimited in that dimension.
+export interface QuotaLimits {
+  max_vms?: number | null;
+  max_vcpus?: number | null;
+  max_memory_mib?: number | null;
+  max_volumes?: number | null;
+  max_storage_bytes?: number | null;
+}
+
+/// What a project is using, derived from the owning tables — never stored.
+export interface QuotaUsage {
+  vms: number;
+  vcpus: number;
+  memory_mib: number;
+  volumes: number;
+  storage_bytes: number;
+}
+
+export interface QuotaView {
+  limits: QuotaLimits;
+  usage: QuotaUsage;
+  /// Usage already past a limit — which happens when a limit is lowered, and is
+  /// permitted. New commitments are refused; nothing is destroyed.
+  over_quota: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
