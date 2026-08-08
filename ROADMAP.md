@@ -589,6 +589,22 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
+- **M20b — an unbootable VM that never ran is reclaimed.** ✅ **Done in code,
+  not yet proven on the lab.** The other half of #35. A create interrupted
+  between `vm.create` and `vm.boot` can leave a TAP and a disk lock that make
+  every later boot fail identically; retrying the same VMM cannot clear that.
+  The agent now discards it — terminate the VMM, release the TAPs — so the next
+  reconcile starts from a clean host.
+  The safety argument is the whole design: this happens **only** when the VMM
+  reports `Created`, which means no guest instruction has ever executed and
+  there is no guest state to lose. `Running` and `Paused` are left strictly
+  alone; discarding one of those to fix a boot error would destroy a working VM
+  to repair a reporting problem. Two tests hold that line — one that a wedged VM
+  is discarded and the following attempt succeeds, one that a running VM
+  survives a failing boot call.
+  **Not yet reproduced on the lab**: the original failure needs a leader killed
+  in the window between create and boot, which is a few hundred milliseconds
+  wide.
 - **M20a — a failing reconcile is visible.** ✅ **Done.** Half of #35, and the
   half that stands on its own. `reconcile_ensure` logged the agent's error and
   returned `Ok`, so every failure looked transient to its caller: the tick

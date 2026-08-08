@@ -122,6 +122,12 @@ impl VmManager {
     /// needed, then drive its power state to match `spec.desired_power_state`.
     /// Idempotent. `bindings` are the control-resolved NIC bindings, one per
     /// network interface in spec order.
+    /// Whether this VM currently has a VMM under management (tests, #35).
+    #[cfg(test)]
+    pub async fn is_managed(&self, id: VmId) -> bool {
+        self.vms.lock().await.contains_key(&id)
+    }
+
     pub async fn ensure(
         &self,
         id: VmId,
@@ -239,7 +245,38 @@ impl VmManager {
         if !is_new {
             self.reconfigure(id, managed, &spec, &bindings).await?;
         }
-        managed.vmm.boot().await?;
+        if let Err(e) = managed.vmm.boot().await {
+            // A VMM that will not boot is sometimes unrecoverable *in place*:
+            // an attempt interrupted between create and boot can leave a TAP
+            // and a disk lock that make every subsequent boot fail identically,
+            // for ever (#35). Retrying the same VMM cannot clear that.
+            //
+            // Discarding it can, and is safe precisely when the VM has never
+            // booted: `Created` means no guest instruction has executed, so
+            // there is no guest state to lose. Anything Running or Paused is
+            // left strictly alone — reclaiming those would be destroying a
+            // working VM to fix a reporting problem.
+            let never_ran = matches!(
+                managed.vmm.info().await.map(|i| i.state),
+                Ok(HypervisorState::Created)
+            );
+            if never_ran {
+                warn!(vm = %id, error = %e,
+                      "boot failed on a VM that never ran; discarding the VMM so the \
+                       next reconcile starts from a clean host");
+                if let Some(mut stale) = vms.remove(&id) {
+                    let _ = stale.vmm.terminate().await;
+                }
+                for index in 0..bindings.len() {
+                    if let Err(e) = self.network.release(id, index).await {
+                        warn!(vm = %id, index, error = %e, "could not release a TAP while reclaiming");
+                    }
+                }
+            }
+            // Either way the caller hears about it: the control plane counts
+            // the failure and gives up if it keeps happening (#35).
+            return Err(e.into());
+        }
         let obs = observe(managed, &self.ipdiscovery).await;
         // Record the now-applied spec (and name) so the next reconcile diffs
         // against it rather than re-applying the same edits.
@@ -792,5 +829,91 @@ mod tests {
         let obs = mgr.get(id).await.unwrap();
         assert_eq!(obs.name, "survivor");
         assert_eq!(obs.phase, VmPhase::Running, "recovered VM stays running");
+    }
+
+    /// An interrupted create can leave a host in a state where every boot fails
+    /// the same way for ever (#35). Retrying the same VMM cannot clear that, so
+    /// a VM that has never booted is discarded and the next reconcile starts
+    /// from a clean host.
+    #[tokio::test]
+    async fn an_unbootable_vm_that_never_ran_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, backend) = manager(dir.path());
+        let id = VmId::new();
+
+        // First ensure gets as far as `Created` and then cannot boot — and will
+        // not be able to on any later attempt either.
+        backend.fail_boot_always_for(id);
+        let err = mgr
+            .ensure(
+                id,
+                "wedged".into(),
+                spec(DesiredPowerState::Running),
+                vec![],
+                None,
+                None,
+            )
+            .await;
+        assert!(err.is_err(), "a boot that cannot succeed must be reported");
+
+        // The VMM is gone rather than kept to fail again identically.
+        assert!(
+            !mgr.is_managed(id).await,
+            "an unbootable, never-run VMM must be discarded so the next tick is clean"
+        );
+
+        // And the next reconcile — on a host where boot now works — succeeds
+        // without any operator intervention.
+        backend.clear_failures();
+        let obs = mgr
+            .ensure(
+                id,
+                "wedged".into(),
+                spec(DesiredPowerState::Running),
+                vec![],
+                None,
+                None,
+            )
+            .await
+            .expect("a clean retry should succeed");
+        assert_eq!(obs.phase, VmPhase::Running);
+    }
+
+    /// The reclaim must never touch a VM that is actually running: discarding
+    /// one to fix a boot error would destroy a working guest.
+    #[tokio::test]
+    async fn a_running_vm_is_never_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, backend) = manager(dir.path());
+        let id = VmId::new();
+        mgr.ensure(
+            id,
+            "live".into(),
+            spec(DesiredPowerState::Running),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(mgr.is_managed(id).await);
+
+        // Now make boot fail. The VM is Running, so this is not the interrupted
+        // create case and the VMM must survive.
+        backend.fail_boot_always_for(id);
+        let _ = mgr
+            .ensure(
+                id,
+                "live".into(),
+                spec(DesiredPowerState::Running),
+                vec![],
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            mgr.is_managed(id).await,
+            "a running VM must not be discarded because a boot call failed"
+        );
     }
 }
