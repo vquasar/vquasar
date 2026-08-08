@@ -367,6 +367,12 @@ pub async fn reconcile_migrations(
         if let Err(e) = advance_migration(store, &m).await {
             warn!(migration = %m.id, vm = %m.vm_id, error = %e, "migration failed");
             metrics::counter!("vquasar_migrations_total", "result" => "failed").increment(1);
+            // Tell the target to drop any receiver it prepared. `prepare_receive`
+            // is idempotent by VM id (#45), so a receiver left behind by a failed
+            // migration would be handed straight back to the *next* migration of
+            // this VM to this host — a URL nothing is listening on. Best-effort
+            // and a no-op when no receiver exists.
+            release_receiver(store, &m).await;
             store
                 .update_migration(m.id, "Failed", None, Some(&e.to_string()))
                 .await?;
@@ -389,6 +395,45 @@ pub async fn reconcile_migrations(
         }
     }
     Ok(())
+}
+
+/// Drop a receiver the target prepared for a migration that failed before any
+/// state was transferred.
+///
+/// Only from `Pending`, and the limit is load-bearing. Past `Pending` the guest
+/// may already be live on the target — a `Finalizing` failure can happen *after*
+/// the target adopted it — and `DiscardVm` there would delete a running VM. In
+/// `Pending` nothing has been sent, so the only thing the target can be holding
+/// is a receiver.
+///
+/// Within `Pending` it is unconditional rather than "only if we think one
+/// exists", because the case that motivates it is a controller that died before
+/// recording what it had already done: the state machine's own account of how
+/// far it got is exactly what cannot be trusted here (#45).
+async fn release_receiver(store: &Store, m: &crate::store::Migration) {
+    if m.state != "Pending" {
+        return;
+    }
+    let target = match store.get_host(m.target_host_id).await {
+        Ok(Some(h)) => h,
+        Ok(None) => return,
+        Err(e) => {
+            warn!(migration = %m.id, error = %e, "could not look up the migration target");
+            return;
+        }
+    };
+    if let Err(e) = with_timeout(
+        30,
+        "discard_vm",
+        Agent::new(target.endpoint).discard_vm(m.vm_id.to_string()),
+    )
+    .await
+    {
+        // Worth a line, not worth failing over: the migration has already
+        // failed, and this is cleanup after it.
+        debug!(migration = %m.id, vm = %m.vm_id, error = %e,
+               "target had no prepared receiver to discard");
+    }
 }
 
 async fn advance_migration(store: &Store, m: &crate::store::Migration) -> anyhow::Result<()> {

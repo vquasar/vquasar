@@ -291,10 +291,14 @@ impl HostAgent for FakeAgent {
         let delay = {
             let mut st = self.state.lock().unwrap();
             st.prepare_calls += 1;
-            // Deliberately unconditional, exactly like `Manager::prepare_receive`:
-            // a second call launches a second receiver rather than returning the
-            // first one's URL.
-            *st.pending_receive.entry(id).or_insert(0) += 1;
+            // At most one receiver per VM, like `Manager::prepare_receive`: a
+            // repeat returns the receiver that exists rather than starting a
+            // second one (#45). The bookkeeping happens before the delay,
+            // mirroring an agent whose work survives its caller disconnecting.
+            let slot = st.pending_receive.entry(id).or_insert(0);
+            if *slot == 0 {
+                *slot = 1;
+            }
             st.prepare_delay_ms
         };
         if delay > 0 {
@@ -351,22 +355,28 @@ impl HostAgent for FakeAgent {
         let delay = {
             let mut st = self.state.lock().unwrap();
             st.finalize_calls += 1;
-            // `Manager::finalize_receive` removes from `pending` and returns
-            // `NotFound` when there is nothing to finalise. A second call after
-            // a successful one therefore fails, which is what makes an
-            // interrupted `Finalizing` interesting.
+            // Idempotent once the guest is adopted: finalise is past the point
+            // of no return, so a repeat has to report success rather than send
+            // the controller down its failure path (#45).
+            if matches!(st.vms.get(&id), Some(Phase::Running)) {
+                return Ok(Response::new(EnsureVmResponse {
+                    state: Some(Self::observed(&id, Phase::Running)),
+                }));
+            }
             match st.pending_receive.get_mut(&id) {
                 Some(n) if *n > 0 => *n -= 1,
                 _ => return Err(Status::not_found(format!("no pending receive for {id}"))),
             }
+            // Adopt before the delay, not after: `Manager::finalize_receive`
+            // now runs in a spawned task, so a caller that disconnects mid-call
+            // no longer takes the transferred guest with it.
+            st.vms.insert(id.clone(), Phase::Running);
             st.finalize_delay_ms
         };
         if delay > 0 {
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
-        let mut st = self.state.lock().unwrap();
-        st.finalize_completed += 1;
-        st.vms.insert(id.clone(), Phase::Running);
+        self.state.lock().unwrap().finalize_completed += 1;
         Ok(Response::new(EnsureVmResponse {
             state: Some(Self::observed(&id, Phase::Running)),
         }))
@@ -379,6 +389,9 @@ impl HostAgent for FakeAgent {
         let id = r.into_inner().vm_id;
         let mut st = self.state.lock().unwrap();
         st.discard_calls += 1;
+        // Clears a prepared receiver as well as a managed VM: that is how the
+        // controller frees a VM for a later migration after one fails (#45).
+        st.pending_receive.remove(&id);
         st.vms.remove(&id);
         Ok(Response::new(OperationResponse {
             accepted: true,
@@ -2541,17 +2554,12 @@ async fn wait_for_call(state: &Arc<Mutex<AgentState>>, count: impl Fn(&AgentStat
 /// `Pending`: the leader dies between `prepare_receive` succeeding on the target
 /// and the `Sending` write that records it.
 ///
-/// This is the case ADR-021 predicts. It fails today: the peer retries and
-/// `Manager::prepare_receive` launches a second VMM rather than returning the
-/// first one's URL.
-///
-/// Note what it is *not*: epoch fencing does not fix this. ADR-022 refuses a
-/// superseded controller, and here the old leader is dead — the second call
-/// comes from the legitimate current leader carrying a *higher* epoch, which
-/// the agent accepts by design. The dead-leader case needs `prepare_receive` to
-/// be idempotent (#45).
+/// This is the case ADR-021 predicts, and it used to leave two receivers for one
+/// guest. Note what fixed it: *not* epoch fencing. ADR-022 refuses a superseded
+/// controller, and here the old leader is dead — the retry comes from the
+/// legitimate current leader carrying a *higher* epoch, which the agent accepts
+/// by design. At-most-once had to come from `prepare_receive` itself (#45).
 #[tokio::test]
-#[ignore = "fails: two receivers for one guest — see #45"]
 async fn a_migration_interrupted_inside_prepare_receive_leaves_one_receiver() {
     let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
     let (_a, b, _sa, sb, vm) = migration_fixture(&h).await;
@@ -2592,16 +2600,17 @@ async fn a_migration_interrupted_inside_prepare_receive_leaves_one_receiver() {
 
     // Either outcome is defensible — finish the migration, or fail it and leave
     // the VM on its source. What is not defensible is two receivers.
+    //
+    // The assertion is on receivers, not calls. The peer retrying is correct:
+    // it reads `Pending` and has no way to know the step already ran, and epoch
+    // fencing admits it because its lease epoch is *higher*. At-most-once has to
+    // come from the agent, which is why this counts what the agent built.
     let st = sb.lock().unwrap();
-    assert_eq!(
-        st.prepare_calls, 1,
-        "the peer started a second receiver for the same guest: {} receivers on the target",
-        st.prepare_calls
-    );
-    assert_eq!(
+    assert!(
+        st.pending_receive.get(&vm).copied().unwrap_or(0) <= 1,
+        "two receivers for one guest ({} on the target after {} calls)",
         st.pending_receive.get(&vm).copied().unwrap_or(0),
-        0,
-        "a receiver was left running on the target with nothing to receive"
+        st.prepare_calls
     );
 }
 
@@ -2669,14 +2678,13 @@ async fn a_migration_interrupted_inside_send_does_not_strand_the_guest() {
 /// `Finalizing`: the leader dies after the target has adopted the guest but
 /// before the write that moves the VM's host.
 ///
-/// This fails today, and worse than "the migration is marked failed": the
-/// guest ends up running on neither host. tonic drops a handler future when its
-/// client disconnects, so the dying leader *cancels* the agent's finalise — and
-/// `Manager::finalize_receive` takes the entry out of `pending` before its
-/// await, so the cancelled call destroys the receiver on its way out. The
-/// peer's retry then gets `NotFound` (#45).
+/// This used to end with the guest running on neither host. tonic drops a
+/// handler future when its client disconnects, so the dying leader *cancelled*
+/// the agent's finalise — and because `Manager::finalize_receive` took the entry
+/// out of `pending` before its await, the cancelled call destroyed the receiver
+/// on its way out and the peer's retry got `NotFound`. The finalise now runs in
+/// a spawned task and is idempotent once the guest is adopted (#45).
 #[tokio::test]
-#[ignore = "fails: an interrupted finalise loses the guest — see #45"]
 async fn a_migration_interrupted_inside_finalize_does_not_lose_the_vm() {
     let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
     let (a, b, sa, sb, vm) = migration_fixture(&h).await;

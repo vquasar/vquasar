@@ -597,20 +597,27 @@ needs a control-plane change first, and the UI change after it is small.
   Found on the lab: 7 ISOs in the shared seed directory, 3 of them live. A slow,
   unbounded leak — and it made a verification step confusing, because grepping
   the directory matched stale seeds from deleted VMs.
-- **The migration controller under interruption** ✅ **Tested**
-  ([#42](https://github.com/vquasar/vquasar/issues/42)) — and it found more than
-  expected ([#45](https://github.com/vquasar/vquasar/issues/45)). There is now a
-  case per step of the state machine: widen one agent RPC, stop the leader
-  inside it, let the peer take over, and ask whether the control plane's account
-  of where the VM lives is still true. `Sending` survives. The other two do not.
-  Interrupting `prepare_receive` leaves **two receivers for one guest** — the
-  corruption ADR-021 predicts. Interrupting `finalize_receive` is worse: tonic
+- **Live migration survives an interrupted controller** ✅ **Done**
+  ([#42](https://github.com/vquasar/vquasar/issues/42),
+  [#45](https://github.com/vquasar/vquasar/issues/45)). There is a case per step
+  of the state machine: widen one agent RPC, stop the leader inside it, let the
+  peer take over, and ask whether the control plane's account of where the VM
+  lives is still true. Two of the three failed when first written.
+  Interrupting `prepare_receive` left **two receivers for one guest** — the
+  corruption ADR-021 predicts. Interrupting `finalize_receive` was worse: tonic
   drops a handler future when its client disconnects, so the dying leader
-  *cancels* the agent's finalise, and because `Manager::finalize_receive` empties
-  `pending` before its await the cancelled call destroys the receiver on its way
-  out. The guest ends up running on neither host while the control plane reports
-  it healthy on its source. Both failing cases are in the tree, `#[ignore]`d
-  against #45; un-ignoring them is the acceptance criterion.
+  *cancelled* the agent's finalise, and because it emptied `pending` before its
+  await the cancelled call destroyed the receiver on its way out. The guest ended
+  up running on neither host while the control plane reported it healthy on its
+  source.
+  The fix is at-most-once semantics on the agent, not fencing: `prepare_receive`
+  returns the receiver that already exists, `finalize_receive` is idempotent once
+  the guest is adopted, and both run in a spawned task so a caller that vanishes
+  no longer takes committed work with it. The controller discards a receiver left
+  by a migration that failed in `Pending` — only `Pending`, because past it the
+  guest may already be live on the target and discarding would delete a running
+  VM.
+
 - **M21 — agent-side epoch fencing (ADR-022).** ✅ **Done**, lenient by default.
   The controller stamps every agent RPC with its lease epoch, carried as gRPC
   metadata so `agent.proto` does not change; the agent refuses anything lower
@@ -623,12 +630,11 @@ needs a control-plane change first, and the UI change after it is small.
   stopped. Until that last step this is observability — the warning says a
   superseded controller reached an agent, which is worth knowing even while it
   is tolerated.
-  What it does **not** do is fix the migration corruption that motivated it.
-  #45 showed that when the old leader is *dead* the duplicate `PrepareReceive`
-  comes from the legitimate current leader carrying a *higher* epoch, which the
-  agent admits by design. That case needs at-most-once semantics on the agent;
-  fencing closes the different window ADR-021 can only bound, where a paused
-  process wakes and acts. Both are needed.
+  It does not fix the migration corruption that motivated it — #45 did, above.
+  When the old leader is *dead* the duplicate `PrepareReceive` comes from the
+  legitimate current leader carrying a *higher* epoch, which the agent admits by
+  design. Fencing closes the different window ADR-021 can only bound, where a
+  paused process wakes and acts. Both were needed.
 - **M20c — the interrupted create is tested in CI.** ✅ **Done.** #35 was found
   by hand on a two-node lab and could only be confirmed there, because the
   window it needs — between `vm.create` and `vm.boot` — is a few hundred

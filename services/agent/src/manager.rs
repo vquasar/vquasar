@@ -71,6 +71,10 @@ struct PendingReceive {
     record: VmRecord,
     vmm: Box<dyn ManagedVmm>,
     recv: JoinHandle<vquasar_client::Result<()>>,
+    /// The URL handed back to the controller. Kept so a repeated
+    /// `prepare_receive` can return the *same* receiver instead of starting a
+    /// second one (#45).
+    return_url: String,
 }
 
 /// How the agent exposes an incoming live migration (section 28).
@@ -126,6 +130,33 @@ impl VmManager {
     #[cfg(test)]
     pub async fn is_managed(&self, id: VmId) -> bool {
         self.vms.lock().await.contains_key(&id)
+    }
+
+    /// Whether a migration receiver is recorded for this VM (tests, #45).
+    #[cfg(test)]
+    pub async fn has_prepared_receiver(&self, id: VmId) -> bool {
+        self.pending.lock().await.contains_key(&id)
+    }
+
+    /// Promote a prepared receiver as a successful finalise would, without a
+    /// Cloud Hypervisor to receive from (tests, #45).
+    #[cfg(test)]
+    pub async fn adopt_pending_for_test(&self, id: VmId) {
+        let entry = self
+            .pending
+            .lock()
+            .await
+            .remove(&id)
+            .expect("no receiver prepared");
+        let console = SerialHub::start(self.layout.serial_socket(id), self.layout.serial_log(id));
+        self.vms.lock().await.insert(
+            id,
+            ManagedVm {
+                record: entry.record,
+                vmm: entry.vmm,
+                console,
+            },
+        );
     }
 
     pub async fn ensure(
@@ -370,6 +401,13 @@ impl VmManager {
     /// Shut down, terminate the VMM, release host networking, and remove all
     /// state for a VM.
     pub async fn delete(&self, id: VmId) -> Result<()> {
+        // A receiver prepared for this VM goes too. Otherwise a migration that
+        // failed after `prepare_receive` would leave one behind, and — now that
+        // `prepare_receive` is idempotent — every later migration of this VM to
+        // this host would be handed that dead receiver's URL (#45).
+        if self.pending.lock().await.remove(&id).is_some() {
+            tracing::info!(vm = %id, "discarded a prepared migration receiver");
+        }
         let mut vms = self.vms.lock().await;
         let mut managed = vms.remove(&id).ok_or(ManagerError::NotFound(id))?;
         let nic_count = managed.record.spec.network_interfaces.len();
@@ -430,14 +468,52 @@ impl VmManager {
 
     // ---- live migration (section 28) ------------------------------------
 
+    // Both migration steps below run through `detach`. See its note: an RPC
+    // handler is not a safe place to mutate migration state, because tonic
+    // cancels one when its caller disconnects.
+
     /// Destination: launch an empty VMM and start receiving a migration for
     /// `id`. Returns the migration URL the source should send to.
+    ///
+    /// **At most once per VM.** A controller that dies between this returning
+    /// and recording the URL will retry, and its successor is a legitimate
+    /// leader carrying a higher lease epoch — so epoch fencing (ADR-022) admits
+    /// it by design. Two receivers for one guest is corruption rather than a
+    /// retryable error, so the at-most-once guarantee has to live here (#45).
+    ///
+    /// **Runs in a spawned task.** tonic drops a handler future when its client
+    /// disconnects, so a control plane dying mid-call would otherwise cancel
+    /// this between launching the VMM and recording it, leaving an untracked
+    /// Cloud Hypervisor process that nothing will ever finalise or clean up.
+    /// Spawning means the work completes and the retry finds it.
     pub async fn prepare_receive(
+        self: &Arc<Self>,
+        id: VmId,
+        name: String,
+        spec: VirtualMachineSpec,
+    ) -> Result<String> {
+        let this = self.clone();
+        detach(async move { this.prepare_receive_inner(id, name, spec).await }).await
+    }
+
+    async fn prepare_receive_inner(
         &self,
         id: VmId,
         name: String,
         spec: VirtualMachineSpec,
     ) -> Result<String> {
+        // Held across the whole setup, so two callers cannot both find nothing
+        // and both launch a receiver.
+        let mut pending = self.pending.lock().await;
+        if let Some(existing) = pending.get(&id) {
+            info!(
+                vm = %id,
+                url = %existing.return_url,
+                "a receiver is already prepared for this VM; returning it rather than \
+                 starting a second"
+            );
+            return Ok(existing.return_url.clone());
+        }
         let record = VmRecord {
             id,
             name,
@@ -480,24 +556,47 @@ impl VmManager {
             client.receive_migration(&recv_url).await
         });
 
-        self.pending
-            .lock()
-            .await
-            .insert(id, PendingReceive { record, vmm, recv });
+        pending.insert(
+            id,
+            PendingReceive {
+                record,
+                vmm,
+                recv,
+                return_url: return_url.clone(),
+            },
+        );
         Ok(return_url)
     }
 
     /// Destination: complete a received migration and register the now-running
     /// VM as a normal managed VM.
-    pub async fn finalize_receive(&self, id: VmId) -> Result<ObservedVm> {
-        let pending = self
-            .pending
-            .lock()
-            .await
-            .remove(&id)
-            .ok_or(ManagerError::NotFound(id))?;
+    ///
+    /// Idempotent, and safe to interrupt. Both matter: this is the step past the
+    /// point of no return, where the guest's state has already left its source,
+    /// so a call that half-happens loses the VM outright (#45).
+    pub async fn finalize_receive(self: &Arc<Self>, id: VmId) -> Result<ObservedVm> {
+        let this = self.clone();
+        detach(async move { this.finalize_receive_inner(id).await }).await
+    }
+
+    async fn finalize_receive_inner(&self, id: VmId) -> Result<ObservedVm> {
+        // `pending` before `vms`, and held for the whole finalise. That
+        // serialises finalises — acceptable, since the controller advances one
+        // migration step per tick — and is what makes a retry correct: it
+        // blocks until the first call is done, then sees the adopted VM instead
+        // of an empty map.
+        let mut pending = self.pending.lock().await;
+        if let Some(managed) = self.vms.lock().await.get(&id) {
+            // Already adopted, so a previous call succeeded — most likely one
+            // whose caller went away before it could record the result.
+            return Ok(observe(managed, &self.ipdiscovery).await);
+        }
+        let entry = pending.get_mut(&id).ok_or(ManagerError::NotFound(id))?;
         // Wait for the background receive to finish (the source has sent).
-        match pending.recv.await {
+        // Borrowed rather than taken: the entry stays put until the receive has
+        // actually succeeded, so nothing has been destroyed if it has not.
+        let received = (&mut entry.recv).await;
+        match received {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(ManagerError::Hypervisor(e)),
             Err(join) => {
@@ -506,13 +605,14 @@ impl VmManager {
                 )))
             }
         }
+        let entry = pending.remove(&id).expect("checked above, lock still held");
         let console = SerialHub::start(self.layout.serial_socket(id), self.layout.serial_log(id));
         let mut vms = self.vms.lock().await;
         vms.insert(
             id,
             ManagedVm {
-                record: pending.record,
-                vmm: pending.vmm,
+                record: entry.record,
+                vmm: entry.vmm,
                 console,
             },
         );
@@ -530,6 +630,15 @@ impl VmManager {
     /// Source: discard a VM whose state has migrated away (tear down the VMM
     /// and release host resources, same as delete).
     pub async fn discard(&self, id: VmId) -> Result<()> {
+        // A receiver that never received is not a VM: dropping the entry tears
+        // down its VMM, and there is nothing else to release. Reporting
+        // `NotFound` here would make the controller's cleanup after a failed
+        // migration look like a failure of its own (#45).
+        let had_receiver = self.pending.lock().await.remove(&id).is_some();
+        if had_receiver && !self.vms.lock().await.contains_key(&id) {
+            info!(vm = %id, "discarded a prepared migration receiver");
+            return Ok(());
+        }
         self.delete(id).await
     }
 
@@ -594,6 +703,33 @@ impl VmManager {
 }
 
 /// Derive observed state from a managed VM's live hypervisor info.
+/// Run `work` somewhere a dropped caller cannot kill it, and report its result.
+///
+/// tonic drops a handler future when its client disconnects, which means a
+/// control plane that dies mid-RPC cancels the agent's work at whatever await
+/// it had reached. For anything that mutates state around an await that is not
+/// a hazard in theory — it is what lost a guest in #45, where a cancelled
+/// finalise had already emptied `pending` on its way out.
+///
+/// Spawning separates the two questions. The work runs to completion and leaves
+/// the agent consistent whatever the caller does; the caller either learns the
+/// outcome or does not, and a retry finds a state that makes sense either way.
+async fn detach<T, F>(work: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::spawn(work).await {
+        Ok(result) => result,
+        // The task panicked or the runtime is shutting down. Neither is
+        // something the caller can retry into a better outcome, but it must not
+        // be reported as success.
+        Err(join) => Err(ManagerError::Hypervisor(ChError::Transport(
+            join.to_string(),
+        ))),
+    }
+}
+
 async fn observe(managed: &ManagedVm, ipd: &IpDiscovery) -> ObservedVm {
     let (phase, message) = match managed.vmm.info().await {
         Ok(info) => (phase_of(info.state), None),
@@ -652,7 +788,7 @@ mod tests {
 
     use super::*;
 
-    fn spec(power: DesiredPowerState) -> VirtualMachineSpec {
+    pub(super) fn spec(power: DesiredPowerState) -> VirtualMachineSpec {
         VirtualMachineSpec {
             desired_power_state: power,
             cpu: CpuSpec {
@@ -686,7 +822,14 @@ mod tests {
         }
     }
 
-    fn manager(dir: &std::path::Path) -> (VmManager, Arc<FakeBackend>) {
+    /// The migration paths take `self: &Arc<Self>` — they spawn, so they need
+    /// an owned handle. Everything else keeps the plain constructor.
+    pub(super) fn arc_manager(dir: &std::path::Path) -> (Arc<VmManager>, Arc<FakeBackend>) {
+        let (m, b) = manager(dir);
+        (Arc::new(m), b)
+    }
+
+    pub(super) fn manager(dir: &std::path::Path) -> (VmManager, Arc<FakeBackend>) {
         let backend = Arc::new(FakeBackend::new());
         let network = Arc::new(crate::network::NoopNetworkBackend);
         let layout = RuntimeLayout::new(dir);
@@ -915,5 +1058,151 @@ mod tests {
             mgr.is_managed(id).await,
             "a running VM must not be discarded because a boot call failed"
         );
+    }
+}
+
+/// At-most-once migration receive (#45).
+///
+/// A control plane that dies mid-step retries from its successor, and epoch
+/// fencing admits that retry by design — the successor holds a *higher* lease
+/// epoch. So the guarantee that one guest gets one receiver has to live here.
+#[cfg(test)]
+mod migration_at_most_once {
+    use super::tests::*;
+    use super::*;
+
+    fn record(id: VmId) -> (String, VirtualMachineSpec) {
+        (format!("vm-{id}"), spec(DesiredPowerState::Running))
+    }
+
+    /// The failure from #45: a leader dies between `prepare_receive` returning
+    /// and the write that records the URL, so its successor calls again.
+    #[tokio::test]
+    async fn preparing_twice_reuses_the_first_receiver() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, backend) = arc_manager(dir.path());
+        let id = VmId::new();
+        let (name, spec) = record(id);
+
+        let first = mgr
+            .prepare_receive(id, name.clone(), spec.clone())
+            .await
+            .unwrap();
+        let second = mgr.prepare_receive(id, name, spec).await.unwrap();
+
+        assert_eq!(
+            first, second,
+            "a retry must be sent to the receiver that already exists"
+        );
+        assert_eq!(
+            backend.launch_count(id),
+            1,
+            "two receivers for one guest is the corruption this exists to prevent"
+        );
+    }
+
+    /// tonic drops a handler future when its client disconnects. The work must
+    /// still land, or the retry finds a half-built state — which is how #45
+    /// lost a guest.
+    ///
+    /// The runtime is single-threaded here, so the spawned task provably cannot
+    /// have run before the future is dropped: this is a real interruption, not
+    /// a race that usually goes the right way.
+    #[tokio::test]
+    async fn a_prepare_whose_caller_vanishes_still_records_its_receiver() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, backend) = arc_manager(dir.path());
+        let id = VmId::new();
+        let (name, spec) = record(id);
+
+        // Poll once, then drop. One poll is enough to start the work and — on
+        // this single-threaded runtime — provably not enough to finish it, so
+        // the caller goes away with the receiver half-built. That determinism
+        // is the point: an earlier draft raced the detached task and passed
+        // under `cargo test -p` while failing under load.
+        let mut call = Box::pin(mgr.prepare_receive(id, name.clone(), spec.clone()));
+        tokio::select! {
+            biased;
+            _ = &mut call => panic!("the call finished in one poll; nothing was interrupted"),
+            _ = std::future::ready(()) => {}
+        }
+        drop(call);
+
+        // The work has to land anyway. Otherwise it is a Cloud Hypervisor
+        // process the agent has no handle on: invisible to finalise, invisible
+        // to discard, never reclaimed — and the retry below starts another one
+        // beside it.
+        for _ in 0..1000 {
+            if mgr.has_prepared_receiver(id).await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            mgr.has_prepared_receiver(id).await,
+            "the interrupted call was abandoned mid-way; its receiver is unaccounted for"
+        );
+
+        let url = mgr.prepare_receive(id, name, spec).await.unwrap();
+        assert!(!url.is_empty());
+        assert_eq!(
+            backend.launch_count(id),
+            1,
+            "the retry started a second receiver beside the orphaned one"
+        );
+    }
+
+    /// Finalise is past the point of no return — the guest's state has left its
+    /// source — so a repeat has to succeed rather than report `NotFound` and
+    /// send the controller down its failure path.
+    #[tokio::test]
+    async fn finalising_an_already_adopted_vm_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, _backend) = arc_manager(dir.path());
+        let id = VmId::new();
+        let (name, spec) = record(id);
+
+        mgr.prepare_receive(id, name, spec).await.unwrap();
+        // Stand in for a completed receive: the fake has no Cloud Hypervisor to
+        // connect to, so adopt the VM the way a successful finalise would.
+        mgr.adopt_pending_for_test(id).await;
+
+        let observed = mgr
+            .finalize_receive(id)
+            .await
+            .expect("a second finalise must report the VM it already adopted");
+        assert_eq!(observed.id, id);
+        assert!(mgr.is_managed(id).await);
+    }
+
+    /// A migration that fails in `Pending` leaves a receiver behind. Because
+    /// `prepare_receive` is now idempotent, one left lying around would be
+    /// handed to the *next* migration of this VM to this host — a URL nothing
+    /// is listening on. `DiscardVm` is how the controller clears it.
+    #[tokio::test]
+    async fn discarding_clears_a_prepared_receiver_and_frees_the_vm_for_a_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, backend) = arc_manager(dir.path());
+        let id = VmId::new();
+        let (name, spec) = record(id);
+
+        let first = mgr
+            .prepare_receive(id, name.clone(), spec.clone())
+            .await
+            .unwrap();
+        mgr.discard(id)
+            .await
+            .expect("discarding a receiver is not a failure");
+
+        let second = mgr.prepare_receive(id, name, spec).await.unwrap();
+        assert_eq!(
+            backend.launch_count(id),
+            2,
+            "after a discard the next migration must get a fresh receiver"
+        );
+        // Nothing asserts the URLs differ — with `unix` transport the socket
+        // path is derived from the VM id, so they legitimately match. What
+        // matters is that a new receiver was launched behind it.
+        let _ = (first, second);
     }
 }
