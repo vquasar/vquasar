@@ -222,12 +222,34 @@ impl Backend for CloudHypervisorBackend {
 #[derive(Default)]
 pub struct FakeBackend {
     states: Mutex<HashMap<VmId, FakeHypervisor>>,
+    /// VMs whose boot should fail however often it is retried (#35). Recorded
+    /// here as well as on the fake, so a VM launched *after* the flag is set
+    /// still gets it.
+    fail_boot: Mutex<std::collections::HashSet<VmId>>,
 }
 
 #[cfg(test)]
 impl FakeBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Make every boot for this VM fail, so it stays `Created` (#35).
+    pub fn fail_boot_always_for(&self, id: VmId) {
+        self.fail_boot.lock().unwrap().insert(id);
+        if let Some(h) = self.get(id) {
+            h.fail_boot_always();
+        }
+    }
+
+    /// Stop injecting failures, so a later attempt can succeed.
+    pub fn clear_failures(&self) {
+        self.fail_boot.lock().unwrap().clear();
+        // The fake for this VM outlives the reclaim (the map keeps it), so its
+        // own flag has to be cleared too or the retry fails for a stale reason.
+        for hv in self.states.lock().unwrap().values() {
+            hv.clear_boot_failure();
+        }
     }
 
     /// Inspect the fake for a VM (test assertions).
@@ -247,6 +269,11 @@ impl Backend for FakeBackend {
         _layout: &RuntimeLayout,
     ) -> Result<Box<dyn ManagedVmm>> {
         let hv = self.states.lock().unwrap().entry(id).or_default().clone();
+        // A VM launched after the flag was set still gets it: the reclaim path
+        // discards the VMM, so the retry launches a fresh one (#35).
+        if self.fail_boot.lock().unwrap().contains(&id) {
+            hv.fail_boot_always();
+        }
         Ok(Box::new(hv))
     }
 

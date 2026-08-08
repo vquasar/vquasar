@@ -21,6 +21,9 @@ struct State {
     shutdown_calls: u32,
     /// When set, the next call to the matching method fails once.
     fail_next_boot: bool,
+    /// Boot fails every time, leaving the VM in `Created` — the shape of an
+    /// interrupted create whose residue no retry can clear (#35).
+    fail_boot_always: bool,
 }
 
 /// A cloneable, in-memory fake VMM handle. Clones share the same state, so a
@@ -56,6 +59,17 @@ impl FakeHypervisor {
     pub fn fail_next_boot(&self) {
         self.state.lock().unwrap().fail_next_boot = true;
     }
+
+    /// Make every boot fail, so the VM stays `Created` however often it is
+    /// retried.
+    pub fn fail_boot_always(&self) {
+        self.state.lock().unwrap().fail_boot_always = true;
+    }
+
+    /// Stop failing, so a later attempt can succeed.
+    pub fn clear_boot_failure(&self) {
+        self.state.lock().unwrap().fail_boot_always = false;
+    }
 }
 
 #[async_trait]
@@ -73,6 +87,11 @@ impl Hypervisor for FakeHypervisor {
     async fn boot(&self) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         s.boot_calls += 1;
+        if s.fail_boot_always {
+            return Err(ChError::InvalidState(
+                "injected persistent boot failure".into(),
+            ));
+        }
         if s.fail_next_boot {
             s.fail_next_boot = false;
             return Err(ChError::InvalidState("injected boot failure".into()));
