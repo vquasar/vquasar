@@ -593,10 +593,18 @@ needs a control-plane change first, and the UI change after it is small.
     limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
-- **Deleted VMs leave their seed ISOs behind** ([#41](https://github.com/vquasar/vquasar/issues/41)).
-  Found on the lab: 7 ISOs in the shared seed directory, 3 of them live. A slow,
-  unbounded leak — and it made a verification step confusing, because grepping
-  the directory matched stale seeds from deleted VMs.
+- **Deleted VMs leave their seed ISOs behind** ✅ **Fixed**
+  ([#41](https://github.com/vquasar/vquasar/issues/41)). Found on the lab: 7 ISOs
+  in the shared seed directory, 3 of them live. The agent now reclaims a VM's
+  seed when the VM is deleted — and, importantly, *not* when it is discarded
+  after a live migration, where the guest is running on another host off the
+  same shared storage with that very file mounted. Teardown takes an explicit
+  `Shared::Reclaim | Shared::Keep` rather than leaving the two callers looking
+  identical.
+  Seeds orphaned before the fix are still there. Sweeping them needs a shared
+  root the control plane can address, which is a question the storage-pool work
+  answers properly — until then `find <shared>/seeds -name '*.iso'` against the
+  VM list is the manual version.
 - **Live migration survives an interrupted controller** ✅ **Done**
   ([#42](https://github.com/vquasar/vquasar/issues/42),
   [#45](https://github.com/vquasar/vquasar/issues/45)). There is a case per step

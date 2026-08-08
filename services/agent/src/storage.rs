@@ -55,6 +55,29 @@ impl StorageProvisioner {
         self
     }
 
+    /// Where this VM's cloud-init seed lives.
+    fn seed_path(&self, id: VmId) -> PathBuf {
+        self.shared_dir.join("seeds").join(format!("{id}.iso"))
+    }
+
+    /// Remove a VM's cloud-init seed (#41).
+    ///
+    /// Called only when the VM is *gone*, never when it has merely moved: the
+    /// seed is on shared storage and a migrated VM is still mounting the same
+    /// file from its new host. See `VmManager::discard`.
+    ///
+    /// Best-effort and idempotent, like the rest of the delete path — a seed
+    /// that is already absent is the desired state, not an error. A VM with no
+    /// cloud-init never had one.
+    pub async fn release_seed(&self, id: VmId) {
+        let path = self.seed_path(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => info!(seed = %path.display(), "removed cloud-init seed"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!(seed = %path.display(), error = %e, "could not remove cloud-init seed"),
+        }
+    }
+
     /// Provision any disks that carry a base image, generate a cloud-init seed
     /// when requested, and return the spec with the seed disk appended. Fully
     /// idempotent: existing volumes/seeds are reused untouched, so this is safe
@@ -186,7 +209,7 @@ impl StorageProvisioner {
         network_config: Option<&str>,
         phone_home_token: Option<&str>,
     ) -> Result<DiskSpec> {
-        let seed_path = self.shared_dir.join("seeds").join(format!("{id}.iso"));
+        let seed_path = self.seed_path(id);
         if !tokio::fs::try_exists(&seed_path).await? {
             if let Some(parent) = seed_path.parent() {
                 tokio::fs::create_dir_all(parent).await?;

@@ -77,6 +77,21 @@ struct PendingReceive {
     return_url: String,
 }
 
+/// Whether tearing a VM down on this host means its shared-storage state is
+/// finished with.
+///
+/// The two callers look almost identical and mean opposite things. `DeleteVm`
+/// is "this VM no longer exists", so its seed on shared storage is garbage.
+/// `DiscardVm` is "this VM lives on another host now" — the husk here is
+/// finished, but the shared files are in use by the guest that moved (#41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shared {
+    /// The VM is gone; reclaim what it left on shared storage.
+    Reclaim,
+    /// The VM moved; leave shared storage alone.
+    Keep,
+}
+
 /// How the agent exposes an incoming live migration (section 28).
 #[derive(Debug, Clone)]
 pub struct MigrationSettings {
@@ -401,6 +416,12 @@ impl VmManager {
     /// Shut down, terminate the VMM, release host networking, and remove all
     /// state for a VM.
     pub async fn delete(&self, id: VmId) -> Result<()> {
+        self.teardown(id, Shared::Reclaim).await
+    }
+
+    /// Tear a VM down on this host. `shared` says whether the VM is *gone* or
+    /// merely *elsewhere* — see [`Shared`].
+    async fn teardown(&self, id: VmId, shared: Shared) -> Result<()> {
         // A receiver prepared for this VM goes too. Otherwise a migration that
         // failed after `prepare_receive` would leave one behind, and — now that
         // `prepare_receive` is idempotent — every later migration of this VM to
@@ -422,6 +443,9 @@ impl VmManager {
             }
         }
         self.layout.remove_vm_dir(id).await?;
+        if shared == Shared::Reclaim {
+            self.storage.release_seed(id).await;
+        }
         Ok(())
     }
 
@@ -639,7 +663,11 @@ impl VmManager {
             info!(vm = %id, "discarded a prepared migration receiver");
             return Ok(());
         }
-        self.delete(id).await
+        // `Shared::Keep` is the whole difference between this and `delete`, and
+        // it is not a detail: the VM is now running on another host off the
+        // *same* shared storage. Reclaiming its cloud-init seed here would pull
+        // a mounted disk out from under a live guest (#41).
+        self.teardown(id, Shared::Keep).await
     }
 
     /// Observed state of all managed VMs.
@@ -1204,5 +1232,106 @@ mod migration_at_most_once {
         // path is derived from the VM id, so they legitimately match. What
         // matters is that a new receiver was launched behind it.
         let _ = (first, second);
+    }
+}
+
+/// Reclaiming shared storage on VM deletion (#41).
+#[cfg(test)]
+mod seed_reclaim {
+    use super::tests::*;
+    use super::*;
+
+    /// The seed lives on shared storage under a path the agent chose, so the
+    /// agent is what has to clean it up.
+    fn seed_of(dir: &std::path::Path, id: VmId) -> PathBuf {
+        dir.join("shared").join("seeds").join(format!("{id}.iso"))
+    }
+
+    /// Stand in for a seed the agent generated. Writing the file directly keeps
+    /// the test off `xorriso`, which is about generating an ISO rather than
+    /// about who owns it afterwards.
+    async fn plant_seed(dir: &std::path::Path, id: VmId) -> PathBuf {
+        let path = seed_of(dir, id);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, b"fake seed").await.unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn deleting_a_vm_reclaims_its_cloud_init_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, _) = manager(dir.path());
+        let id = VmId::new();
+        mgr.ensure(
+            id,
+            "web-1".into(),
+            spec(DesiredPowerState::Running),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let seed = plant_seed(dir.path(), id).await;
+
+        mgr.delete(id).await.unwrap();
+        assert!(
+            !seed.exists(),
+            "the VM is gone but its seed is still on shared storage"
+        );
+    }
+
+    /// The case that makes this more than a `remove_file` call. `DiscardVm` runs
+    /// on the *source* after a live migration, and the guest is now running on
+    /// another host off the same shared storage — with this very file mounted.
+    /// Reclaiming it here would pull a disk out from under a live VM.
+    #[tokio::test]
+    async fn discarding_a_migrated_vm_leaves_its_seed_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, _) = manager(dir.path());
+        let id = VmId::new();
+        mgr.ensure(
+            id,
+            "web-1".into(),
+            spec(DesiredPowerState::Running),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let seed = plant_seed(dir.path(), id).await;
+
+        mgr.discard(id).await.unwrap();
+        assert!(
+            seed.exists(),
+            "discard reclaimed a seed the migrated guest is still mounting"
+        );
+        assert!(
+            !mgr.is_managed(id).await,
+            "the local husk is still torn down"
+        );
+    }
+
+    /// A VM with no cloud-init never had a seed, and deleting one twice is
+    /// normal on a retried reconcile. Neither is an error.
+    #[tokio::test]
+    async fn reclaiming_a_seed_that_is_not_there_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mgr, _) = manager(dir.path());
+        let id = VmId::new();
+        mgr.ensure(
+            id,
+            "no-cloud-init".into(),
+            spec(DesiredPowerState::Running),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        mgr.delete(id).await.expect("delete without a seed");
     }
 }
