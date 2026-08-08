@@ -77,6 +77,14 @@ export const ACTION = {
   sgRuleAdd: "network:update",
   sgRuleDelete: "network:update",
 
+  // Tenancy boundaries are platform objects, not workload ones: `operator`
+  // reads projects but shapes none of them (design §47, ADR-018).
+  projectCreate: "project:create",
+  projectUpdate: "project:update",
+  projectDelete: "project:delete",
+  // Setting a quota is shaping the boundary, so it shares project:update.
+  quotaSet: "project:update",
+
   volumeCreate: "volume:create",
   volumeUpdate: "volume:update",
   volumeDelete: "volume:delete",

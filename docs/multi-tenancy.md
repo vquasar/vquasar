@@ -29,7 +29,12 @@ caller can see.
 `X-Vquasar-Project: *` selects the platform view — every project at once. It is
 not a privilege by itself; see below.
 
-**In the console**, the project sits in the top bar and applies to everything on
+**In the console**, *Operations → Projects* creates and manages them, sets
+quotas and shows usage against each limit — the page appears only when tenancy
+is on. Choosing which project you are *working in* is a separate question: that
+is the top-bar switcher.
+
+The switcher sits in the top bar and applies to everything on
 screen — one selection, sent on every request, so you never see one project's
 VMs beside another's networks. It survives a reload, and is dropped
 automatically if the project disappears or your binding is revoked. "All
@@ -200,9 +205,6 @@ under a quota means doing the expensive work and only then refusing it.
 
 ## Limits
 
-* **Projects are created and quotas set through the API only.** The console
-  switches between projects but does not create, rename or cap them; a platform
-  admin does that with `POST /projects` and `PUT /projects/:id/quota`.
 * **Projects are flat.** `parent_id` exists in the schema and is unenforced —
   recursive permission inheritance and quota rollup are load-bearing decisions
   not worth guessing at in advance.

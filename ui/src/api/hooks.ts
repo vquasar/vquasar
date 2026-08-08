@@ -38,6 +38,8 @@ import type {
   IpAllocation,
   Network,
   Project,
+  QuotaLimits,
+  QuotaView,
   Task,
   Template,
   UpdateVmRequest,
@@ -90,6 +92,62 @@ export function useProjects(enabled = true) {
     queryFn: () => api.get<Project[]>("/projects"),
     enabled: enabled && can(READ.projects),
     staleTime: SLOW_MS,
+  });
+}
+
+export function useCreateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string | null }) =>
+      api.post<Project>("/projects", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: { name: string; description?: string | null } }) =>
+      api.patch<Project>(`/projects/${id}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/projects/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+/// A project's limits beside what it is using. Fetched per project rather than
+/// as a list because the control plane derives usage on demand — asking for
+/// every project's usage at once would aggregate the whole fleet on each poll.
+export function useQuota(projectId: string | undefined) {
+  const { can } = usePermissions();
+  return useQuery({
+    queryKey: ["quota", projectId],
+    queryFn: () => api.get<QuotaView>(`/projects/${projectId}/quota`),
+    enabled: !!projectId && can(READ.projects),
+    staleTime: SLOW_MS,
+  });
+}
+
+export function useSetQuota() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: QuotaLimits }) =>
+      api.put<QuotaView>(`/projects/${id}/quota`, body),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["quota", v.id] }),
+  });
+}
+
+export function useClearQuota() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/projects/${id}/quota`),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ["quota", id] }),
   });
 }
 

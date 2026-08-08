@@ -21,6 +21,8 @@ import {
 } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { ProjectSwitch } from "./ProjectSwitch";
+import { useProject } from "../auth/ProjectProvider";
+import { useProjects } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { ACTION, READ } from "../auth/perm";
 import { useThemeMode } from "../theme/ThemeMode";
@@ -97,6 +99,8 @@ function Sidebar() {
   const sgs = useSecurityGroups();
   const volumes = useVolumes();
   const tasks = useTasks();
+  const { enabled: tenancy } = useProject();
+  const projects = useProjects(tenancy);
 
   const openTasks = (tasks.data ?? []).filter(
     (t) => t.state === "Pending" || t.state === "Running",
@@ -105,6 +109,11 @@ function Sidebar() {
   const operations: NavItem[] = [
     { to: "/tasks", label: "Tasks", count: tasks.data ? openTasks : undefined },
     { to: "/events", label: "Events" },
+    // Only when tenancy is on: a projects page in a single-tenant install is a
+    // catalogue of one, and the top bar hides the switcher for the same reason.
+    ...(tenancy && can(READ.projects)
+      ? [{ to: "/projects", label: "Projects", count: projects.data?.length }]
+      : []),
     ...(can(ACTION.iamRead) ? [{ to: "/iam", label: "Access control" }] : []),
     { to: "/settings", label: "Settings" },
   ];

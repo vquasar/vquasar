@@ -533,8 +533,21 @@ needs a control-plane change first, and the UI change after it is small.
     "tenancy is off" with "you are in the platform view".
     The console WebSocket carries the project as `?project=`, for the same
     reason it carries the token that way.
-    Not included: creating projects or editing quotas from the console. That is
-    a platform-admin surface and remains API-only.
+  - **M19g — the Projects page.** ✅ **Done.** Create, rename and delete
+    projects, set and clear quotas, and see usage against each limit — master
+    detail, because a quota is five numbers that only mean something next to
+    what is being used, and putting limits in a table with usage elsewhere
+    leaves the operator doing the subtraction. A capped dimension shows a bar
+    that turns amber at the cap, since that is the point where the next request
+    is refused; an uncapped one says *unlimited* rather than showing zero.
+    Being over quota is explained rather than made to look broken — it is what
+    lowering a limit does, and the panel says nothing was deleted.
+    In the nav only when tenancy is on, for the same reason the switcher hides:
+    a projects page in a single-tenant install is a catalogue of one.
+    Six component tests, including the round trip that matters — a cleared field
+    reaching the API as an explicit `null`, not an omitted key, since the API
+    treats the write as authoritative and an omission would silently keep the
+    limit the operator just cleared. Mutation-checked.
 
 ### Quality & delivery
 - **In-flight work is reclaimed after a restart.** ✅ **Done.** Importing an

@@ -16,6 +16,7 @@ import { Templates } from "./pages/Templates";
 import { Tasks } from "./pages/Tasks";
 import { Events } from "./pages/Events";
 import { Iam } from "./pages/Iam";
+import { Projects } from "./pages/Projects";
 import { Settings } from "./pages/Settings";
 // xterm is ~290 kB and only the serial console needs it. Splitting it out keeps
 // it off the critical path for every operator who never opens a console.
@@ -24,7 +25,7 @@ const Console = lazy(() =>
 );
 import { useAuth } from "./auth/AuthProvider";
 import { usePermissions } from "./auth/permissions";
-import { ACTION } from "./auth/perm";
+import { ACTION, READ } from "./auth/perm";
 import type { Permission } from "./auth/perm";
 import { Login } from "./pages/Login";
 import { EmptyState, SkeletonRows } from "./ui/kit";
@@ -104,6 +105,14 @@ function AuthedApp() {
         <Route path="/templates/:id/launch" element={<CreateVmFromTemplate />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/events" element={<Events />} />
+        <Route
+          path="/projects"
+          element={
+            <Require perm={READ.projects}>
+              <Projects />
+            </Require>
+          }
+        />
         <Route
           path="/iam"
           element={
