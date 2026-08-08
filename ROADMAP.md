@@ -597,22 +597,35 @@ needs a control-plane change first, and the UI change after it is small.
   Found on the lab: 7 ISOs in the shared seed directory, 3 of them live. A slow,
   unbounded leak — and it made a verification step confusing, because grepping
   the directory matched stale seeds from deleted VMs.
-- **The migration controller is untested under interruption**
-  ([#42](https://github.com/vquasar/vquasar/issues/42)). ADR-021 names migration
-  as the one path where a duplicated controller action corrupts a guest rather
-  than wasting work — which is the justification for M21 — and no test has ever
-  interrupted it. The #39 hook makes it testable: widen `prepare_receive`, kill
-  the leader inside it, assert exactly one receiver.
-- **M21 — agent-side epoch fencing (ADR-022).** Designed, not built. Closes the
-  window ADR-021 only bounds: a leader paused past its margin can still reach an
-  agent. The controller stamps each RPC with its lease epoch; the agent refuses
-  anything lower than the highest it has seen, persists that number across
-  restarts, and accepts an absent epoch so a rolling upgrade works — agents
-  first, controllers second, strict mode last.
-  Migration is why it is worth doing: everywhere else a stale duplicate is
-  wasted work, but two `PrepareReceive` calls are two receivers for one guest.
-  The e2e fault-injection hook (M20c) is what will test it — the same widened
-  window, with the leader superseded rather than killed.
+- **The migration controller under interruption** ✅ **Tested**
+  ([#42](https://github.com/vquasar/vquasar/issues/42)) — and it found more than
+  expected ([#45](https://github.com/vquasar/vquasar/issues/45)). There is now a
+  case per step of the state machine: widen one agent RPC, stop the leader
+  inside it, let the peer take over, and ask whether the control plane's account
+  of where the VM lives is still true. `Sending` survives. The other two do not.
+  Interrupting `prepare_receive` leaves **two receivers for one guest** — the
+  corruption ADR-021 predicts. Interrupting `finalize_receive` is worse: tonic
+  drops a handler future when its client disconnects, so the dying leader
+  *cancels* the agent's finalise, and because `Manager::finalize_receive` empties
+  `pending` before its await the cancelled call destroys the receiver on its way
+  out. The guest ends up running on neither host while the control plane reports
+  it healthy on its source. Both failing cases are in the tree, `#[ignore]`d
+  against #45; un-ignoring them is the acceptance criterion.
+- **M21 — agent-side epoch fencing (ADR-022).** Designed, not built — and #45
+  has changed what it is worth. ADR-022 fences a controller that is *superseded
+  but alive*: the mechanism is that the controller stamps each RPC with its
+  lease epoch and the agent refuses anything lower than the highest it has seen,
+  persisted across restarts, with an absent epoch accepted so a rolling upgrade
+  works — agents first, controllers second, strict mode last. That is still
+  worth building and still correct.
+  What it does **not** do is fix the migration corruption that motivated it.
+  When the old leader is *dead* rather than paused, the duplicate
+  `PrepareReceive` comes from the legitimate current leader carrying a *higher*
+  epoch, which the agent accepts by design. The dead-leader case is the common
+  one, and it needs at-most-once semantics on the agent — an idempotent
+  `prepare_receive`, and a finalise that survives its caller vanishing — not
+  fencing. #45 is therefore a prerequisite for M21 delivering the guarantee
+  ADR-021 asks for, not a follow-up to it.
 - **M20c — the interrupted create is tested in CI.** ✅ **Done.** #35 was found
   by hand on a two-node lab and could only be confirmed there, because the
   window it needs — between `vm.create` and `vm.boot` — is a few hundred
