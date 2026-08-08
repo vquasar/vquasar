@@ -430,6 +430,19 @@ impl Harness {
         panic!("peer control plane did not become healthy");
     }
 
+    /// Ask the control plane to stop the way systemd does — SIGTERM — and wait
+    /// for it to exit. `Child::kill` sends SIGKILL, which is a crash, not a
+    /// shutdown, and would exercise nothing.
+    async fn stop_gracefully(&mut self) {
+        // Via kill(1) rather than a libc binding: the harness needs one signal
+        // in one place, and a dependency for that is not worth it.
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(self.control.id().to_string())
+            .status();
+        let _ = self.control.wait();
+    }
+
     /// Kill the control plane and start it again on the same address and
     /// database — the only way to exercise what startup does.
     async fn restart(&mut self) {
@@ -2090,4 +2103,31 @@ async fn a_restart_reclaims_only_its_own_in_flight_work() {
     // A row with no owner predates the column, so it can only have been written
     // by a binary that is no longer running.
     assert_eq!(by_name(&images, "legacy"), "failed");
+}
+
+/// A clean stop hands the lease back, so a peer takes over in a renewal
+/// interval instead of waiting out the TTL (ADR-021).
+///
+/// This is here because it was not true: `shutdown_signal` waited only on
+/// Ctrl-C, and systemd sends SIGTERM — so under the unit that actually ships,
+/// the graceful path never ran at all. A failover on the lab took the full 15s
+/// rather than the ~1s a clean handover should cost, which is how it was found.
+#[tokio::test]
+async fn a_clean_stop_hands_the_lease_back() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    h.wait_for("/leader", |v| v["leader"]["valid"] == true, "a leader")
+        .await;
+    assert_eq!(h.get("/leader").await["leader"]["holder"], "alpha");
+
+    h.stop_gracefully().await;
+
+    // The lease is expired *immediately*, not merely expiring: a peer starting
+    // now would take it on its first tick rather than waiting out the TTL.
+    let expired = h
+        .query_one("SELECT (expires_at <= now())::text FROM controller_lease")
+        .await;
+    assert_eq!(
+        expired, "true",
+        "a graceful stop must release the lease rather than leave it to time out"
+    );
 }

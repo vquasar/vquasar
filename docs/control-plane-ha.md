@@ -74,7 +74,9 @@ which is usually a database that is slow enough to make renewals miss.
 ## What happens when the leader goes away
 
 **Stopped cleanly** — it hands the lease back on shutdown, and another instance
-picks it up within a renewal interval (5s).
+picks it up within a renewal interval (5s). This needs the process to actually
+receive the stop: `systemctl stop` and `systemctl restart` send SIGTERM, which
+is handled. A `kill -9` is a crash, and behaves as one.
 
 **Killed, or partitioned from the database** — the lease expires on its own after
 15s, and another instance takes it. Nothing is lost: every controller pass reads

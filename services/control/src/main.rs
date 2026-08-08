@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
+use tokio::signal::unix::{signal, SignalKind};
 use tracing::info;
 
 use crate::config::ControlConfig;
@@ -285,8 +286,29 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolve when systemd (or a terminal) asks the process to stop.
+///
+/// **SIGTERM as well as SIGINT.** systemd sends SIGTERM, so a handler that
+/// waits only on Ctrl-C never runs under the unit that actually ships: the
+/// process is killed outright and every graceful step is skipped. That was true
+/// here until a control-plane failover on the lab took the full lease TTL
+/// instead of a renewal interval, because the lease was never handed back
+/// (ADR-021).
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            // Without SIGTERM this degrades to the old behaviour rather than
+            // refusing to start: an ungraceful stop is worse than no stop.
+            tracing::warn!(error = %e, "cannot listen for SIGTERM; only Ctrl-C will stop gracefully");
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }
 
 /// Hide credentials in a connection URL before logging it.

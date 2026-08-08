@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use tokio::signal::unix::{signal, SignalKind};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::info;
 use vquasar_proto::agent::host_agent_server::HostAgentServer;
@@ -193,9 +194,23 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve when the process receives Ctrl-C, so the gRPC server shuts down
-/// cleanly. Note: this does **not** terminate managed VMs — they keep running
-/// (section 11).
+/// Resolve when systemd (or a terminal) asks the process to stop, so the gRPC
+/// server shuts down cleanly. Note: this does **not** terminate managed VMs —
+/// they keep running (section 11).
+///
+/// SIGTERM as well as SIGINT: systemd sends SIGTERM, so waiting only on Ctrl-C
+/// means the graceful path never runs under the unit that actually ships.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for SIGTERM; only Ctrl-C will stop gracefully");
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }
