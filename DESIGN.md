@@ -842,9 +842,16 @@ described above when the old leader is *dead*: the successor carries a **higher*
 epoch and is admitted by design. Interrupting a real migration showed that the
 dead-leader case is the common one, so the corruption this ADR cites as its
 motivation is closed by at-most-once semantics on the agent (#45), not by
-fencing. Both are needed and neither substitutes for the other. What fencing
-uniquely closes is the paused-process window ADR-021 can only bound, which no
-amount of idempotency addresses.
+fencing — `PrepareReceive` returns the receiver that already exists, and
+`FinalizeReceive` is idempotent once the guest is adopted. What fencing uniquely
+closes is the paused-process window ADR-021 can only bound, which no amount of
+idempotency addresses. Both are needed and neither substitutes for the other.
+
+That correction is worth keeping visible: the mechanism was designed from the
+migration hazard, and the hazard turned out to need a different mechanism. The
+lesson is not that fencing was wrong, but that "a duplicated call corrupts this"
+and "a duplicated call can be *refused*" are separate claims, and only the first
+was ever established.
 
 *Consequences.* The epoch crosses the privilege boundary, which is the first
 time the control plane's internal bookkeeping does. It is deliberately the only
