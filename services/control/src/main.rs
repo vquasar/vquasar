@@ -127,6 +127,11 @@ async fn main() -> anyhow::Result<()> {
     store
         .sync_builtin_roles(&crate::rbac::builtin_roles())
         .await?;
+    // The `default` pool, seeded once from [storage] shared_volumes_dir so a
+    // cluster that predates pools keeps working and none of its paths move
+    // (ADR-023). Deliberately not re-synced: config must not overrule an
+    // operator who has since renamed or repointed it.
+    store.ensure_default_pool().await?;
     // Seal any pre-existing plaintext secrets now that encryption is on.
     if cryptor.is_some() {
         let n = store.encrypt_existing().await?;

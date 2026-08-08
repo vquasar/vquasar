@@ -17,6 +17,7 @@ pub mod ids;
 pub mod meta;
 pub mod network;
 pub mod project;
+pub mod storage;
 pub mod validation;
 pub mod vm;
 
@@ -25,6 +26,9 @@ pub use ids::{HostId, NetworkId, TaskId, VmId};
 pub use meta::{Generation, Metadata};
 pub use network::{NetworkKind, NetworkValidationError, SegmentKey};
 pub use project::{Project, Scope, DEFAULT_PROJECT_ID};
+pub use storage::{
+    validate_pool_name, PoolParams, PoolValidationError, StoragePoolKind, StoragePoolState,
+};
 pub use validation::ValidationError;
 pub use vm::{
     allocate_mac, BootSpec, CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec,

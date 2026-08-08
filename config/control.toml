@@ -22,6 +22,11 @@ ssl_mode = "verify-full"
 # agent opens these files with privilege, so without confinement `vm:create` is
 # a read primitive over the host filesystem (design §30).
 allowed_paths = ["/var/lib/vquasar"]
+# shared_volumes_dir seeds the `default` storage pool the first time this
+# control plane starts (ADR-023), and is not read again afterwards: pools are
+# resources, managed through /api/v1/storage-pools. Renaming or repointing the
+# default pool there wins over whatever is written here.
+# shared_volumes_dir = "/var/lib/vquasar/shared/volumes"
 
 [network]
 # How per-NIC policy is resolved (ADR-017). "legacy" = a NIC with no security

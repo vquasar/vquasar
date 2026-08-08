@@ -1292,6 +1292,153 @@ async fn network_kinds_and_platform_allocated_segments() {
     assert!(st.as_u16() == 400 || st.as_u16() == 405, "{body}");
 }
 
+/// Storage pools (ADR-023). The point of the resource is that a pool says where
+/// bytes go and *nothing else* — whether it works is observed from the agents,
+/// so a pool nobody reports says `pending` instead of looking correct.
+#[tokio::test]
+async fn storage_pools_are_seeded_confined_and_usable_only_when_reported() {
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR",
+        "/x/shared/volumes",
+    )])
+    .await;
+
+    // A cluster that predates pools gets one seeded from the directory it was
+    // already using, so nothing moves and no volume path changes.
+    let pools = h.get("/storage-pools").await;
+    let pools = pools.as_array().expect("pool list");
+    assert_eq!(pools.len(), 1, "{pools:?}");
+    let d = &pools[0];
+    assert_eq!(d["name"], "default");
+    assert_eq!(d["kind"], "shared_dir");
+    assert_eq!(d["params"]["path"], "/x/shared/volumes");
+    // Configured, and reported by nobody. Saying `ready` here would be the
+    // exact lie this resource exists to remove.
+    assert_eq!(d["state"], "pending", "{d}");
+    assert_eq!(d["reachable_hosts"], 0);
+    assert!(d["capacity_bytes"].is_null(), "{d}");
+
+    // A pool names a directory the agent opens with privilege, so it is
+    // confined like any other caller-supplied host path (design §30).
+    for (what, path) in [
+        ("outside the roots", "/etc/vquasar/tls"),
+        ("traversal", "/x/../etc/vquasar/tls"),
+        ("relative", "x/rel"),
+    ] {
+        let (st, body) = h
+            .post(
+                "/storage-pools",
+                json!({"name": "escape", "kind": "shared_dir", "path": path}),
+            )
+            .await;
+        assert_eq!(st.as_u16(), 400, "{what} was accepted: {body}");
+    }
+
+    // Names end up in operator-facing places and eventually in paths.
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "Fast Pool", "kind": "shared_dir", "path": "/x/fast"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // An unknown kind is refused rather than stored as an opaque blob.
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "ceph", "kind": "rbd", "pool": "vms"}),
+        )
+        .await;
+    assert!(
+        st.as_u16() == 400 || st.as_u16() == 422,
+        "unknown kind accepted: {st} {body}"
+    );
+
+    let (st, fast) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "fast", "kind": "shared_dir",
+                   "path": "/x/fast", "description": "NVMe"}),
+        )
+        .await;
+    assert!(st.is_success(), "{fast}");
+    let id = fast["id"].as_str().expect("pool id").to_string();
+    assert_eq!(fast["state"], "pending", "brand new pool: {fast}");
+
+    // One directory is one pool. Two would double-count the same disk's
+    // capacity and split its volumes across two namespaces.
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "fast-2", "kind": "shared_dir", "path": "/x/fast"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "same directory twice: {body}");
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "fast", "kind": "shared_dir", "path": "/x/other"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "duplicate name: {body}");
+
+    // A pool's identity is where its bytes are. Renaming is fine; repointing
+    // it would strand every volume in it while the row still looked correct,
+    // so the field is not editable — sending it changes nothing.
+    let (st, patched) = h
+        .patch_body(
+            &format!("/storage-pools/{id}"),
+            json!({"name": "fast-nvme", "kind": "shared_dir", "path": "/x/elsewhere"}),
+        )
+        .await;
+    assert_eq!(st, 200, "{patched}");
+    assert_eq!(patched["name"], "fast-nvme");
+    assert_eq!(
+        patched["params"]["path"], "/x/fast",
+        "a pool was repointed underneath its volumes: {patched}"
+    );
+
+    // Reachability is observed, never declared: there is no API to say "this
+    // host can see that pool". The row below is what an agent's report will
+    // write (M23 step 2); what is under test here is that the pool's state
+    // follows it.
+    let host = "11111111-1111-4111-8111-111111111111";
+    h.sql(&format!(
+        "INSERT INTO hosts (id, name, endpoint, created_at, updated_at)
+         VALUES ('{host}', 'reporter', 'http://127.0.0.1:1', now(), now())"
+    ))
+    .await;
+    h.sql(&format!(
+        "INSERT INTO storage_pool_reachability
+             (pool_id, host_id, capacity_bytes, available_bytes, reported_at)
+         VALUES ('{id}', '{host}', 1000, 400, now())"
+    ))
+    .await;
+    let after = h.get(&format!("/storage-pools/{id}")).await;
+    assert_eq!(after["state"], "ready", "{after}");
+    assert_eq!(after["reachable_hosts"], 1);
+    assert_eq!(after["capacity_bytes"], 1000);
+    assert_eq!(after["available_bytes"], 400);
+
+    // Deleting the pool takes its observations with it: a stale reachability
+    // row would otherwise outlive the thing it described.
+    assert_eq!(
+        h.delete(&format!("/storage-pools/{id}")).await.as_u16(),
+        204
+    );
+    assert_eq!(h.get_status(&format!("/storage-pools/{id}")).await.0, 404);
+    assert_eq!(
+        h.query_one("SELECT count(*)::text FROM storage_pool_reachability")
+            .await,
+        "0"
+    );
+    assert_eq!(
+        h.delete(&format!("/storage-pools/{id}")).await.as_u16(),
+        404
+    );
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback
