@@ -202,6 +202,9 @@ impl Lease {
             match self.acquire_or_renew().await {
                 Ok(Some(held)) => {
                     self.fresh.store(true, Ordering::Release);
+                    // Publish the term before declaring leadership, so the first
+                    // agent RPC of a term is already stamped (ADR-022).
+                    crate::agent::set_current_epoch(held.epoch);
                     if !leading {
                         leading = true;
                         info!(
@@ -215,6 +218,10 @@ impl Lease {
                 Ok(None) => {
                     // Somebody else holds it and it has not expired.
                     self.fresh.store(false, Ordering::Release);
+                    // Stop stamping: an instance that is not the leader has no
+                    // term to assert, and asserting a stale one is exactly what
+                    // the agent is there to refuse.
+                    crate::agent::set_current_epoch(0);
                     if leading {
                         leading = false;
                         warn!(
@@ -227,6 +234,7 @@ impl Lease {
                     // Fail closed: a renewal that did not happen is a lease that
                     // may already have been taken.
                     self.fresh.store(false, Ordering::Release);
+                    crate::agent::set_current_epoch(0);
                     warn!(error = %e, "controller lease renewal failed");
                 }
             }

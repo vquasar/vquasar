@@ -134,12 +134,32 @@ pub struct GrpcSection {
     /// Address the agent's HostAgent gRPC service listens on (control-plane
     /// facing; must not be exposed publicly — section 12).
     pub listen: String,
+    /// Refuse a control-plane RPC that carries no lease epoch (ADR-022).
+    ///
+    /// Off by default, and it has to be: agents are upgraded before control
+    /// planes, so an agent that insisted on an epoch would refuse every request
+    /// from the control plane it is still running alongside. Turn it on once
+    /// the fleet is fully upgraded and the "not stamping" warning has stopped.
+    #[serde(default)]
+    pub require_controller_epoch: bool,
+    /// Where the highest seen controller epoch is persisted.
+    ///
+    /// Under `/var/lib` rather than `runtime_dir`, which is tmpfs: forgetting
+    /// the epoch on reboot would reopen the window ADR-022 closes.
+    #[serde(default = "default_epoch_file")]
+    pub controller_epoch_file: PathBuf,
+}
+
+fn default_epoch_file() -> PathBuf {
+    PathBuf::from("/var/lib/vquasar/controller-epoch")
 }
 
 impl Default for GrpcSection {
     fn default() -> Self {
         Self {
             listen: "0.0.0.0:9500".to_string(),
+            require_controller_epoch: false,
+            controller_epoch_file: default_epoch_file(),
         }
     }
 }

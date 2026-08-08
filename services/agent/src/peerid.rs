@@ -9,32 +9,75 @@
 //!
 //! So the agent additionally requires the peer certificate's Common Name to be
 //! the configured control-plane identity.
+//!
+//! It also asks a second question here, and only here: is this the *current*
+//! control plane? Every instance presents the same CN by design (ADR-021), so
+//! the certificate cannot distinguish a leader from one that has been
+//! superseded. The lease epoch can, and this is the right place to check it —
+//! the same kind of question, asked at the same point, in front of all thirteen
+//! RPCs rather than repeated in each of them (ADR-022). The comparison itself
+//! lives in [`crate::epoch`].
+
+// tonic's `Status` is a large error type used pervasively by the generated
+// trait; boxing every return would fight the API for no benefit.
+#![allow(clippy::result_large_err)]
+
+use std::sync::Arc;
 
 use tonic::{Request, Status};
 use x509_parser::prelude::*;
 
-/// Reject any request whose peer certificate is not the control plane.
+use crate::epoch::EpochGuard;
+
+/// Reject any request that is not from the control plane, or is from one that
+/// has been superseded.
 ///
-/// Used as a tonic interceptor, so the check runs before any RPC handler. When
-/// TLS is not configured there are no peer certificates and the check is a
-/// no-op — a plaintext agent has no identity to verify, which is why plaintext
-/// is only for a trusted lab (the startup log says so).
+/// Used as a tonic interceptor, so the checks run before any RPC handler. When
+/// TLS is not configured there are no peer certificates and the identity check
+/// is a no-op — a plaintext agent has no identity to verify, which is why
+/// plaintext is only for a trusted lab (the startup log says so).
 #[derive(Clone)]
 pub struct RequireControlIdentity {
     expected_cn: Option<String>,
+    /// `None` leaves epoch fencing off entirely, which is what a plaintext
+    /// agent gets: with no identity to bind it to, an epoch is a number any
+    /// caller can choose, and enforcing it would suggest a guarantee that is
+    /// not there.
+    epoch: Option<Arc<EpochGuard>>,
 }
 
 impl RequireControlIdentity {
     /// `expected_cn` is `None` when mTLS is off, disabling the check.
     pub fn new(expected_cn: Option<String>) -> Self {
-        Self { expected_cn }
+        Self {
+            expected_cn,
+            epoch: None,
+        }
+    }
+
+    /// Also refuse controllers whose lease epoch is behind one already seen.
+    pub fn with_epoch(mut self, guard: Arc<EpochGuard>) -> Self {
+        self.epoch = Some(guard);
+        self
     }
 }
 
 impl tonic::service::Interceptor for RequireControlIdentity {
     fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
+        // Identity first: an epoch from an unidentified caller means nothing,
+        // and rejecting on it would report the wrong reason.
+        self.check_identity(&req)?;
+        if let Some(guard) = &self.epoch {
+            guard.check(req.metadata())?;
+        }
+        Ok(req)
+    }
+}
+
+impl RequireControlIdentity {
+    fn check_identity(&self, req: &Request<()>) -> Result<(), Status> {
         let Some(expected) = &self.expected_cn else {
-            return Ok(req);
+            return Ok(());
         };
         // With mTLS configured, tonic will already have rejected anything that
         // does not chain to our CA; absence of a certificate here would mean
@@ -49,7 +92,7 @@ impl tonic::service::Interceptor for RequireControlIdentity {
             .map_err(|_| Status::unauthenticated("unparsable client certificate"))?;
         let cn = common_name(&parsed);
         match cn.as_deref() {
-            Some(cn) if cn == expected => Ok(req),
+            Some(cn) if cn == expected => Ok(()),
             other => {
                 // Name the mismatch: the usual cause is a control certificate
                 // issued with a different CN, and the operator needs to know

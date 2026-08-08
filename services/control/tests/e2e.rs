@@ -95,6 +95,10 @@ struct AgentState {
     prepare_delay_ms: u64,
     send_delay_ms: u64,
     finalize_delay_ms: u64,
+    /// Every controller lease epoch seen on an `ensure_vm`, in arrival order.
+    /// The agent-side check is unit-tested; what this proves is the *wiring* —
+    /// that the control plane actually puts its epoch on the wire (ADR-022).
+    epochs_seen: Vec<Option<i64>>,
     /// Call counts, across leaders. These are the assertions.
     prepare_calls: u32,
     send_calls: u32,
@@ -192,10 +196,16 @@ impl HostAgent for FakeAgent {
         &self,
         r: Request<EnsureVmRequest>,
     ) -> Result<Response<EnsureVmResponse>, Status> {
+        let epoch = r
+            .metadata()
+            .get("x-vquasar-controller-epoch")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok());
         let req = r.into_inner();
         let (delay, err) = {
             let mut st = self.state.lock().unwrap();
             st.ensure_calls += 1;
+            st.epochs_seen.push(epoch);
             (st.ensure_delay_ms, st.ensure_error.clone())
         };
         if delay > 0 {
@@ -877,6 +887,20 @@ impl Peer {
             .json()
             .await
             .unwrap_or(Value::Null)
+    }
+
+    /// Write through the *peer*, for asserting on what the new leader does
+    /// rather than on what the database ended up holding.
+    async fn post(&self, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
+        let r = self
+            .client
+            .post(format!("{}/api/v1{path}", self.base))
+            .json(&body)
+            .send()
+            .await
+            .expect("peer post");
+        let st = r.status();
+        (st, r.json().await.unwrap_or(Value::Null))
     }
 
     /// Block until this instance is the one running the controllers.
@@ -2705,5 +2729,77 @@ async fn a_migration_interrupted_inside_finalize_does_not_lose_the_vm() {
         claimed_here,
         "the control plane reports the VM on {host} (A={a}, B={b}) but it is running \
          elsewhere (A: {on_a}, B: {on_b})"
+    );
+}
+
+/// The wiring for ADR-022: does the control plane actually put its lease epoch
+/// on the wire, and does it advance when leadership moves?
+///
+/// The comparison itself is unit-tested in the agent. This is the half that
+/// cannot be — the half where the defect would live, because a stamp that is
+/// never applied looks exactly like a fleet with nothing to fence.
+#[tokio::test]
+async fn every_agent_rpc_carries_the_controller_lease_epoch() {
+    let mut h = Harness::start_with(&[("VQUASAR_CONTROL_SERVER__INSTANCE_ID", "alpha")]).await;
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+    let peer = h.start_peer("beta").await;
+    h.wait_for(
+        "/leader",
+        |v| v["leader"]["holder"] == "alpha",
+        "alpha leading",
+    )
+    .await;
+    let alpha_epoch = h.get("/leader").await["leader"]["epoch"].as_i64().unwrap();
+
+    let (st, v) = h
+        .post("/vms", json!({"name": "stamped", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let id = v["vm_id"].as_str().unwrap().to_string();
+    h.wait_for(
+        &format!("/vms/{id}"),
+        |v| v["phase"] == "Running",
+        "Running",
+    )
+    .await;
+
+    let seen = agent.lock().unwrap().epochs_seen.clone();
+    assert!(!seen.is_empty(), "no ensure_vm reached the agent");
+    assert!(
+        seen.iter().all(|e| *e == Some(alpha_epoch)),
+        "every call must carry the leader's epoch {alpha_epoch}, saw {seen:?}"
+    );
+
+    // Failover: the successor's epoch is strictly higher, which is what lets an
+    // agent tell a new leader from a superseded one.
+    h.stop_gracefully().await;
+    peer.wait_until_leader().await;
+    let beta_epoch = peer.get("/leader").await["leader"]["epoch"]
+        .as_i64()
+        .unwrap();
+    assert!(
+        beta_epoch > alpha_epoch,
+        "the epoch must advance on takeover ({alpha_epoch} -> {beta_epoch})"
+    );
+
+    let (st, v) = peer
+        .post("/vms", json!({"name": "stamped-two", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let id = v["vm_id"].as_str().unwrap().to_string();
+    peer.wait_for(
+        &format!("/vms/{id}"),
+        |v| v["phase"] == "Running",
+        "Running",
+    )
+    .await;
+
+    let after = agent.lock().unwrap().epochs_seen.clone();
+    let fresh = &after[seen.len()..];
+    assert!(
+        !fresh.is_empty() && fresh.iter().all(|e| *e == Some(beta_epoch)),
+        "the peer must stamp its own epoch {beta_epoch}, saw {fresh:?}"
     );
 }
