@@ -5,9 +5,16 @@ Guides for running and developing vquasar. Start at the
 
 ## Installing
 
+* [**Prerequisites**](prerequisites.md) — what each machine needs before you
+  start: packages, ports, PostgreSQL, KVM and Cloud Hypervisor, and why each
+  one is on the list.
 * [**Installing vquasar**](install.md) — one command per machine, the release
   channels, what the installer verifies (and what it does not), upgrades, and
   the pieces it deliberately leaves to you.
+
+* [**Registering hosts**](registering-hosts.md) — how the control plane learns
+  a host exists, the enrolment flow, and why a `NotReady` host is almost always
+  a reachability problem in the direction people do not expect.
 
 ## Operating
 

@@ -1,5 +1,9 @@
 # Installing vquasar
 
+Check [**prerequisites**](prerequisites.md) first — the installer does not
+install PostgreSQL, Open vSwitch or Cloud Hypervisor, and says so rather than
+guessing at your environment.
+
 One command per machine. The control plane goes on one host; an agent goes on
 every host that will run VMs.
 
@@ -17,6 +21,10 @@ That downloads the latest stable build, checks it, installs the binary to
 `/usr/local/bin`, writes `/etc/vquasar/<role>.env`, generates a systemd unit,
 and starts it. The control tarball carries the web console too, so a control
 plane is never installed without the UI that matches it.
+
+Installing an agent does not put its host in the fleet — the control plane has
+to be told it exists. See [**registering hosts**](registering-hosts.md), which
+is the step most first installs miss.
 
 `--allow-no-auth` is a deliberate speed bump: without it the installer refuses
 to bring up a control plane that anyone can talk to. It is right for a lab and
@@ -102,4 +110,5 @@ should guess, and a wrong guess about any of them is worse than being asked.
 
 x86-64 Linux with systemd and glibc 2.35 or newer (Ubuntu 22.04 and later,
 Debian 12, RHEL 9). The published binaries are dynamically linked; on an older
-distribution, build from source.
+distribution, build from source. Full detail, including the ports that have to
+be open between machines, is in [prerequisites](prerequisites.md).

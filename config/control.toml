@@ -79,9 +79,6 @@ vni_end = 16777215
 # tear down the overlay bridge and its tunnel mesh (ADR-016).
 segment_quarantine_secs = 3600
 
-[grpc]
-listen = "0.0.0.0:9443"
-
 [reconcile]
 # How often the controllers poll agents and reconcile VMs, in seconds.
 interval_secs = 5
