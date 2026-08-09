@@ -95,6 +95,11 @@ struct AgentState {
     prepare_delay_ms: u64,
     send_delay_ms: u64,
     finalize_delay_ms: u64,
+    /// What the last `ensure_vm` said about the first NIC's egress policy:
+    /// whether it is default-deny, and how many egress rules came with it
+    /// (design §18). The control plane can accept an egress rule and still
+    /// never send it; this is how a test tells those apart.
+    egress_seen: Option<(bool, usize)>,
     /// Storage pools this host refuses to report as usable, keyed by pool name
     /// with the reason it gives (ADR-023). Anything else it is asked about, it
     /// can use. Refusing by *name* is deliberate: the control plane is what
@@ -236,6 +241,9 @@ impl HostAgent for FakeAgent {
             let mut st = self.state.lock().unwrap();
             st.ensure_calls += 1;
             st.epochs_seen.push(epoch);
+            if let Some(n) = req.networks.first() {
+                st.egress_seen = Some((n.egress_default_deny, n.egress_rules.len()));
+            }
             (st.ensure_delay_ms, st.ensure_error.clone())
         };
         if delay > 0 {
@@ -1919,6 +1927,97 @@ async fn orphaned_files_are_reported_without_being_touched_by_default() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Egress rules are enforced, or refused — never accepted and ignored
+/// (design §18). An accepted rule that changes nothing is a control an operator
+/// believes in and does not have.
+#[tokio::test]
+async fn an_egress_rule_is_refused_unless_the_cluster_enforces_egress() {
+    let h = Harness::start().await;
+    let (st, sg) = h.post("/security-groups", json!({"name": "web"})).await;
+    assert!(st.is_success(), "{sg}");
+    let sg_id = sg["id"].as_str().unwrap().to_string();
+
+    let (st, body) = h
+        .post(
+            &format!("/security-groups/{sg_id}/rules"),
+            json!({"direction": "egress", "protocol": "tcp",
+                   "port_min": 443, "port_max": 443}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(
+        format!("{body}").contains("egress_mode"),
+        "the refusal has to say how to make it enforceable: {body}"
+    );
+
+    // An ingress rule on the same group is unaffected.
+    let (st, body) = h
+        .post(
+            &format!("/security-groups/{sg_id}/rules"),
+            json!({"direction": "ingress", "protocol": "tcp",
+                   "port_min": 22, "port_max": 22}),
+        )
+        .await;
+    assert!(st.is_success(), "{body}");
+}
+
+/// With egress enforced, the rule is accepted *and reaches the agent* with the
+/// flag that makes it mean something.
+#[tokio::test]
+async fn an_enforced_egress_rule_reaches_the_agent() {
+    let h = Harness::start_with(&[
+        ("VQUASAR_CONTROL_NETWORK__EGRESS_MODE", "enforced"),
+        ("VQUASAR_CONTROL_NETWORK__POLICY_MODE", "enforced"),
+    ])
+    .await;
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+
+    let (st, net) = h
+        .post("/networks", json!({"name": "tenant-a", "kind": "tenant"}))
+        .await;
+    assert!(st.is_success(), "{net}");
+    let net_id = net["id"].as_str().unwrap().to_string();
+    // Every network carries a default group from creation (ADR-017); putting
+    // the rule there is what makes it apply to every NIC on the network.
+    let sg_id = net["default_security_group_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (st, body) = h
+        .post(
+            &format!("/security-groups/{sg_id}/rules"),
+            json!({"direction": "egress", "protocol": "tcp",
+                   "port_min": 443, "port_max": 443, "remote_cidr": "10.9.0.0/16"}),
+        )
+        .await;
+    assert!(st.is_success(), "{body}");
+
+    let mut spec = vm_spec();
+    spec["network_interfaces"] = json!([{"network_id": net_id}]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "egress-vm", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "{v}");
+
+    // The flag and the rule both have to arrive: the flag alone denies
+    // everything, the rule alone changes nothing.
+    for _ in 0..120 {
+        if let Some((deny, rules)) = agent.lock().unwrap().egress_seen {
+            if deny && rules == 1 {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!(
+        "the agent never saw an enforced egress policy; last was {:?}",
+        agent.lock().unwrap().egress_seen
+    );
 }
 
 /// An unknown path under `/api/v1` must answer with the error envelope, not the

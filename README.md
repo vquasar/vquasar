@@ -167,7 +167,7 @@ model and CH's wire types). The
 
 * [`docs/`](docs/) — booting VMs, Windows guests, local development.
 * [`DESIGN.md`](DESIGN.md) — the full architecture. The load-bearing decisions
-  are recorded as ADR-001 … ADR-023 in section 44; code comments reference
+  are recorded as ADR-001 … ADR-024 in section 44; code comments reference
   design sections by number.
 * [`ROADMAP.md`](ROADMAP.md) — what has landed and what is queued.
 * [`scripts/README.md`](scripts/README.md) — what each helper script does.

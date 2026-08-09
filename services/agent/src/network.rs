@@ -36,6 +36,9 @@ pub struct NicBinding {
     /// firewall on the TAP with `ingress_rules` as the allow-list.
     pub filtered: bool,
     pub ingress_rules: Vec<crate::firewall::SecRule>,
+    /// Egress allow-list, and whether egress is default-deny at all (§18).
+    pub egress_rules: Vec<crate::firewall::SecRule>,
+    pub egress_default_deny: bool,
     /// Protect the underlay to these peers with IPsec (design §18, M18b).
     pub encrypt_underlay: bool,
     /// Peers and their certificate identities, for IPsec pinning.
@@ -143,7 +146,17 @@ impl OvsNetworkBackend {
     async fn apply_firewall(&self, bridge: &str, tap: &str, binding: &NicBinding) -> Result<()> {
         match (binding.filtered, self.port_security) {
             (true, _) => {
-                crate::firewall::apply(bridge, tap, &binding.mac, &binding.ingress_rules).await
+                crate::firewall::apply(
+                    bridge,
+                    tap,
+                    &binding.mac,
+                    &crate::firewall::Policy {
+                        ingress: binding.ingress_rules.clone(),
+                        egress: binding.egress_rules.clone(),
+                        egress_default_deny: binding.egress_default_deny,
+                    },
+                )
+                .await
             }
             (false, true) => crate::firewall::apply_port_security(bridge, tap, &binding.mac).await,
             // Neither: make sure no stale flows linger from a prior config.
@@ -414,6 +427,8 @@ mod tests {
                     overlay_peers: Vec::new(),
                     filtered: false,
                     ingress_rules: Vec::new(),
+                    egress_rules: Vec::new(),
+                    egress_default_deny: false,
                 },
             )
             .await

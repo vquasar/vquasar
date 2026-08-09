@@ -43,6 +43,14 @@ allowed_paths = ["/var/lib/vquasar"]
 # switching does not change reachability — but it does move every NIC from no
 # flows to conntrack flows, so it is an operator decision.
 policy_mode = "legacy"
+# Whether a filtered NIC's egress is default-deny (ADR-024). "allow" (the
+# default) is today's behaviour: a guest may originate anything, and the API
+# refuses to record an egress rule because it would do nothing. "enforced" means
+# a guest may originate only what its groups allow — which is what keeps a
+# compromised guest off the management underlay and other tenants' networks.
+# Switching cuts every filtered guest off from anything not explicitly allowed,
+# including DNS: do it with a window, and write the rules first.
+egress_mode = "allow"
 # Whether the VXLAN underlay is encrypted (M18b). Tunnels are cleartext by
 # default: anyone on the underlay can read overlay traffic, and anyone who can
 # reach UDP/4789 can inject frames into any VNI.

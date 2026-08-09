@@ -938,23 +938,35 @@ async fn resolve_bindings(
                 }
             }
         }
-        let (filtered, ingress_rules) = if groups.is_empty() {
-            (false, Vec::new())
+        let egress_default_deny = store.network_policy().egress_enforced();
+        let (filtered, ingress_rules, egress_rules) = if groups.is_empty() {
+            (false, Vec::new(), Vec::new())
         } else {
-            let rules = store
-                .rules_for_groups(&groups)
-                .await?
-                .into_iter()
+            let all = store.rules_for_groups(&groups).await?;
+            let wire = |r: &crate::store::SecurityGroupRule| vquasar_proto::agent::SecurityRule {
+                ipv6: r.ethertype.eq_ignore_ascii_case("IPv6"),
+                protocol: r.protocol.clone(),
+                port_min: r.port_min.unwrap_or(0).max(0) as u32,
+                port_max: r.port_max.unwrap_or(0).max(0) as u32,
+                remote_cidr: r.remote_cidr.clone().unwrap_or_default(),
+            };
+            let ingress = all
+                .iter()
                 .filter(|r| r.direction == "ingress")
-                .map(|r| vquasar_proto::agent::SecurityRule {
-                    ipv6: r.ethertype.eq_ignore_ascii_case("IPv6"),
-                    protocol: r.protocol,
-                    port_min: r.port_min.unwrap_or(0).max(0) as u32,
-                    port_max: r.port_max.unwrap_or(0).max(0) as u32,
-                    remote_cidr: r.remote_cidr.unwrap_or_default(),
-                })
+                .map(&wire)
                 .collect();
-            (true, rules)
+            // Only when egress is enforced. Sending an allow-list the agent
+            // will not act on would be inventing a guarantee out of a config
+            // value that is off.
+            let egress = if egress_default_deny {
+                all.iter()
+                    .filter(|r| r.direction == "egress")
+                    .map(&wire)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (true, ingress, egress)
         };
 
         bindings.push(NetworkBinding {
@@ -966,6 +978,10 @@ async fn resolve_bindings(
             encrypt_underlay: encrypt_underlay && vni != 0,
             filtered,
             ingress_rules,
+            egress_rules,
+            // Only a filtered NIC has a policy at all; an unfiltered one keeps
+            // today's behaviour whatever the mode says.
+            egress_default_deny: filtered && egress_default_deny,
         });
     }
     Ok(Some(bindings))

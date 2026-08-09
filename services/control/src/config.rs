@@ -70,6 +70,19 @@ pub struct NetworkPolicy {
     /// dataplane change and must be an operator's decision.
     #[serde(default = "default_policy_mode")]
     pub policy_mode: String,
+    /// Whether a filtered NIC's egress is default-deny (design §18).
+    ///
+    /// * `allow` — a guest may originate anything, and an egress rule would be
+    ///   a no-op, so the API refuses to record one.
+    /// * `enforced` — a guest may originate only what its groups allow. This is
+    ///   what keeps a compromised guest off the management underlay, the
+    ///   control plane, and other tenants' provider networks.
+    ///
+    /// Defaults to `allow`: switching cuts every filtered guest off from
+    /// everything not explicitly allowed, including DNS and package mirrors,
+    /// and that has to be an operator's decision rather than an upgrade's.
+    #[serde(default = "default_egress_mode")]
+    pub egress_mode: String,
     /// VLAN tags a `vlan` network may use, as inclusive ranges "100-200,300".
     /// Empty ⇒ no VLAN network may be created.
     #[serde(default)]
@@ -111,6 +124,10 @@ pub struct NetworkPolicy {
 fn default_policy_mode() -> String {
     "legacy".to_string()
 }
+
+fn default_egress_mode() -> String {
+    "allow".to_string()
+}
 fn default_underlay_mtu() -> u32 {
     1500
 }
@@ -131,6 +148,7 @@ impl Default for NetworkPolicy {
     fn default() -> Self {
         Self {
             policy_mode: default_policy_mode(),
+            egress_mode: default_egress_mode(),
             overlay_encryption: crate::overlay::OverlayEncryption::default(),
             underlay_mtu: default_underlay_mtu(),
             overlay_nat_traversal: false,
@@ -182,6 +200,11 @@ impl NetworkPolicy {
     /// Whether a NIC's policy includes its network's default group.
     pub fn policy_enforced(&self) -> bool {
         self.policy_mode == "enforced"
+    }
+
+    /// Whether a filtered NIC's egress is default-deny (design §18).
+    pub fn egress_enforced(&self) -> bool {
+        self.egress_mode == "enforced"
     }
 
     pub fn permits_uplink(&self, name: &str) -> bool {

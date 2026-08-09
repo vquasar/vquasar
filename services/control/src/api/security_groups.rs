@@ -200,6 +200,16 @@ pub async fn add_rule(
         return Err(ApiError::not_found("security group"));
     }
     validate_rule(&body)?;
+    // Under default-allow egress an egress rule permits what is already
+    // permitted — it changes nothing, forever, silently. Accepting it would put
+    // a rule in the console that reads like a control and is not one, which is
+    // worse than refusing (design §18).
+    if body.direction == "egress" && !store.network_policy().egress_enforced() {
+        return Err(ApiError::invalid(
+            "egress rules are not enforced on this cluster: egress is default-allow, \
+             so this rule would do nothing. Set [network] egress_mode = \"enforced\" first.",
+        ));
+    }
     let cidr = body
         .remote_cidr
         .as_deref()
