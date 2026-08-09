@@ -17,12 +17,14 @@ import {
   useTasks,
   useTemplates,
   useVms,
+  useControlConfig,
   useStoragePools,
   useVolumes,
 } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { ProjectSwitch } from "./ProjectSwitch";
 import { useProject } from "../auth/ProjectProvider";
+import { formatRelative } from "../format";
 import { useProjects } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
 import { ACTION, READ } from "../auth/perm";
@@ -155,7 +157,36 @@ function Sidebar() {
         <NavGroup label="Operations" items={operations} />
       </div>
       {can(READ.hosts) && <AgentStatus />}
+      {can(READ.hosts) && <ControlPlaneFoot />}
     </nav>
+  );
+}
+
+/// Which control plane this console is talking to, and whether its reconcile
+/// loop is still turning.
+///
+/// The second half is the point. A stopped loop looks exactly like a fleet with
+/// nothing to do — every VM simply stays as it was — so the age of the last
+/// completed pass is the only thing that tells them apart, and it belongs
+/// somewhere an operator sees without going looking.
+function ControlPlaneFoot() {
+  const cfg = useControlConfig();
+  if (!cfg.data) return null;
+  const { version, reconcile } = cfg.data;
+  const last = reconcile.last_pass_at ? Date.parse(reconcile.last_pass_at) : null;
+  // Stale at four intervals: one missed tick is a slow pass, four is a loop
+  // that has stopped.
+  const stale =
+    last === null || Date.now() - last > reconcile.interval_secs * 4000;
+  return (
+    <div className="vq-cpfoot" title="Control-plane version, and when its reconcile loop last completed a pass">
+      <span className="vq-mono">v{version}</span>
+      <span className={stale ? "t-amber" : "t-3"}>
+        {reconcile.last_pass_at
+          ? `reconciled ${formatRelative(reconcile.last_pass_at)}`
+          : "never reconciled"}
+      </span>
+    </div>
   );
 }
 

@@ -69,3 +69,16 @@ export function initials(name: string): string {
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
 }
+
+/// "12s ago" / "4m ago" / "2h ago" — for a liveness signal, where the exact
+/// timestamp matters less than whether it is recent.
+export function formatRelative(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "—";
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}

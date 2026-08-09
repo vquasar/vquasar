@@ -1371,3 +1371,16 @@ textarea.vq-input {
     min-width: 960px;
   }
 }
+
+/* Which control plane this is, and whether its loop is turning. Sits under the
+   agent status at the foot of the sidebar; deliberately quiet, because it is
+   ambient until it goes amber. */
+.vq-cpfoot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px 12px;
+  font-size: 11px;
+  color: var(--vq-text-3);
+  border-top: 1px solid var(--vq-line);
+}

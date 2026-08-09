@@ -2534,6 +2534,59 @@ async fn a_rule_can_name_a_group_and_a_project_has_its_own_default() {
     );
 }
 
+/// The read-only configuration endpoint (§36). What it must *not* say is as
+/// much of the point as what it says.
+#[tokio::test]
+async fn the_config_endpoint_describes_the_cluster_without_leaking_it() {
+    let h = Harness::start_with(&[
+        ("VQUASAR_CONTROL_NETWORK__POLICY_MODE", "enforced"),
+        ("VQUASAR_CONTROL_NETWORK__EGRESS_MODE", "enforced"),
+    ])
+    .await;
+
+    let cfg = h.get("/config").await;
+    assert!(cfg["version"].is_string(), "{cfg}");
+    assert_eq!(cfg["network"]["policy_mode"], "enforced");
+    assert_eq!(cfg["network"]["egress_mode"], "enforced");
+    assert_eq!(cfg["storage"]["orphan_reclaim"], "report");
+    // The harness runs with auth off and a cleartext database, and the endpoint
+    // says so rather than reporting a protection nobody turned on.
+    assert_eq!(cfg["security"]["authentication"], json!(false));
+    assert_eq!(cfg["security"]["database_tls"], json!(false));
+
+    // Not one secret, and not one field that could grow into one. This is
+    // asserted on the whole serialised body rather than field by field,
+    // because the failure being guarded against is a field somebody adds
+    // later without thinking about this test.
+    let body = serde_json::to_string(&cfg).unwrap();
+    for forbidden in [
+        "password",
+        "secret",
+        "client_secret",
+        "key",
+        "postgres://",
+        "token",
+        "url",
+    ] {
+        assert!(
+            !body.to_lowercase().contains(forbidden),
+            "the config endpoint leaked {forbidden:?}: {body}"
+        );
+    }
+
+    // The reconcile heartbeat: a loop that has stopped looks like a fleet with
+    // nothing to do, so the last completed pass is the only thing that tells
+    // them apart.
+    let cfg = h
+        .wait_for(
+            "/config",
+            |c| c["reconcile"]["last_pass_at"].is_string(),
+            "a completed reconcile pass",
+        )
+        .await;
+    assert!(cfg["reconcile"]["interval_secs"].as_u64().unwrap_or(0) > 0);
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback

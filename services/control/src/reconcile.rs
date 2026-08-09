@@ -107,6 +107,12 @@ pub async fn run(store: Store, interval: Duration, lease: Arc<crate::lease::Leas
         if let Err(e) = crate::metrics::update_from_store(&store).await {
             warn!(error = %e, "metrics refresh failed");
         }
+        // The pass finished. Recorded at the end rather than the start, so a
+        // loop that wedges mid-pass stops updating this instead of claiming a
+        // freshness it does not have.
+        if let Err(e) = crate::lease::mark_pass(store.pool(), lease.identity()).await {
+            warn!(error = %e, "could not record the reconcile heartbeat");
+        }
         sleep(interval).await;
     }
 }
