@@ -21,7 +21,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, uploadImage } from "./client";
 import { usePermissions } from "../auth/permissions";
-import { READ } from "../auth/perm";
+import { ACTION, READ } from "../auth/perm";
 import type {
   Accepted,
   CreateImageRequest,
@@ -709,7 +709,7 @@ export function useVmMetrics(id: string | undefined) {
 }
 
 // --- Control-plane configuration (§36) ---
-import type { ControlConfig } from "./types";
+import type { ControlConfig, MigrationTarget } from "./types";
 
 export function useControlConfig() {
   const { can } = usePermissions();
@@ -720,5 +720,14 @@ export function useControlConfig() {
     // `last_pass_at` is a liveness signal, so this is polled rather than cached
     // forever: a stale one would report a stopped loop as healthy.
     refetchInterval: SLOW_MS,
+  });
+}
+
+export function useMigrationTargets(vmId: string | undefined) {
+  const { can } = usePermissions();
+  return useQuery({
+    queryKey: ["vms", vmId, "migration-targets"],
+    queryFn: () => api.get<MigrationTarget[]>(`/vms/${vmId}/migration-targets`),
+    enabled: !!vmId && can(ACTION.vmMigrate),
   });
 }

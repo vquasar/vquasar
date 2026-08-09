@@ -107,6 +107,9 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
         .route("/vms/:id/start", post(vms::start))
         .route("/vms/:id/stop", post(vms::stop))
         .route("/vms/:id/migrate", post(vms::migrate))
+        // Where this VM could go, and why not — the placement rules answered
+        // once, on the side that owns them (§28).
+        .route("/vms/:id/migration-targets", get(vms::migration_targets))
         .route("/vms/:id/nics/:index", axum::routing::put(vms::change_nic))
         // Public: cloud-init phone_home IP-discovery fallback (design M13e).
         .route("/phone-home/:vm_id", post(vms::phone_home))
