@@ -554,11 +554,17 @@ export function useStoragePool(id: string | undefined) {
 export function useCreateStoragePool() {
   const qc = useQueryClient();
   return useMutation({
+    // The kind-specific fields are flattened into the body, so this is the
+    // union of what any kind takes rather than a nested params object.
     mutationFn: (body: {
       name: string;
       kind: string;
-      path: string;
       description?: string | null;
+      path?: string;
+      server?: string;
+      export?: string;
+      mount_point?: string;
+      options?: string;
     }) => api.post<StoragePool>("/storage-pools", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["storage-pools"] }),
   });

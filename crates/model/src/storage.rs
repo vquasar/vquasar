@@ -21,14 +21,24 @@ pub enum StoragePoolKind {
     /// A directory the hosts that report it have mounted at the same path.
     ///
     /// This is what live migration has always depended on, now written down.
+    /// The platform does not mount it: an operator does, by whatever means
+    /// their fleet already uses, and the agents report who managed to.
     #[default]
     SharedDir,
+    /// An NFS export the *agents* mount, at a path the pool names.
+    ///
+    /// The difference from a `shared_dir` that happens to be NFS is who is
+    /// responsible for the mount. Here the pool records the export, so a host
+    /// that is missing it gets it — rather than an operator having to arrange
+    /// the same mount on every host and nothing recording that they did.
+    Nfs,
 }
 
 impl StoragePoolKind {
     pub fn as_str(self) -> &'static str {
         match self {
             StoragePoolKind::SharedDir => "shared_dir",
+            StoragePoolKind::Nfs => "nfs",
         }
     }
 }
@@ -39,13 +49,14 @@ impl std::str::FromStr for StoragePoolKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "shared_dir" => Ok(StoragePoolKind::SharedDir),
+            "nfs" => Ok(StoragePoolKind::Nfs),
             other => Err(InvalidStoragePoolKind(other.to_string())),
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("unknown storage pool kind {0:?} — expected shared_dir")]
+#[error("unknown storage pool kind {0:?} — expected shared_dir or nfs")]
 pub struct InvalidStoragePoolKind(pub String);
 
 /// A pool's kind together with the parameters that kind needs.
@@ -57,13 +68,40 @@ pub struct InvalidStoragePoolKind(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PoolParams {
-    SharedDir { path: String },
+    SharedDir {
+        path: String,
+    },
+    Nfs {
+        /// Server address, as the hosts reach it.
+        server: String,
+        /// Export path on the server.
+        export: String,
+        /// Where the agents mount it. Volumes live under this, so it is the
+        /// pool's host path in exactly the way a `shared_dir` path is.
+        mount_point: String,
+        /// Extra `mount -o` options. `None` leaves the client defaults alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<String>,
+    },
 }
 
 impl PoolParams {
     pub fn kind(&self) -> StoragePoolKind {
         match self {
             PoolParams::SharedDir { .. } => StoragePoolKind::SharedDir,
+            PoolParams::Nfs { .. } => StoragePoolKind::Nfs,
+        }
+    }
+
+    /// `server:/export`, the thing `mount` names and `/proc/mounts` reports —
+    /// which is how a host tells "mounted" from "an empty directory with the
+    /// right name".
+    pub fn mount_source(&self) -> Option<String> {
+        match self {
+            PoolParams::Nfs { server, export, .. } => {
+                Some(format!("{}:{}", server.trim(), export.trim()))
+            }
+            PoolParams::SharedDir { .. } => None,
         }
     }
 
@@ -74,6 +112,7 @@ impl PoolParams {
     pub fn host_path(&self) -> Option<&str> {
         match self {
             PoolParams::SharedDir { path } => Some(path),
+            PoolParams::Nfs { mount_point, .. } => Some(mount_point),
         }
     }
 
@@ -83,13 +122,43 @@ impl PoolParams {
     /// permitted roots are control-plane configuration, so that check lives
     /// with the API alongside the one for VM disk paths (design §30).
     pub fn validate(&self) -> Result<(), PoolValidationError> {
+        let absolute = |p: &str| -> Result<(), PoolValidationError> {
+            if p.trim().is_empty() {
+                return Err(PoolValidationError::MissingPath);
+            }
+            if !p.starts_with('/') {
+                return Err(PoolValidationError::RelativePath(p.to_string()));
+            }
+            Ok(())
+        };
         match self {
-            PoolParams::SharedDir { path } => {
-                if path.trim().is_empty() {
-                    return Err(PoolValidationError::MissingPath);
+            PoolParams::SharedDir { path } => absolute(path),
+            PoolParams::Nfs {
+                server,
+                export,
+                mount_point,
+                options,
+            } => {
+                if server.trim().is_empty() {
+                    return Err(PoolValidationError::MissingServer);
                 }
-                if !path.starts_with('/') {
-                    return Err(PoolValidationError::RelativePath(path.clone()));
+                // A server field carrying mount syntax is an operator writing
+                // `10.0.0.5:/exports` into the wrong box; the two halves are
+                // separate here so the mount source can be built exactly once.
+                if server.contains(':') || server.contains('/') {
+                    return Err(PoolValidationError::ServerNotAnAddress(server.clone()));
+                }
+                absolute(export)?;
+                absolute(mount_point)?;
+                // Options go on a `mount -o` command line. Nothing here should
+                // ever contain whitespace or a shell metacharacter, and a value
+                // that does is either a mistake or an attempt at one.
+                if let Some(o) = options {
+                    if o.chars()
+                        .any(|c| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '`' | '$'))
+                    {
+                        return Err(PoolValidationError::BadMountOptions(o.clone()));
+                    }
                 }
                 Ok(())
             }
@@ -104,6 +173,14 @@ pub enum PoolValidationError {
     MissingPath,
     #[error("path must be absolute, got {0:?}")]
     RelativePath(String),
+    #[error("an nfs pool requires a server")]
+    MissingServer,
+    #[error(
+        "server must be a host or address on its own, not {0:?} — the export is a separate field"
+    )]
+    ServerNotAnAddress(String),
+    #[error("mount options must be a comma-separated list with no whitespace or shell characters, got {0:?}")]
+    BadMountOptions(String),
     #[error("name must not be empty")]
     EmptyName,
     #[error("name must be at most 63 characters, got {0}")]
@@ -199,10 +276,73 @@ mod tests {
     }
 
     #[test]
+    fn an_nfs_pool_carries_its_export_and_where_it_is_mounted() {
+        let p = PoolParams::Nfs {
+            server: "10.0.0.5".into(),
+            export: "/exports/vms".into(),
+            mount_point: "/var/lib/vquasar/nfs/fast".into(),
+            options: Some("vers=4.2,hard".into()),
+        };
+        assert!(p.validate().is_ok());
+        assert_eq!(p.kind(), StoragePoolKind::Nfs);
+        // The mount point is the pool's host path: volumes live under it, and
+        // everything downstream treats it exactly like a shared directory.
+        assert_eq!(p.host_path(), Some("/var/lib/vquasar/nfs/fast"));
+        assert_eq!(p.mount_source().as_deref(), Some("10.0.0.5:/exports/vms"));
+        // A shared_dir has nothing to mount, which is the whole difference.
+        assert_eq!(
+            PoolParams::SharedDir { path: "/x".into() }.mount_source(),
+            None
+        );
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["kind"], "nfs");
+        assert_eq!(serde_json::from_value::<PoolParams>(json).unwrap(), p);
+    }
+
+    #[test]
+    fn an_nfs_pool_is_checked_before_it_reaches_a_mount_command() {
+        use PoolValidationError as E;
+        let nfs = |server: &str, export: &str, mount: &str, opts: Option<&str>| PoolParams::Nfs {
+            server: server.into(),
+            export: export.into(),
+            mount_point: mount.into(),
+            options: opts.map(str::to_string),
+        };
+        assert_eq!(nfs("", "/e", "/m", None).validate(), Err(E::MissingServer));
+        // The classic mistake: mount syntax typed into the server box, which
+        // would produce `10.0.0.5:/exports:/exports`.
+        assert_eq!(
+            nfs("10.0.0.5:/exports", "/e", "/m", None).validate(),
+            Err(E::ServerNotAnAddress("10.0.0.5:/exports".into()))
+        );
+        assert_eq!(
+            nfs("s", "exports", "/m", None).validate(),
+            Err(E::RelativePath("exports".into()))
+        );
+        assert_eq!(
+            nfs("s", "/e", "m", None).validate(),
+            Err(E::RelativePath("m".into()))
+        );
+        // Options end up on a command line; a value with a shell character in
+        // it is a mistake at best.
+        assert_eq!(
+            nfs("s", "/e", "/m", Some("hard; rm -rf /")).validate(),
+            Err(E::BadMountOptions("hard; rm -rf /".into()))
+        );
+        assert!(nfs("s", "/e", "/m", Some("vers=4.2,hard,noatime"))
+            .validate()
+            .is_ok());
+    }
+
+    #[test]
     fn kind_round_trips_through_strings() {
         assert_eq!(
             "shared_dir".parse::<StoragePoolKind>().unwrap(),
             StoragePoolKind::SharedDir
+        );
+        assert_eq!(
+            "nfs".parse::<StoragePoolKind>().unwrap(),
+            StoragePoolKind::Nfs
         );
         assert!("ceph".parse::<StoragePoolKind>().is_err());
     }

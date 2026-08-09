@@ -59,6 +59,65 @@ constrains placement not at all. The platform does not know which pool such a
 file is in, and guessing from the path would be a claim it cannot back. Those
 paths are governed by `[storage] allowed_paths` instead.
 
+## Kinds
+
+### `shared_dir`
+
+A directory you have already mounted on the hosts, by whatever means your fleet
+already uses. vquasar does not mount it and **never creates it** — a host
+missing the mount would otherwise get an empty directory on its own root
+filesystem and then report the pool as usable.
+
+### `nfs`
+
+The pool names the export, and the agents mount it:
+
+```bash
+curl -X POST https://vquasar/api/v1/storage-pools \
+  -H 'content-type: application/json' \
+  -d '{"name":"shelf","kind":"nfs","server":"10.0.0.5","export":"/exports/vms",
+       "mount_point":"/var/lib/vquasar/nfs/shelf","options":"vers=4.2,hard"}'
+```
+
+The difference from a `shared_dir` that happens to be NFS is *who is
+responsible for the mount*. With `shared_dir`, every host needs the same mount
+arranged out of band and nothing records that you did it. With `nfs`, the pool
+is the record, and a host that lacks the mount gets it on the next reconcile
+tick.
+
+`server` is an address on its own; the export is a separate field. Writing
+`10.0.0.5:/exports` into `server` is refused, because it would build
+`10.0.0.5:/exports:/exports`.
+
+The mount point *is* the pool's host path: volumes live under it, placement and
+the orphan sweep treat it exactly as they treat a shared directory, and it must
+sit under `[storage] allowed_paths` like any other.
+
+Three things worth knowing:
+
+* **Agents create the mount point but not the pool.** That is safe here and not
+  for `shared_dir`, because an `nfs` pool is usable only once `/proc/mounts`
+  shows that export mounted there. A failed mount leaves a bare directory that
+  still reports unusable.
+* **The source is checked, not just the path.** A directory that is a mount of
+  some *other* export is not this pool, and accepting it would put the pool's
+  volumes on a stranger's filesystem.
+* **Nothing is ever unmounted.** Deleting a pool leaves its mount in place: a
+  guest may have a disk open on it, and tidying up is not worth taking a VM's
+  storage away. Unmount by hand once you are sure.
+
+### Not yet: LVM thin, RBD, iSCSI, NVMe-oF
+
+These are the kinds that are not directories, and they need two things the
+platform does not have yet. Volume provisioning would have to move into the
+agent — an LV is not a file the control plane can `qemu-img create` — and a
+pool would have to declare whether its bytes are **shared between hosts or local
+to one**. Everything about placement currently rests on "a host reporting a pool
+can see that pool's data", which is false for local storage: a VM there is
+pinned to its host, and a live migration to another host has to be refused
+rather than attempted. Adding a block kind before that would break the
+assumption quietly, which is the failure mode this whole area exists to remove.
+
 ## Creating one
 
 Console: **Storage pools** → **Add pool**. Or:
@@ -69,7 +128,7 @@ curl -X POST https://vquasar/api/v1/storage-pools \
   -d '{"name":"fast","kind":"shared_dir","path":"/srv/fast"}'
 ```
 
-`shared_dir` is the only kind today. The path must sit under one of
+The path (or, for `nfs`, the mount point) must sit under one of
 `[storage] allowed_paths`: the agent opens files there with privilege, so a
 pool is a caller-supplied host path like any other.
 
@@ -151,11 +210,6 @@ what it does not recognise would be deleting another host's work.
 
 Pools are platform resources, like hosts: any project may place a volume in any
 pool. Restricting pools per project belongs with quotas and does not exist yet.
-
-## Planned kinds
-
-`lvm_thin`, `nfs` and `rbd` are the shapes the model was built to accept. Each
-is one more variant; nothing that reads a pool changes when they arrive.
 
 See [ADR-023](../DESIGN.md) for the reasoning, and §20 for where pools sit in
 the architecture.

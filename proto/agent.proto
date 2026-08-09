@@ -84,10 +84,16 @@ message ConsoleServerMessage {
 message StoragePoolProbe {
   string pool_id = 1;
   string name = 2;
-  // shared_dir today; lvm_thin | nfs | rbd later.
+  // shared_dir | nfs.
   string kind = 3;
-  // Root path, for kinds that have one.
+  // Root path, for kinds that have one. Kept for an agent that predates
+  // `params`; a newer one reads the params instead.
   string path = 4;
+  // The pool's kind-specific parameters as JSON, exactly as
+  // `vquasar_model::PoolParams` serialises them (internally tagged). One field
+  // rather than one per kind: a kind is a variant in a shared model type, and
+  // widening this message every time would let the two drift.
+  string params = 5;
 }
 
 // What the host found when it looked.

@@ -1658,6 +1658,54 @@ async fn a_vm_is_placed_only_where_its_pool_is_reported() {
         "the refusal must say why: {body}"
     );
 
+    // A second kind. Its mount point is the pool's host path in exactly the
+    // way a shared directory's path is, so everything downstream is unchanged.
+    let (st, nfs) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "shelf", "kind": "nfs", "server": "10.0.0.5",
+                   "export": "/exports/vms", "mount_point": "/x/nfs/shelf"}),
+        )
+        .await;
+    assert!(st.is_success(), "{nfs}");
+    assert_eq!(nfs["params"]["server"], "10.0.0.5");
+    assert_eq!(nfs["state"], "pending", "nothing has mounted it yet: {nfs}");
+
+    // The server field is an address, not mount syntax: `10.0.0.5:/exports`
+    // typed there would build `10.0.0.5:/exports:/exports`.
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "wrong", "kind": "nfs", "server": "10.0.0.5:/exports",
+                   "export": "/exports/vms", "mount_point": "/x/nfs/wrong"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // One host path is one pool *across kinds*: a shared directory and an NFS
+    // mount point at the same place would double-count one filesystem.
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "clash", "kind": "shared_dir", "path": "/x/nfs/shelf"}),
+        )
+        .await;
+    assert_eq!(
+        st.as_u16(),
+        400,
+        "same directory under another kind: {body}"
+    );
+
+    // And one export is one pool, however many paths it is offered at.
+    let (st, body) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "twice", "kind": "nfs", "server": "10.0.0.5",
+                   "export": "/exports/vms", "mount_point": "/x/nfs/again"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "same export twice: {body}");
+
     // Now placement. The host can use `default` but not `fast`.
     let port = free_port();
     let agent = spawn_agent("hostA", port);

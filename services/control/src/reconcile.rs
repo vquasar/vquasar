@@ -214,6 +214,9 @@ async fn pool_probes(store: &Store) -> anyhow::Result<Vec<vquasar_proto::agent::
             name: p.name,
             kind: p.kind,
             path: p.params.0.host_path().unwrap_or_default().to_string(),
+            // The whole parameter set, so a kind that needs more than a path
+            // (an NFS export, a future pool name) needs no wire change.
+            params: serde_json::to_string(&p.params.0).unwrap_or_default(),
         })
         .collect())
 }
