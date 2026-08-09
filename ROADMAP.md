@@ -576,6 +576,24 @@ Split into three shippable slices.
   source, nothing announced — because those are exactly what drifts when the
   next glyph is added.
 
+- **Release pipeline and one-command install.** ✅ **Done.** `make` is the one
+  entry point — `check` runs exactly what CI runs, `dist` produces the same
+  tarballs the workflow publishes — so "green locally" and "green in CI" cannot
+  drift apart.
+  Three channels off one build path: `dev` (a moving tag rebuilt on every merge
+  to main), `rc` (`v*-rc.*`), and `stable` (`v*`, marked latest). They differ
+  only in what they are called and whether GitHub flags them prerelease,
+  because a channel that *builds* differently from the one before it can pass
+  its tests and ship something else.
+  Every artifact carries signed provenance and a CycloneDX SBOM, keyless via
+  Sigstore and tied to the workflow's identity rather than a key somebody has
+  to hold; `SHA256SUMS` covers anyone without `gh`. `install.sh` now downloads,
+  checks the checksum *before* unpacking, verifies provenance when `gh` is
+  present — and says which of the two actually ran rather than implying both.
+  The binary reports the build it came from (`git describe`), so `/config` and
+  the console name a commit rather than a static `0.1.0`.
+  Not done: Dependabot, and musl builds for older distributions.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH

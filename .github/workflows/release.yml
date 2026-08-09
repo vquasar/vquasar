@@ -1,0 +1,148 @@
+# Release pipeline: three channels, one build path.
+#
+# `dev`    — every push to main. A moving prerelease, so `--channel dev` always
+#            means "the tip of main" and nobody has to look up a version.
+# `rc`     — a `v*-rc.*` tag. A prerelease, and the thing a stable release is
+#            promoted from rather than rebuilt from.
+# `stable` — a `v*` tag. Marked latest; what a bare `install.sh` installs.
+#
+# The channels differ only in what they are called and whether GitHub flags them
+# prerelease. The build, the packaging, the checksums and the attestations are
+# identical, because a release channel that builds differently from the one
+# before it is a channel that can pass its tests and ship something else.
+#
+# Every artifact carries two signed attestations, both keyless via Sigstore and
+# tied to this workflow's identity rather than to a key somebody has to hold:
+#
+#   * provenance — what built it, from which commit, with which workflow;
+#   * an SBOM — what went into it.
+#
+# Verify either with `gh attestation verify <file> --repo vquasar/vquasar`.
+# SHA256SUMS is published too, for anyone without `gh` who just wants to know
+# the bytes are the bytes.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # Both required for keyless signing: the OIDC token is the identity, and the
+  # attestation is written back to the repository.
+  id-token: write
+  attestations: write
+
+concurrency:
+  # A second push to main while the first is still packaging would race for the
+  # `dev` tag. Newest wins; an overtaken dev build is of no interest to anyone.
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `git describe` needs history and tags, and the version it produces
+          # is stamped into the binaries.
+          fetch-depth: 0
+
+      - name: Work out the channel and version
+        id: v
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF#refs/*/}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$ref"
+            if [[ "$version" == *-rc.* || "$version" == *-alpha* || "$version" == *-beta* ]]; then
+              channel=rc; prerelease=true
+            else
+              channel=stable; prerelease=false
+            fi
+            tag="$version"
+          else
+            # A dev build names the commit it came from, so an artifact can
+            # always be traced back to a tree even though the tag moves.
+            version="$(git describe --tags --always --dirty)"
+            channel=dev; prerelease=true; tag=dev
+          fi
+          {
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "prerelease=$prerelease"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "building $version on the $channel channel"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build and package
+        run: make dist VERSION=${{ steps.v.outputs.version }}
+
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Generate an SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/vquasar-${{ steps.v.outputs.version }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest the SBOM
+        uses: actions/attest-sbom@v1
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: dist/vquasar-${{ steps.v.outputs.version }}.cdx.json
+
+      # The dev tag moves. Deleting the old release first is what makes
+      # `--channel dev` mean "the tip of main" rather than "whatever was
+      # released first and never replaced".
+      - name: Replace the previous dev release
+        if: steps.v.outputs.channel == 'dev'
+        run: gh release delete dev --cleanup-tag --yes || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: ${{ steps.v.outputs.channel == 'dev' && 'dev (tip of main)' || steps.v.outputs.version }}
+          prerelease: ${{ steps.v.outputs.prerelease }}
+          # Only a stable release is what an unqualified install gets.
+          make_latest: ${{ steps.v.outputs.channel == 'stable' }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            **${{ steps.v.outputs.version }}** — ${{ steps.v.outputs.channel }} channel, built from `${{ github.sha }}`.
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh \
+              | sudo sh -s -- control --channel ${{ steps.v.outputs.channel }}
+            ```
+
+            Every artifact carries signed provenance and an SBOM, keyless via Sigstore:
+
+            ```bash
+            gh attestation verify vquasar-control-*.tar.gz --repo ${{ github.repository }}
+            ```
+
+            `SHA256SUMS` covers the tarballs for anyone without `gh`.
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/*.cdx.json

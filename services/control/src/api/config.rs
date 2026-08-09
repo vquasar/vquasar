@@ -21,8 +21,12 @@ use crate::store::Store;
 /// What the console is allowed to know about how this control plane is set up.
 #[derive(Debug, serde::Serialize)]
 pub struct ConfigView {
-    /// The control-plane binary's version, so a console can say which one it is
+    /// The build this binary came from, so a console can say which one it is
     /// talking to without an operator reading a systemd unit.
+    ///
+    /// `git describe` when the build knew — which is every packaged build — and
+    /// the crate version otherwise. A binary that cannot say what it is, is one
+    /// nobody can support.
     pub version: &'static str,
     pub reconcile: ReconcileView,
     pub network: NetworkView,
@@ -86,7 +90,7 @@ pub async fn get(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<C
     let net = store.network_policy();
     let storage = store.storage_config();
     Ok(Json(ConfigView {
-        version: env!("CARGO_PKG_VERSION"),
+        version: crate::BUILD,
         reconcile: ReconcileView {
             interval_secs: cfg.reconcile_interval_secs,
             last_pass_at: crate::lease::last_pass_at(store.pool()).await?,

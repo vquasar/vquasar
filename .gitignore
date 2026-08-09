@@ -28,3 +28,4 @@ design_*
 # Brand-guideline archives are design source, not repo content — the exported
 # assets that the console actually uses live in ui/public/.
 *.zip
+/dist/

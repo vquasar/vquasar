@@ -12,6 +12,12 @@
 #
 # Common options:
 #   --binary PATH        Component binary (default: auto-detect target/{release,debug} or ./ch-<role>)
+#   --channel CH         Download a published build instead: stable (default when
+#                        no local binary exists), rc, or dev (tip of main)
+#   --version VER        Download a specific release, e.g. v0.2.0
+#   --repo OWNER/NAME    Where to download from (default: vquasar/vquasar)
+#   --no-verify          Skip attestation verification (checksums are still
+#                        checked; this only skips the Sigstore step)
 #   --no-start           Install and enable, but do not start now
 #   --force-config       Overwrite an existing env file (default: keep existing)
 #   --tls-ca PATH        CA cert for mutual TLS (design M12a)
@@ -73,6 +79,7 @@ ROLE="${1:-}"; shift || true
 [[ "$ROLE" == "agent" || "$ROLE" == "control" ]] || { grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 BINARY=""; NO_START=0; FORCE_CONFIG=0
+CHANNEL=""; REL_VERSION=""; REPO="${VQUASAR_REPO:-vquasar/vquasar}"; NO_VERIFY=0
 NAME="$(hostname -s 2>/dev/null || hostname)"
 ADVERTISE_HOST=""; CH_BINARY="$STATE_DIR/bin/cloud-hypervisor"; GRPC_LISTEN="0.0.0.0:9500"; SECCOMP="log"; PHONE_HOME_URL=""
 DB_URL="postgres://ch:ch@127.0.0.1:5432/vquasar"; LISTEN="0.0.0.0:8080"; UI_DIR=""
@@ -87,6 +94,10 @@ ENC_KEY=""; ENC_KEY_ID=""; ENC_OLD_KEYS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --binary) BINARY="$2"; shift 2 ;;
+    --channel) CHANNEL="$2"; shift 2 ;;
+    --version) REL_VERSION="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --no-verify) NO_VERIFY=1; shift ;;
     --no-start) NO_START=1; shift ;;
     --force-config) FORCE_CONFIG=1; shift ;;
     --name) NAME="$2"; shift 2 ;;
@@ -146,11 +157,97 @@ fi
 SVC="vquasar-$ROLE"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Locate the binary if not given: prefer release, then debug, then repo/cwd.
-if [[ -z "$BINARY" ]]; then
+# ---- fetching a published build -------------------------------------------
+#
+# So that `curl … | sh` works with nothing checked out. Three rules, and the
+# order matters: resolve what to download, prove the bytes are the ones that
+# were published, and only then unpack them somewhere the installer will read.
+#
+# An unverified download that is *then* checked is a file that already exists
+# on the disk of a machine you were trying to protect.
+
+# One field out of a GitHub release document, without requiring jq on a host
+# that may have nothing installed yet.
+gh_json_field() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1; }
+
+resolve_release() {
+  local api="https://api.github.com/repos/$REPO/releases"
+  case "${REL_VERSION:-}" in
+    "") : ;;
+    *) echo "$api/tags/$REL_VERSION"; return ;;
+  esac
+  case "$CHANNEL" in
+    dev)    echo "$api/tags/dev" ;;
+    stable) echo "$api/latest" ;;
+    rc)
+      # The newest prerelease that is an rc — `dev` is a prerelease too, and
+      # installing the tip of main when somebody asked for a release candidate
+      # would be a different thing wearing the same word.
+      local tag
+      tag=$(curl -fsSL "$api" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*-rc\.[^"]*\)".*/\1/p' | head -1)
+      [[ -n "$tag" ]] || { echo "error: no rc release found in $REPO" >&2; exit 1; }
+      echo "$api/tags/$tag" ;;
+    *) echo "error: unknown channel '$CHANNEL' (stable|rc|dev)" >&2; exit 1 ;;
+  esac
+}
+
+download_release() {
+  local url tag asset sums tmp
+  url="$(resolve_release)"
+  local doc; doc="$(curl -fsSL "$url")" || { echo "error: no such release" >&2; exit 1; }
+  tag="$(printf '%s' "$doc" | gh_json_field tag_name)"
+  asset="$(printf '%s' "$doc" | grep -o "https://[^\"]*vquasar-$ROLE-[^\"]*\.tar\.gz" | head -1)"
+  sums="$(printf '%s' "$doc" | grep -o "https://[^\"]*SHA256SUMS" | head -1)"
+  [[ -n "$asset" ]] || { echo "error: release $tag has no $ROLE artifact" >&2; exit 1; }
+
+  tmp="$(mktemp -d)"; DOWNLOAD_TMP="$tmp"
+  echo "==> downloading $ROLE $tag from $REPO"
+  curl -fsSL -o "$tmp/$(basename "$asset")" "$asset"
+
+  if [[ -n "$sums" ]]; then
+    curl -fsSL -o "$tmp/SHA256SUMS" "$sums"
+    ( cd "$tmp" && grep " $(basename "$asset")\$" SHA256SUMS | sha256sum -c - >/dev/null ) \
+      || { echo "error: checksum mismatch for $(basename "$asset")" >&2; exit 1; }
+    echo "==> checksum ok"
+  else
+    echo "warning: release $tag publishes no SHA256SUMS; cannot check the bytes" >&2
+  fi
+
+  # Provenance is the stronger claim — it says *this workflow, from this commit*
+  # produced the file — but it needs `gh`, which a fresh host may not have. Say
+  # which check actually ran rather than implying both did.
+  if [[ "$NO_VERIFY" -eq 0 ]] && command -v gh >/dev/null 2>&1; then
+    if gh attestation verify "$tmp/$(basename "$asset")" --repo "$REPO" >/dev/null 2>&1; then
+      echo "==> provenance verified"
+    else
+      echo "error: provenance verification failed for $(basename "$asset")" >&2
+      echo "       pass --no-verify to install anyway (checksums still apply)" >&2
+      exit 1
+    fi
+  elif [[ "$NO_VERIFY" -eq 0 ]]; then
+    echo "note: gh not installed, so provenance was not verified (checksum was)" >&2
+  fi
+
+  tar -C "$tmp" -xzf "$tmp/$(basename "$asset")"
+  local root; root="$(find "$tmp" -maxdepth 1 -type d -name "vquasar-$ROLE-*" | head -1)"
+  BINARY="$root/$SVC"
+  [[ -z "$UI_DIR" && -d "$root/ui" ]] && UI_DIR="$root/ui"
+}
+
+# Locate the binary if not given: prefer release, then debug, then repo/cwd —
+# and fall back to a published build, which is what makes a bare `curl … | sh`
+# work on a host with no checkout.
+if [[ -z "$BINARY" && -z "$CHANNEL" && -z "$REL_VERSION" ]]; then
   for c in "$REPO_ROOT/target/release/$SVC" "$REPO_ROOT/target/debug/$SVC" "./$SVC" "$SVC"; do
     if [[ -x "$c" ]] || command -v "$c" >/dev/null 2>&1; then BINARY="$c"; break; fi
   done
+  [[ -z "$BINARY" ]] && CHANNEL=stable
+fi
+if [[ -z "$BINARY" ]]; then
+  for t in curl tar sha256sum; do
+    command -v "$t" >/dev/null 2>&1 || { echo "error: $t is required to download a release" >&2; exit 1; }
+  done
+  download_release
 fi
 if [[ -z "$BINARY" ]] || { [[ ! -x "$BINARY" ]] && ! command -v "$BINARY" >/dev/null 2>&1; }; then
   echo "error: could not find $SVC binary; pass --binary PATH" >&2; exit 1

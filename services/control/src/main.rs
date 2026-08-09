@@ -14,6 +14,13 @@ mod cpucompat;
 mod crypto;
 mod ipam;
 mod lease;
+
+/// What this binary is: the release it was built from, or the crate version
+/// when nothing stamped it. Set by `make` and by the release workflow.
+pub const BUILD: &str = match option_env!("VQUASAR_BUILD") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 mod metrics;
 mod netalloc;
 mod orphans;

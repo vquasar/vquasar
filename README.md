@@ -84,6 +84,15 @@ trusted network.
 
 ## Quickstart
 
+Install a control plane and an agent with one command each — see
+[**Installing vquasar**](docs/install.md):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vquasar/vquasar/main/scripts/install.sh \
+  | sudo sh -s -- control --allow-no-auth
+```
+
+
 Needs a stable Rust toolchain (see
 [`rust-toolchain.toml`](rust-toolchain.toml)), `protoc`
 (`apt install protobuf-compiler`), Node (CI builds the UI on Node 20), and a
