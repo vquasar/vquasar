@@ -547,6 +547,20 @@ Split into three shippable slices.
   rather than extended: a copy of half the rules looks authoritative right up
   until it is wrong, and these rules already live in three places on the server.
 
+- **Console: the command palette (⌘K).** ✅ **Done.** Jumps to any VM, host,
+  network, volume, storage pool, image, template or page, plus the actions the
+  caller has permission for.
+  It searches **only what the console has already loaded**. Every list comes
+  from a query hook that is already permission-gated and cached, so the palette
+  issues no requests of its own — it cannot be slow, and it cannot surface a
+  resource the caller may not read, because there was never anything to filter
+  out. Filtering after the fact is how a palette becomes an enumeration oracle.
+  Matching is plain substring ranked by where the match falls, not fuzzy: a
+  name that *starts* with what you typed beats one that merely contains it, and
+  that is the whole ranking. A fuzzy matcher reorders results unpredictably,
+  and the value of a palette is that the same three letters always land in the
+  same place. An empty query shows pages rather than every VM in the fleet.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH

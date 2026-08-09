@@ -6,7 +6,7 @@
 // set must not stand in for it.
 
 import { useState, type ReactNode } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import {
@@ -23,6 +23,7 @@ import {
 } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { ProjectSwitch } from "./ProjectSwitch";
+import { CommandPalette } from "./CommandPalette";
 import { useProject } from "../auth/ProjectProvider";
 import { formatRelative } from "../format";
 import { useProjects } from "../api/hooks";
@@ -271,8 +272,8 @@ function UserMenu() {
 }
 
 export function Layout({ children }: { children: ReactNode }) {
-  const navigate = useNavigate();
   const { pathname } = useLocation();
+  const [palette, setPalette] = useState(false);
   return (
     <CrumbProvider>
       <div className="vq-app">
@@ -281,9 +282,8 @@ export function Layout({ children }: { children: ReactNode }) {
           <header className="vq-topbar">
             <Breadcrumb />
             <div className="vq-spacer" />
-            {/* The palette itself is not designed yet — the affordance is wired
-                to the search that does exist. */}
-            <button className="vq-cmdk" onClick={() => navigate("/vms")}>
+            {/* The affordance and the palette are the same thing now. */}
+            <button className="vq-cmdk" onClick={() => setPalette(true)}>
               <kbd>⌘K</kbd>
               Search or run a command
             </button>
@@ -294,6 +294,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <main className={`vq-main${pathname === "/" ? " wide-gap" : ""}`}>{children}</main>
         </div>
       </div>
+      <CommandPalette open={palette} onOpenChange={setPalette} />
     </CrumbProvider>
   );
 }
