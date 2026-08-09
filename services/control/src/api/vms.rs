@@ -1016,10 +1016,24 @@ pub async fn migrate(
             "a migration is already in progress for this VM",
         ));
     }
-    // Live migration has always assumed the destination has the same storage
-    // mounted at the same path; nothing checked it, so a host without the mount
-    // failed at launch on the far side (ADR-023). Now it is a refusal here.
+    // A disk on local storage cannot arrive anywhere: the destination has its
+    // own filesystem behind the same pool name, and "migrating" there would
+    // start the guest on an empty disk. Refused rather than attempted
+    // (ADR-025).
     let needed = crate::scheduler::required_pools(&vm.spec.0);
+    let local = store.local_pool_ids().await?;
+    if let Some(pinned) = needed.iter().find(|p| local.contains(p)) {
+        let name = store
+            .get_storage_pool(*pinned)
+            .await?
+            .map(|p| p.name)
+            .unwrap_or_default();
+        return Err(ApiError::invalid(format!(
+            "this VM has a disk in storage pool {name:?}, which is local to its host. \
+             Another host cannot see those bytes, so a live migration would start the \
+             guest on an empty disk."
+        )));
+    }
     if !needed.is_empty() {
         let reachable = store
             .pools_by_host()

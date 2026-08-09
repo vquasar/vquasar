@@ -281,14 +281,16 @@ nothing downstream distinguishes them; a disk the control plane placed records
 its pool, and a disk at a raw operator-supplied path records none, so it
 constrains placement not at all.
 
+Every kind declares its **sharing** (ADR-025): `shared_dir` and `nfs` are
+shared, `local_dir` is not. That single bit changes what a host's report means —
+the same bytes seen N times, or N different disks with one name — and with it
+how capacity aggregates, whether a VM can be migrated, and whether a volume can
+be created there at all.
+
 The kinds still to come are the ones that are **not directories**: LVM thin,
-Ceph RBD, iSCSI, NVMe-oF. Those need two things this design does not yet have —
-volume provisioning in the agent rather than the control plane (an LV is not a
-file `qemu-img` can create), and a pool that declares whether its bytes are
-*shared between hosts* or local to one, because a local pool means a VM pinned
-to a host and a live migration that must be refused. Adding one before that
-would quietly break the assumption every part of placement now rests on: that a
-host reporting a pool can see that pool's data. Planned kinds:
+Ceph RBD, iSCSI, NVMe-oF. What they still need is volume provisioning in the
+agent rather than the control plane — an LV is not a file `qemu-img` can create,
+and a volume exists before any host has been chosen for it. Planned kinds:
 LVM thin, NFS, Ceph RBD/CephFS, iSCSI, NVMe-oF, SPDK, vhost-user-blk. Do not
 implement distributed storage.
 
@@ -561,6 +563,8 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-023** A storage pool is a named place to put bytes, and reachability is
   observed rather than declared.
 * **ADR-024** Egress policy is enforced or refused, never accepted and ignored.
+* **ADR-025** A pool declares whether its bytes are shared, and reachability
+  means two different things.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -907,6 +911,69 @@ Rejected: fencing by connection identity (the control plane presents one CN by
 design, so every instance looks alike — ADR-021); and having the agent read the
 lease from PostgreSQL, which would give the agent a database credential and the
 authority to decide who leads, undoing the boundary this design exists to hold.
+
+### ADR-025 — A pool declares whether its bytes are shared, and reachability means two different things
+
+*Status:* Accepted and implemented.
+
+*Context.* ADR-023 made reachability observed: a host reports the pools it can
+use, and the scheduler refuses one that does not report a VM's storage. Every
+rule built on that read a host's report as *"this host can see this volume's
+data"*.
+
+That reading is true only for shared storage. For storage attached to one host —
+local NVMe, an LVM volume group, a local directory — two hosts reporting the
+same pool have two different disks that happen to share a name. The report says
+"I have something called `nvme`", not "I can see your bytes". Nothing in the
+model distinguished the two, and nothing could: a path does not say who else can
+see it, which is the whole reason pools exist.
+
+Left alone, the failure is silent in the worst way. The scheduler would accept
+any host reporting the pool; a live migration would pass the ADR-023 check,
+transfer the guest's memory, and start it on the destination's *empty* disk. Not
+a slow migration — data loss that looks like a successful one.
+
+*Decision.* A pool's kind declares its **sharing**: `shared` (one filesystem
+every reporting host sees) or `local` (each host's own). It is a property of the
+kind, not a field an operator sets, because it is a fact about the technology
+rather than a preference — and a wrong answer here is not recoverable by
+retrying.
+
+Three things follow, and each is a place that was silently wrong for local
+storage:
+
+* **Capacity aggregates differently.** MIN across hosts for a shared pool (one
+  disk seen N times); SUM for a local one (N disks). Either rule applied
+  everywhere reports a fleet's storage wrong by a factor of N.
+* **A VM with a disk in a local pool is pinned.** Migration is refused by name,
+  and a drain reports it as pinned rather than as "no capacity" — different
+  problems with different fixes, and only one of them is worth waiting out.
+* **A volume cannot be created in a local pool.** A volume's file is built by
+  the control plane with `qemu-img`, and there is no host to build it on:
+  a volume exists before any VM references it, so nothing has chosen a host yet.
+  Refused with the alternative named — a VM disk in that pool, which the agent
+  creates on the host it lands on.
+
+The first local kind is `local_dir`, deliberately the same shape as
+`shared_dir`. That it is *identical apart from the declaration* is the point:
+nothing about `/var/lib/vquasar/local` tells you whether another host can see
+it, so the pool has to say.
+
+*Consequences.* Placement of a *new* VM on a local pool is unrestricted — the
+disk does not exist yet, so any reporting host will do — and it is only
+afterwards that the VM cannot move. This is the correct order and worth stating
+because it looks inconsistent: the constraint is on the bytes, and there are
+none until the agent creates them.
+
+This is also the prerequisite the block-storage kinds were waiting on. LVM thin,
+iSCSI and NVMe-oF are local; Ceph RBD is shared. None could be added while every
+placement rule assumed the shared reading. What they still need is the other
+half: volume provisioning in the agent rather than the control plane.
+
+Rejected: making sharing an operator-set field on every pool. It is not a
+preference — a directory on local NVMe is not shared because someone ticked a
+box, and the box would eventually be ticked wrong on exactly the pool where it
+costs a guest its disk.
 
 ### ADR-024 — Egress policy is enforced or refused, never accepted and ignored
 

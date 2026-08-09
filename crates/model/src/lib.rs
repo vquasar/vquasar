@@ -27,7 +27,7 @@ pub use meta::{Generation, Metadata};
 pub use network::{NetworkKind, NetworkValidationError, SegmentKey};
 pub use project::{Project, Scope, DEFAULT_PROJECT_ID};
 pub use storage::{
-    validate_pool_name, PoolParams, PoolValidationError, StoragePoolKind, StoragePoolState,
+    validate_pool_name, PoolParams, PoolValidationError, Sharing, StoragePoolKind, StoragePoolState,
 };
 pub use validation::ValidationError;
 pub use vm::{

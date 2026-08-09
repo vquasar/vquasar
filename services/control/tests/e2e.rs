@@ -2122,6 +2122,143 @@ async fn storage_policy_is_carried_or_refused_but_never_guessed() {
     );
 }
 
+/// A pool declares whether its bytes are shared, and every rule that assumed
+/// "reported ⇒ reachable" has to change with it (ADR-025).
+#[tokio::test]
+async fn local_storage_pins_a_vm_and_says_so() {
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR",
+        "/x/shared/volumes",
+    )])
+    .await;
+
+    let (st, local) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "nvme", "kind": "local_dir", "path": "/x/nvme"}),
+        )
+        .await;
+    assert!(st.is_success(), "{local}");
+    let local_id = local["id"].as_str().unwrap().to_string();
+    assert_eq!(local["sharing"], "local");
+    assert!(
+        local["sharing_note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot be live-migrated"),
+        "{local}"
+    );
+    // The seeded default is shared, and says so — the two are told apart by
+    // the pool, never by the path.
+    let pools = h.get("/storage-pools").await;
+    let default = pools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "default")
+        .unwrap()
+        .clone();
+    assert_eq!(default["sharing"], "shared");
+
+    // A volume is built by the control plane, which cannot reach another
+    // host's disk. Refused, naming what to do instead.
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "v", "size_bytes": 1024, "pool": "nvme"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(format!("{body}").contains("local to each host"), "{body}");
+
+    // Two hosts, both reporting both pools.
+    let (pa, pb) = (free_port(), free_port());
+    let a = spawn_agent("hostA", pa);
+    let _b = spawn_agent("hostB", pb);
+    let host_a = h.register_host("hostA", pa).await;
+    let host_b = h.register_host("hostB", pb).await;
+
+    // Capacity: a shared pool is one filesystem seen twice, a local one is two
+    // filesystems. Reporting either the same way is wrong by a factor of N.
+    let ready = h
+        .wait_for(
+            &format!("/storage-pools/{local_id}"),
+            |p| p["reachable_hosts"] == json!(2),
+            "both hosts reporting the local pool",
+        )
+        .await;
+    assert_eq!(ready["capacity_bytes"], json!(FAKE_POOL_CAPACITY * 2));
+    let shared = h
+        .get(&format!(
+            "/storage-pools/{}",
+            default["id"].as_str().unwrap()
+        ))
+        .await;
+    assert_eq!(shared["reachable_hosts"], json!(2));
+    assert_eq!(shared["capacity_bytes"], json!(FAKE_POOL_CAPACITY));
+
+    // A VM with a disk in the local pool schedules normally — the file does not
+    // exist yet, so any reporting host will do.
+    let mut spec = vm_spec();
+    spec["disks"] = json!([{
+        "path": "/x/nvme/vm.qcow2", "image_type": "qcow2", "pool": local_id,
+    }]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "pinned", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm_id = v["vm_id"].as_str().unwrap().to_string();
+    let vm = h
+        .wait_for(
+            &format!("/vms/{vm_id}"),
+            |v| v["phase"] == "Running",
+            "the pinned VM running",
+        )
+        .await;
+    let placed_on = vm["host_id"].as_str().unwrap().to_string();
+    let elsewhere = if placed_on == host_a {
+        &host_b
+    } else {
+        &host_a
+    };
+
+    // …and then it cannot leave. The other host reports the pool, so the
+    // ADR-023 reachability check passes — this refusal is a different one, and
+    // without it the guest would start on an empty disk.
+    let (st, body) = h
+        .post(
+            &format!("/vms/{vm_id}/migrate"),
+            json!({"target_host_id": elsewhere}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(format!("{body}").contains("local to its host"), "{body}");
+    assert!(
+        format!("{body}").contains("nvme"),
+        "the pool is named: {body}"
+    );
+
+    // A drain says the same thing rather than reporting it as no capacity.
+    let (st, drain) = h
+        .post(&format!("/hosts/{placed_on}/drain"), json!({}))
+        .await;
+    assert!(st.is_success(), "{drain}");
+    let skipped = drain["skipped"]
+        .as_array()
+        .map(|s| {
+            s.iter().any(|x| {
+                x["vm_id"] == json!(vm_id)
+                    && x["reason"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("local storage")
+            })
+        })
+        .unwrap_or(false);
+    assert!(skipped, "drain did not name the pin: {drain}");
+    let _ = a;
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback
