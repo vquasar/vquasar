@@ -154,17 +154,9 @@ impl HostAgent for AgentService {
                     })
                     .collect(),
                 filtered: n.filtered,
-                ingress_rules: n
-                    .ingress_rules
-                    .into_iter()
-                    .map(|r| crate::firewall::SecRule {
-                        ipv6: r.ipv6,
-                        protocol: r.protocol,
-                        port_min: r.port_min as u16,
-                        port_max: r.port_max as u16,
-                        remote_cidr: r.remote_cidr,
-                    })
-                    .collect(),
+                ingress_rules: n.ingress_rules.into_iter().map(sec_rule).collect(),
+                egress_rules: n.egress_rules.into_iter().map(sec_rule).collect(),
+                egress_default_deny: n.egress_default_deny,
             })
             .collect();
         let network_config = Some(req.network_config).filter(|s| !s.is_empty());
@@ -308,6 +300,18 @@ impl HostAgent for AgentService {
             Err(_lagged) => None,
         });
         Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+/// One wire rule to one firewall rule. Direction is the list it came from, so
+/// both directions share this.
+fn sec_rule(r: vquasar_proto::agent::SecurityRule) -> crate::firewall::SecRule {
+    crate::firewall::SecRule {
+        ipv6: r.ipv6,
+        protocol: r.protocol,
+        port_min: r.port_min as u16,
+        port_max: r.port_max as u16,
+        remote_cidr: r.remote_cidr,
     }
 }
 

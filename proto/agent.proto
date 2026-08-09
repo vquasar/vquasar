@@ -211,6 +211,13 @@ message NetworkBinding {
   // field ignores it and keeps cleartext tunnels, so control warns rather than
   // assuming the fleet is protected.
   bool encrypt_underlay = 8;
+  // Egress allow-list, meaningful only with `egress_default_deny` (design §18).
+  repeated SecurityRule egress_rules = 9;
+  // Turn egress into default-deny for this NIC. Off unless the platform says
+  // otherwise, because flipping a running fleet to default-deny egress cuts
+  // every guest off from everything it was reaching. An agent that predates
+  // this field ignores it and keeps allowing egress.
+  bool egress_default_deny = 10;
 }
 
 // A peer host in a VXLAN mesh (design §18, M18b).
@@ -223,8 +230,9 @@ message OverlayPeer {
   string cert_cn = 2;
 }
 
-// One resolved ingress allow-rule for a NIC (design M13c). Egress is allowed by
-// default in v1, so only ingress rules are sent.
+// One resolved allow-rule for a NIC (design M13c). The same shape serves both
+// directions; which one it is comes from the field it arrives in. `remote_cidr`
+// is the source on ingress and the destination on egress.
 message SecurityRule {
   bool ipv6 = 1;
   // tcp | udp | icmp | any

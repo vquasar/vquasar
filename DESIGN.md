@@ -538,6 +538,7 @@ Cloud Hypervisor OpenAPI; keep CH-specific request/response types inside
 * **ADR-022** The agent rejects a superseded controller by lease epoch.
 * **ADR-023** A storage pool is a named place to put bytes, and reachability is
   observed rather than declared.
+* **ADR-024** Egress policy is enforced or refused, never accepted and ignored.
 
 ### ADR-016 — A network's type declares its isolation guarantee
 
@@ -884,6 +885,57 @@ Rejected: fencing by connection identity (the control plane presents one CN by
 design, so every instance looks alike — ADR-021); and having the agent read the
 lease from PostgreSQL, which would give the agent a database credential and the
 authority to decide who leads, undoing the boundary this design exists to hold.
+
+### ADR-024 — Egress policy is enforced or refused, never accepted and ignored
+
+*Status:* Accepted and implemented.
+
+*Context.* Security-group rules carry a `direction`, and the API accepted,
+validated, stored and displayed `egress` rules from the day they existed. The
+agent enforced none of them: its conntrack policy is default-deny ingress and
+default-**allow** egress, and the control plane filtered egress rules out before
+they reached the wire. An operator could write "this tenant may only reach
+10.9.0.0/16 on 443", see it listed on the group, and have it mean nothing.
+
+That is worse than not offering egress rules at all. An unenforced allow-list
+is a control someone believes in and does not have, and belief is what a
+security control is for.
+
+Underneath it is the isolation gap itself: with egress unrestricted, a
+compromised guest in one tenant can originate traffic to the management
+underlay, to the control plane's API, and to any provider network the fleet
+carries. VXLAN separates tenants at L2 (ADR-016); nothing separated them at L3
+in the outbound direction.
+
+*Decision.* Egress becomes a real default-deny policy, gated on `[network]
+egress_mode`. `allow` (the default) is today's behaviour. `enforced` makes a
+filtered NIC's egress default-deny, with its groups' egress rules as the
+allow-list; established and related return traffic, ARP, DHCP and ICMPv6
+neighbour discovery keep flowing, or the guest could not use the network at all.
+
+**And the API refuses to record an egress rule while the mode is `allow`**,
+saying which setting would make it enforceable. That refusal is the load-bearing
+half: without it the console still shows rules that do nothing, and the fix
+would have moved the lie rather than removed it. The control plane also does not
+send egress rules to agents when the mode is off — an allow-list the agent will
+not act on is a guarantee invented from a setting that is disabled.
+
+*Consequences.* The default stays `allow`, deliberately. Flipping a running
+fleet to default-deny egress cuts every filtered guest off from DNS, its package
+mirrors and everything else it reaches today; that is an operator's decision,
+taken once with a maintenance window, not something an upgrade does to them.
+The asymmetry with ingress — which is default-deny — is not a judgement that
+outbound matters less. It is that a new NIC has never had inbound reachability
+to lose, and an existing one has all of its outbound.
+
+An agent that predates the new fields ignores them and keeps allowing egress, so
+a fleet mid-upgrade degrades to the old behaviour rather than to a guest that
+cannot reach anything.
+
+Rejected: inferring default-deny from the presence of any egress rule in a
+group (the OpenStack model). It makes adding one rule silently revoke every
+other destination, which is the same surprise as flipping the mode except that
+nobody chose it.
 
 ### ADR-023 — A storage pool is a named place to put bytes, and reachability is observed
 

@@ -1,10 +1,21 @@
 //! Per-NIC stateful security groups on Open vSwitch (design M13c).
 //!
 //! When a NIC has security groups, the agent programs a conntrack firewall on
-//! its TAP: default-deny ingress, allow egress, and always allow the return
-//! traffic of established/related connections. ARP, DHCP and ICMPv6 (neighbour
-//! discovery) are permitted so basic L2/IPAM keeps working. Ingress `rules` are
-//! the allow-list.
+//! its TAP: default-deny ingress, and always allow the return traffic of
+//! established/related connections. ARP, DHCP and ICMPv6 (neighbour discovery)
+//! are permitted so basic L2/IPAM keeps working.
+//!
+//! Egress is default-*allow* unless the platform says otherwise
+//! ([`Policy::egress_default_deny`]). That asymmetry is deliberate and not a
+//! judgement about which direction matters: turning a running fleet to
+//! default-deny egress cuts every guest off from everything it was reaching,
+//! including its own package mirrors and DNS. It is an operator decision, taken
+//! once, not a default that arrives with an upgrade.
+//!
+//! With it on, a guest may originate only what its groups' egress rules allow —
+//! which is what stops a compromised guest in one tenant from reaching the
+//! management underlay, the control plane, or another tenant's provider
+//! network.
 //!
 //! Flows live in two tables so the bridge's default `NORMAL` flow still forwards
 //! everything else: table 0 classifies a NIC's traffic into conntrack, and a
@@ -20,7 +31,7 @@ type Result<T> = std::result::Result<T, NetworkError>;
 
 const RESULT_TABLE: u32 = 60;
 
-/// One resolved ingress allow-rule.
+/// One resolved allow-rule. The direction is the list it lives in.
 #[derive(Debug, Clone)]
 pub struct SecRule {
     pub ipv6: bool,
@@ -28,8 +39,29 @@ pub struct SecRule {
     pub protocol: String,
     pub port_min: u16,
     pub port_max: u16,
-    /// Allowed source CIDR; empty ⇒ any.
+    /// The remote end: the source on ingress, the destination on egress.
+    /// Empty ⇒ any.
     pub remote_cidr: String,
+}
+
+/// The resolved policy for one NIC.
+#[derive(Debug, Clone, Default)]
+pub struct Policy {
+    pub ingress: Vec<SecRule>,
+    /// Only meaningful with `egress_default_deny`: under default-allow every
+    /// egress rule is a no-op, so the control plane refuses to record one
+    /// rather than accept a rule that does nothing.
+    pub egress: Vec<SecRule>,
+    pub egress_default_deny: bool,
+}
+
+/// Which end of a rule the remote CIDR describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dir {
+    /// Remote is the source, and the packet is addressed to this NIC.
+    Ingress,
+    /// Remote is the destination, and the packet comes from this NIC.
+    Egress,
 }
 
 /// A tiny FNV-1a hash, used for a stable per-TAP cookie and conntrack zone.
@@ -80,7 +112,7 @@ fn port_masks(min: u16, max: u16) -> Vec<(u16, u16)> {
 
 /// The OVS match tokens for a rule's protocol/ports/source, or `None` if the
 /// rule is malformed (skipped rather than failing the whole NIC).
-fn rule_matches(r: &SecRule) -> Vec<String> {
+fn rule_matches(r: &SecRule, dir: Dir) -> Vec<String> {
     let proto = match (r.protocol.as_str(), r.ipv6) {
         ("tcp", false) => "tcp",
         ("tcp", true) => "tcp6",
@@ -91,12 +123,16 @@ fn rule_matches(r: &SecRule) -> Vec<String> {
         (_, false) => "ip", // "any"
         (_, true) => "ipv6",
     };
-    let src = if r.remote_cidr.trim().is_empty() {
-        String::new()
-    } else if r.ipv6 {
-        format!(",ipv6_src={}", r.remote_cidr.trim())
-    } else {
-        format!(",nw_src={}", r.remote_cidr.trim())
+    // The remote end is the source of an inbound packet and the destination of
+    // an outbound one. Matching `nw_src` on an egress rule would be asking
+    // where the guest's own packet came from, which is always the guest.
+    let cidr = r.remote_cidr.trim();
+    let src = match (cidr.is_empty(), dir, r.ipv6) {
+        (true, _, _) => String::new(),
+        (false, Dir::Ingress, false) => format!(",nw_src={cidr}"),
+        (false, Dir::Ingress, true) => format!(",ipv6_src={cidr}"),
+        (false, Dir::Egress, false) => format!(",nw_dst={cidr}"),
+        (false, Dir::Egress, true) => format!(",ipv6_dst={cidr}"),
     };
 
     let ports = matches!(r.protocol.as_str(), "tcp" | "udp")
@@ -157,7 +193,8 @@ pub fn build_port_security_flows(tap: &str, mac: &str) -> Vec<String> {
 }
 
 /// Build the full flow set for a NIC's firewall (pure — unit-tested).
-pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
+pub fn build_flows(tap: &str, mac: &str, policy: &Policy) -> Vec<String> {
+    let rules = &policy.ingress;
     let c = cookie_for(tap);
     let z = zone_for(tap);
     let ct = format!("ct(table={RESULT_TABLE},zone={z})");
@@ -211,19 +248,39 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
     f.push(format!(
         "cookie={c},table={RESULT_TABLE},priority=100,ct_zone={z},ct_state=+inv+trk,actions=drop"
     ));
-    // New egress from the VM is allowed (default-allow egress), commit it. A
-    // ct(commit) action requires a known dl_type, so match ip / ipv6 explicitly.
-    // `dl_src` is redundant here — nothing reaches this table without passing
-    // the table-0 egress rules, which pin it — but it keeps "every egress match
-    // names the MAC" true no matter how table 0 is edited later.
-    for l3 in ["ip", "ipv6"] {
+    if policy.egress_default_deny {
+        // Only what the groups allow may leave. Each rule is matched on the
+        // *destination*, and anything else new from this NIC dies at the drop
+        // below.
+        for r in &policy.egress {
+            for m in rule_matches(r, Dir::Egress) {
+                f.push(format!(
+                    "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},dl_src={mac},{m},actions={commit}"
+                ));
+            }
+        }
+        // Sits above the ingress default-deny only so the two are readable as a
+        // pair; they cannot both match one packet (this one keys on `in_port`,
+        // that one on `dl_dst`).
         f.push(format!(
-            "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},dl_src={mac},{l3},actions={commit}"
+            "cookie={c},table={RESULT_TABLE},priority=20,ct_zone={z},ct_state=+new+trk,in_port={tap},dl_src={mac},actions=drop"
         ));
+    } else {
+        // New egress from the VM is allowed (default-allow egress), commit it.
+        // A ct(commit) action requires a known dl_type, so match ip / ipv6
+        // explicitly. `dl_src` is redundant here — nothing reaches this table
+        // without passing the table-0 egress rules, which pin it — but it keeps
+        // "every egress match names the MAC" true no matter how table 0 is
+        // edited later.
+        for l3 in ["ip", "ipv6"] {
+            f.push(format!(
+                "cookie={c},table={RESULT_TABLE},priority=90,ct_zone={z},ct_state=+new+trk,in_port={tap},dl_src={mac},{l3},actions={commit}"
+            ));
+        }
     }
     // New ingress: only where an allow-rule matches.
     for r in rules {
-        for m in rule_matches(r) {
+        for m in rule_matches(r, Dir::Ingress) {
             f.push(format!(
                 "cookie={c},table={RESULT_TABLE},priority=80,ct_zone={z},ct_state=+new+trk,dl_dst={mac},{m},actions={commit}"
             ));
@@ -243,10 +300,10 @@ pub fn build_flows(tap: &str, mac: &str, rules: &[SecRule]) -> Vec<String> {
 }
 
 /// Install the firewall for a NIC's TAP on `bridge`.
-pub async fn apply(bridge: &str, tap: &str, mac: &str, rules: &[SecRule]) -> Result<()> {
+pub async fn apply(bridge: &str, tap: &str, mac: &str, policy: &Policy) -> Result<()> {
     // Replace any prior flows for this TAP first (idempotent reconcile).
     clear(bridge, tap).await?;
-    let flows = build_flows(tap, mac, rules).join("\n");
+    let flows = build_flows(tap, mac, policy).join("\n");
     let output = ovs_ofctl_stdin(&["add-flows", bridge, "-"], &flows).await?;
     if output.status.success() {
         Ok(())
@@ -332,12 +389,20 @@ mod tests {
         assert!(!masks.iter().any(|(v, m)| (2001u16 & m) == (v & m)));
     }
 
+    /// Today's policy: an ingress allow-list over default-allow egress.
+    fn ingress_only(rules: Vec<SecRule>) -> Policy {
+        Policy {
+            ingress: rules,
+            ..Policy::default()
+        }
+    }
+
     #[test]
     fn build_has_default_deny_and_stateful_and_allow() {
         let flows = build_flows(
             "tapabc0",
             "02:aa:bb:cc:dd:ee",
-            &[rule("tcp", 22, 22, "10.0.0.0/24")],
+            &ingress_only(vec![rule("tcp", 22, 22, "10.0.0.0/24")]),
         );
         let all = flows.join("\n");
         // stateful return traffic
@@ -359,14 +424,96 @@ mod tests {
     #[test]
     fn icmp_and_any_and_ipv6_protocol_tokens() {
         let mut r = rule("icmp", 0, 0, "");
-        assert_eq!(rule_matches(&r), vec!["icmp".to_string()]);
+        assert_eq!(rule_matches(&r, Dir::Ingress), vec!["icmp".to_string()]);
         r.ipv6 = true;
-        assert_eq!(rule_matches(&r), vec!["icmp6".to_string()]);
+        assert_eq!(rule_matches(&r, Dir::Ingress), vec!["icmp6".to_string()]);
         let any = rule("any", 0, 0, "192.168.0.0/16");
         assert_eq!(
-            rule_matches(&any),
+            rule_matches(&any, Dir::Ingress),
             vec!["ip,nw_src=192.168.0.0/16".to_string()]
         );
+    }
+
+    /// The default has to stay default-allow egress: flipping a running fleet
+    /// would cut every filtered guest off from DNS, its mirrors and everything
+    /// else it reaches today.
+    #[test]
+    fn egress_is_allowed_unless_the_platform_says_otherwise() {
+        let f = build_flows("tap0", MAC, &ingress_only(vec![])).join("\n");
+        // A blanket commit of new egress, and no egress drop.
+        assert!(f.contains(&format!(
+            "ct_state=+new+trk,in_port=tap0,dl_src={MAC},ip,actions="
+        )));
+        assert!(
+            !f.contains(&format!("in_port=tap0,dl_src={MAC},actions=drop")),
+            "egress was denied without being asked: {f}"
+        );
+    }
+
+    /// With it on, a guest may originate only what its groups allow — the
+    /// property that keeps a compromised guest off the underlay.
+    #[test]
+    fn enforced_egress_allows_only_what_a_rule_names() {
+        let policy = Policy {
+            ingress: vec![],
+            egress: vec![rule("tcp", 443, 443, "10.9.0.0/16")],
+            egress_default_deny: true,
+        };
+        let f = build_flows("tap0", MAC, &policy).join("\n");
+        // The allow, matched on where the packet is *going*.
+        assert!(f.contains("tp_dst=443"), "{f}");
+        assert!(
+            f.contains("nw_dst=10.9.0.0/16"),
+            "an egress rule must match the destination, not the source: {f}"
+        );
+        assert!(!f.contains("nw_src=10.9.0.0/16"), "{f}");
+        // And the drop that makes the allow mean something.
+        assert!(
+            f.contains(&format!(
+                "priority=20,ct_zone={},ct_state=+new+trk,in_port=tap0,dl_src={MAC},actions=drop",
+                zone_for("tap0")
+            )),
+            "{f}"
+        );
+        // The blanket "commit anything new from this NIC" must be gone, or the
+        // drop below it is unreachable.
+        assert!(
+            !f.contains(&format!(
+                "ct_state=+new+trk,in_port=tap0,dl_src={MAC},ip,actions="
+            )),
+            "default-allow egress survived alongside the deny: {f}"
+        );
+    }
+
+    /// Return traffic still flows: a default-deny egress policy that also broke
+    /// replies to permitted inbound connections would look like a network fault.
+    #[test]
+    fn enforced_egress_still_lets_established_traffic_back_out() {
+        let policy = Policy {
+            ingress: vec![rule("tcp", 22, 22, "")],
+            egress: vec![],
+            egress_default_deny: true,
+        };
+        let f = build_flows("tap0", MAC, &policy).join("\n");
+        assert!(f.contains("ct_state=+est+trk,actions=NORMAL"), "{f}");
+        assert!(f.contains("ct_state=+rel+trk,actions=NORMAL"), "{f}");
+        // ARP and DHCP are still let through, or the guest cannot use the
+        // network at all.
+        assert!(f.contains("arp,actions=NORMAL"), "{f}");
+        assert!(f.contains("tp_dst=67,actions=NORMAL"), "{f}");
+    }
+
+    /// An egress rule with no CIDR is "anywhere on this port", not "nowhere".
+    #[test]
+    fn an_egress_rule_without_a_cidr_matches_any_destination() {
+        let policy = Policy {
+            ingress: vec![],
+            egress: vec![rule("udp", 53, 53, "")],
+            egress_default_deny: true,
+        };
+        let f = build_flows("tap0", MAC, &policy).join("\n");
+        assert!(f.contains("udp,tp_dst=53,actions="), "{f}");
+        assert!(!f.contains("nw_dst="), "{f}");
     }
 
     // ---- port security (design §30) -----------------------------------
@@ -412,7 +559,7 @@ mod tests {
     fn arp_must_carry_the_guests_own_sender_address() {
         for f in [
             build_port_security_flows("tap0", MAC),
-            build_flows("tap0", MAC, &[]),
+            build_flows("tap0", MAC, &Policy::default()),
         ] {
             let arp_out: Vec<_> = f
                 .iter()
@@ -432,7 +579,7 @@ mod tests {
     /// present — the two layers are independent.
     #[test]
     fn filtered_nic_also_pins_the_mac_and_drops_the_rest() {
-        let f = build_flows("tap0", MAC, &[rule("tcp", 22, 22, "")]);
+        let f = build_flows("tap0", MAC, &ingress_only(vec![rule("tcp", 22, 22, "")]));
         egress_rules_all_pin_the_mac(&f);
         assert!(
             f.iter().any(|r| r.contains(&format!(
@@ -453,7 +600,7 @@ mod tests {
     fn no_flow_admits_another_vms_mac_on_egress() {
         for f in [
             build_port_security_flows("tap0", MAC),
-            build_flows("tap0", MAC, &[rule("tcp", 0, 0, "")]),
+            build_flows("tap0", MAC, &ingress_only(vec![rule("tcp", 0, 0, "")])),
         ] {
             for r in &f {
                 if r.contains(OTHER) {
@@ -471,7 +618,7 @@ mod tests {
 
     #[test]
     fn dhcp_still_works_through_port_security() {
-        let f = build_flows("tap0", MAC, &[]);
+        let f = build_flows("tap0", MAC, &Policy::default());
         let dhcp_out = f
             .iter()
             .find(|r| r.contains("tp_src=68") && r.contains("in_port=tap0"))

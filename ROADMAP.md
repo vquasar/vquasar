@@ -251,7 +251,25 @@ Split into three shippable slices.
   (per-TAP cookie + conntrack zone; ARP/DHCP/ICMPv6 permitted), so it filters
   guest-to-guest traffic on the same L2 too. Follow-ups: remote-group refs,
   egress enforcement, per-tenant default groups.
-- Per-tenant network isolation beyond M18/M19. **Queued behind M21.**
+- **M19b — egress enforcement** (ADR-024). ✅ **Done.** Security groups carried
+  a `direction` and the API accepted, stored and displayed `egress` rules from
+  the day they existed; nothing enforced them. The agent's policy was
+  default-deny ingress and default-*allow* egress, and the control plane
+  filtered egress rules out before the wire — so an operator could write "this
+  tenant may only reach 10.9.0.0/16 on 443", see it listed, and have it mean
+  nothing. Underneath: a compromised guest could originate traffic to the
+  management underlay, the control-plane API, and any provider network the
+  fleet carries. VXLAN separates tenants at L2; nothing separated them
+  outbound.
+  `[network] egress_mode = "enforced"` makes a filtered NIC's egress
+  default-deny with its groups' egress rules as the allow-list (return traffic,
+  ARP, DHCP and ICMPv6 ND still flow). The default stays `allow`, because
+  flipping a running fleet cuts every guest off from DNS and its mirrors — an
+  operator's decision, not an upgrade's. **And the API now refuses to record an
+  egress rule while the mode is `allow`**, naming the setting that would make it
+  enforceable: that refusal is what removes the lie rather than moving it.
+  Remaining follow-ups from M18/M19: remote-group references, and per-tenant
+  default groups.
 - **M13d — Change a NIC's network on a running VM.** ✅ **Done.** `PUT
   /vms/:id/nics/:index` retargets a NIC (network + optional security groups). The
   TAP name is stable per (vm, nic), so the agent re-homes it on OVS — move it to
