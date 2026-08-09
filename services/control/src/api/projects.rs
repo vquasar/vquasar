@@ -75,6 +75,14 @@ pub async fn create(
         .insert_project(&body.name, body.description.as_deref())
         .await
         .map_err(duplicate_name)?;
+    // A project carries a policy group from the moment it exists, the way a
+    // network does (ADR-017): a tenant's baseline has to have somewhere to go
+    // that is not a provider network every other tenant shares (design §18).
+    let sg = store
+        .insert_project_default_group(project.id, &project.name)
+        .await?;
+    store.set_project_default_group(project.id, sg).await?;
+    let project = store.get_project(project.id).await?.unwrap_or(project);
     Ok((StatusCode::CREATED, Json(project)))
 }
 

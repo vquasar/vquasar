@@ -313,6 +313,18 @@ running fleet. There is deliberately no discard/TRIM switch — Cloud Hypervisor
 exposes no knob for it, and a field that is stored and ignored is the failure
 ADR-024 names.
 
+A NIC's effective policy is the union of its network's default group, its
+**project's** default group, and the groups the NIC names (ADR-017, extended).
+The project default exists because a provider or VLAN network is
+platform-shared: a rule on its default would apply to every tenant on it, while
+a tenant network's default is already one project's.
+
+A rule's remote may be a CIDR or a security **group**, never both. A group is
+resolved to its members' allocated addresses on every reconcile tick, so a rule
+tracks membership rather than addresses. Observed addresses are deliberately not
+used: they come from an ARP sweep or a guest's own callback, and a guest must
+not be able to talk itself into an allow-list.
+
 ## 21. Images
 
 Separate images from volumes. Image metadata eventually: name, architecture,

@@ -935,7 +935,16 @@ async fn resolve_bindings(
         // so an upgrade changes nothing.
         let mut groups = nic.security_groups.clone();
         if store.network_policy().policy_enforced() {
-            if let Some(default) = network.default_security_group_id {
+            // The network's default, and the project's. A tenant network
+            // belongs to one project, so its default is already that tenant's;
+            // a provider or VLAN network is platform-shared, and a rule added
+            // to *its* default would apply to every tenant on it. The project
+            // default is where a tenant's baseline goes instead (design §18).
+            let project_default = store.project_default_group(vm.id).await?;
+            for default in [network.default_security_group_id, project_default]
+                .into_iter()
+                .flatten()
+            {
                 if !groups.contains(&default) {
                     groups.push(default);
                 }
@@ -946,17 +955,22 @@ async fn resolve_bindings(
             (false, Vec::new(), Vec::new())
         } else {
             let all = store.rules_for_groups(&groups).await?;
-            let wire = |r: &crate::store::SecurityGroupRule| vquasar_proto::agent::SecurityRule {
-                ipv6: r.ethertype.eq_ignore_ascii_case("IPv6"),
-                protocol: r.protocol.clone(),
-                port_min: r.port_min.unwrap_or(0).max(0) as u32,
-                port_max: r.port_max.unwrap_or(0).max(0) as u32,
-                remote_cidr: r.remote_cidr.clone().unwrap_or_default(),
+            // A rule naming a group is resolved to its members' addresses here,
+            // on every tick — which is what makes "the web tier may reach the
+            // database tier" survive a VM being replaced. One rule becomes one
+            // per address; a group with no addressable member becomes none, and
+            // so matches nothing, which is the safe direction.
+            let remotes: Vec<uuid::Uuid> = all.iter().filter_map(|r| r.remote_group_id).collect();
+            let members = if remotes.is_empty() {
+                crate::store::GroupMembers::new()
+            } else {
+                store.addresses_in_groups(&remotes).await?
             };
+            let wire = |r: &crate::store::SecurityGroupRule| expand_rule(r, &members);
             let ingress = all
                 .iter()
                 .filter(|r| r.direction == "ingress")
-                .map(&wire)
+                .flat_map(&wire)
                 .collect();
             // Only when egress is enforced. Sending an allow-list the agent
             // will not act on would be inventing a guarantee out of a config
@@ -964,7 +978,7 @@ async fn resolve_bindings(
             let egress = if egress_default_deny {
                 all.iter()
                     .filter(|r| r.direction == "egress")
-                    .map(&wire)
+                    .flat_map(&wire)
                     .collect()
             } else {
                 Vec::new()
@@ -988,6 +1002,46 @@ async fn resolve_bindings(
         });
     }
     Ok(Some(bindings))
+}
+
+/// One stored rule as the rules that go on the wire.
+///
+/// A rule naming a CIDR is itself. A rule naming a *group* becomes one rule per
+/// member address — which is what makes "the web tier may reach the database
+/// tier" survive a VM being replaced, since this is recomputed every tick.
+///
+/// Two properties are load-bearing. A member address of the wrong family is
+/// dropped: putting an IPv6 address into an IPv4 rule produces a match the
+/// dataplane cannot make, and a rule that silently matches nothing is worse
+/// than one that is not there. And a group with no addressable members expands
+/// to *nothing* rather than to "any" — the safe direction, and the one an
+/// operator would not think to check.
+fn expand_rule(
+    r: &crate::store::SecurityGroupRule,
+    members: &crate::store::GroupMembers,
+) -> Vec<vquasar_proto::agent::SecurityRule> {
+    let base = vquasar_proto::agent::SecurityRule {
+        ipv6: r.ethertype.eq_ignore_ascii_case("IPv6"),
+        protocol: r.protocol.clone(),
+        port_min: r.port_min.unwrap_or(0).max(0) as u32,
+        port_max: r.port_max.unwrap_or(0).max(0) as u32,
+        remote_cidr: r.remote_cidr.clone().unwrap_or_default(),
+    };
+    let Some(group) = r.remote_group_id else {
+        return vec![base];
+    };
+    members
+        .get(&group)
+        .map(|ips| {
+            ips.iter()
+                .filter(|ip| ip.contains(':') == base.ipv6)
+                .map(|ip| vquasar_proto::agent::SecurityRule {
+                    remote_cidr: format!("{ip}/{}", if base.ipv6 { 128 } else { 32 }),
+                    ..base.clone()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn phase_string(proto_phase: i32) -> &'static str {
@@ -1042,5 +1096,85 @@ mod tests {
         assert_eq!(underlay_ip("chnode1.lab").as_deref(), Some("chnode1.lab"));
         assert_eq!(underlay_ip("[fd00::1]:9500").as_deref(), Some("fd00::1"));
         assert_eq!(underlay_ip("").as_deref(), None);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn rule(
+        ethertype: &str,
+        cidr: Option<&str>,
+        group: Option<uuid::Uuid>,
+    ) -> crate::store::SecurityGroupRule {
+        crate::store::SecurityGroupRule {
+            id: uuid::Uuid::new_v4(),
+            security_group_id: uuid::Uuid::new_v4(),
+            direction: "ingress".into(),
+            ethertype: ethertype.into(),
+            protocol: "tcp".into(),
+            port_min: Some(5432),
+            port_max: Some(5432),
+            remote_cidr: cidr.map(str::to_string),
+            remote_group_id: group,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_cidr_rule_passes_through_unchanged() {
+        let r = rule("IPv4", Some("10.0.0.0/8"), None);
+        let out = expand_rule(&r, &crate::store::GroupMembers::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].remote_cidr, "10.0.0.0/8");
+    }
+
+    #[test]
+    fn a_group_rule_becomes_one_rule_per_member_address() {
+        let g = uuid::Uuid::new_v4();
+        let mut members = crate::store::GroupMembers::new();
+        members.insert(g, vec!["10.40.0.5".into(), "10.40.0.9".into()]);
+        let out = expand_rule(&rule("IPv4", None, Some(g)), &members);
+        let cidrs: Vec<_> = out.iter().map(|r| r.remote_cidr.clone()).collect();
+        assert_eq!(cidrs, vec!["10.40.0.5/32", "10.40.0.9/32"]);
+        // Everything else about the rule is carried over.
+        assert_eq!(out[0].port_min, 5432);
+        assert!(!out[0].ipv6);
+    }
+
+    /// An address of the wrong family in an IPv4 rule is a match the dataplane
+    /// cannot make. Dropped, so the rule is what it claims to be.
+    #[test]
+    fn a_member_of_the_wrong_family_is_not_smuggled_in() {
+        let g = uuid::Uuid::new_v4();
+        let mut members = crate::store::GroupMembers::new();
+        members.insert(g, vec!["10.40.0.5".into(), "fd00::5".into()]);
+        let v4 = expand_rule(&rule("IPv4", None, Some(g)), &members);
+        assert_eq!(
+            v4.iter().map(|r| r.remote_cidr.clone()).collect::<Vec<_>>(),
+            vec!["10.40.0.5/32"]
+        );
+        let v6 = expand_rule(&rule("IPv6", None, Some(g)), &members);
+        assert_eq!(
+            v6.iter().map(|r| r.remote_cidr.clone()).collect::<Vec<_>>(),
+            vec!["fd00::5/128"]
+        );
+    }
+
+    /// A group nobody is in matches nothing — never "any". The empty
+    /// `remote_cidr` an unexpanded rule would carry means exactly that.
+    #[test]
+    fn a_group_with_no_addressable_members_expands_to_nothing() {
+        let g = uuid::Uuid::new_v4();
+        assert!(expand_rule(
+            &rule("IPv4", None, Some(g)),
+            &crate::store::GroupMembers::new()
+        )
+        .is_empty());
+        let mut empty = crate::store::GroupMembers::new();
+        empty.insert(g, vec![]);
+        assert!(expand_rule(&rule("IPv4", None, Some(g)), &empty).is_empty());
     }
 }

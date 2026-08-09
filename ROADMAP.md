@@ -268,8 +268,26 @@ Split into three shippable slices.
   operator's decision, not an upgrade's. **And the API now refuses to record an
   egress rule while the mode is `allow`**, naming the setting that would make it
   enforceable: that refusal is what removes the lie rather than moving it.
-  Remaining follow-ups from M18/M19: remote-group references, and per-tenant
-  default groups.
+- **M19c — remote-group references and per-project default groups.** ✅
+  **Done.** The last two follow-ups from M18/M19.
+  A rule may name a security *group* as its remote instead of a CIDR, and the
+  control plane resolves it to that group's members' addresses on every
+  reconcile tick — so "the web tier may reach the database tier" survives a VM
+  being replaced, which a CIDR cannot express without somebody maintaining it
+  by hand. Exactly one of `remote_cidr` / `remote_group_id`, enforced in the
+  API and by a CHECK: two remotes would be two answers to "who is the other
+  end". Expansion uses **allocated** addresses only — an observed one comes
+  from an ARP sweep or a guest's own callback, and letting either widen a
+  firewall rule would let a guest talk its way into somebody's allow-list. A
+  member of the wrong family is dropped rather than smuggled into a rule the
+  dataplane cannot match, and a group nobody is in expands to *nothing*, never
+  to "any".
+  And every project now carries its own default policy group, unioned into
+  every NIC alongside the network's. A tenant network belongs to one project so
+  its default was already that tenant's; a provider or VLAN network is
+  platform-shared, and a rule added to *its* default applies to every tenant on
+  it. This is where a tenant's baseline goes instead. Startup gives one to
+  projects that predate the column.
 - **M13d — Change a NIC's network on a running VM.** ✅ **Done.** `PUT
   /vms/:id/nics/:index` retargets a NIC (network + optional security groups). The
   TAP name is stable per (vm, nic), so the agent re-homes it on OVS — move it to

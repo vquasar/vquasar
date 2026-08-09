@@ -140,6 +140,11 @@ pub struct CreateRule {
     pub port_max: Option<i32>,
     #[serde(default)]
     pub remote_cidr: Option<String>,
+    /// The remote is every member of this group, resolved to their addresses
+    /// on each reconcile tick (design §18). Mutually exclusive with
+    /// `remote_cidr`, and the reason a rule survives a VM being replaced.
+    #[serde(default)]
+    pub remote_group_id: Option<Uuid>,
 }
 
 fn ingress() -> String {
@@ -153,6 +158,17 @@ fn any() -> String {
 }
 
 fn validate_rule(r: &CreateRule) -> ApiResult<()> {
+    // Two remotes are two different answers to "who is the other end", and the
+    // rule would quietly mean whichever the resolver read first (design §18).
+    if r.remote_group_id.is_some()
+        && r.remote_cidr
+            .as_deref()
+            .is_some_and(|c| !c.trim().is_empty())
+    {
+        return Err(ApiError::invalid(
+            "a rule names either a remote_cidr or a remote_group_id, not both",
+        ));
+    }
     if !matches!(r.direction.as_str(), "ingress" | "egress") {
         return Err(ApiError::invalid("direction must be ingress or egress"));
     }
@@ -215,6 +231,16 @@ pub async fn add_rule(
         .as_deref()
         .map(str::trim)
         .filter(|c| !c.is_empty());
+    // A remote group has to be one this caller can see, or a rule becomes a way
+    // to learn that another project's group exists (design §47).
+    if let Some(remote) = body.remote_group_id {
+        if !crate::scoped::ScopedStore::new(store.clone(), scope.0)
+            .security_groups_in_scope(&[remote])
+            .await?
+        {
+            return Err(ApiError::not_found("security group"));
+        }
+    }
     let rule = store
         .add_sg_rule(
             id,
@@ -223,6 +249,7 @@ pub async fn add_rule(
             &body.protocol,
             body.port_min,
             body.port_max,
+            body.remote_group_id,
             cidr,
         )
         .await?;

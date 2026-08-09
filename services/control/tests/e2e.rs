@@ -107,6 +107,10 @@ struct AgentState {
     volumes_built: Vec<String>,
     /// Volume paths this host has been asked to remove.
     volumes_removed: Vec<String>,
+    /// Every `remote_cidr` seen on an ingress rule, across calls. A rule whose
+    /// remote is a group is only meaningful once it arrives as an address, so
+    /// this is what tells "resolved" from "accepted and dropped" (design §18).
+    ingress_seen: Vec<String>,
     /// Storage pools this host refuses to report as usable, keyed by pool name
     /// with the reason it gives (ADR-023). Anything else it is asked about, it
     /// can use. Refusing by *name* is deliberate: the control plane is what
@@ -250,6 +254,12 @@ impl HostAgent for FakeAgent {
             st.epochs_seen.push(epoch);
             if let Some(n) = req.networks.first() {
                 st.egress_seen = Some((n.egress_default_deny, n.egress_rules.len()));
+                let cidrs: Vec<String> = n
+                    .ingress_rules
+                    .iter()
+                    .map(|r| r.remote_cidr.clone())
+                    .collect();
+                st.ingress_seen.extend(cidrs);
             }
             (st.ensure_delay_ms, st.ensure_error.clone())
         };
@@ -2427,6 +2437,101 @@ async fn a_local_volume_is_built_on_its_host_and_pins_what_attaches_it() {
     );
     assert!(removed[0].contains(&vol_id), "{removed:?}");
     let _ = host_b;
+}
+
+/// The two halves of per-tenant policy that were missing: a rule whose remote
+/// is a *group*, and a project's own default group (design §18).
+#[tokio::test]
+async fn a_rule_can_name_a_group_and_a_project_has_its_own_default() {
+    let h = Harness::start_with(&[("VQUASAR_CONTROL_NETWORK__POLICY_MODE", "enforced")]).await;
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    h.register_host("hostA", port).await;
+
+    // Every project carries a policy group — the place a tenant's baseline goes
+    // that is not a provider network every other tenant shares. Startup gives
+    // one to projects that predate the column, which is what this reads.
+    let projects = h.get("/projects").await;
+    let project_sg = projects
+        .as_array()
+        .and_then(|p| p.first())
+        .and_then(|p| p["default_security_group_id"].as_str())
+        .expect("a project gets a default policy group")
+        .to_string();
+
+    // A managed network, so the platform knows its members' addresses.
+    let (st, net) = h
+        .post(
+            "/networks",
+            json!({"name": "t", "kind": "tenant", "cidr_v4": "10.40.0.0/24",
+                   "gateway_v4": "10.40.0.1"}),
+        )
+        .await;
+    assert!(st.is_success(), "{net}");
+    let net_id = net["id"].as_str().unwrap().to_string();
+
+    // A "database tier" group, and a VM in it.
+    let (st, db) = h.post("/security-groups", json!({"name": "db"})).await;
+    assert!(st.is_success(), "{db}");
+    let db_sg = db["id"].as_str().unwrap().to_string();
+    let mut db_spec = vm_spec();
+    db_spec["network_interfaces"] = json!([{"network_id": net_id, "security_groups": [db_sg]}]);
+    let (st, dbvm) = h
+        .post("/vms", json!({"name": "db1", "spec": db_spec}))
+        .await;
+    assert!(st.is_success(), "{dbvm}");
+    let db_ip = h
+        .wait_for(
+            &format!("/vms/{}", dbvm["vm_id"].as_str().unwrap()),
+            |v| v["ip_address"].is_string(),
+            "the database VM's allocated address",
+        )
+        .await["ip_address"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Two remotes is two answers to "who is the other end".
+    let (st, body) = h
+        .post(
+            &format!("/security-groups/{project_sg}/rules"),
+            json!({"direction": "ingress", "protocol": "tcp", "port_min": 5432,
+                   "port_max": 5432, "remote_cidr": "10.0.0.0/8",
+                   "remote_group_id": db_sg}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // "Anything in this project may reach the db tier on 5432" — written once,
+    // naming no address, so it survives the database VM being replaced.
+    let (st, rule) = h
+        .post(
+            &format!("/security-groups/{project_sg}/rules"),
+            json!({"direction": "ingress", "protocol": "tcp", "port_min": 5432,
+                   "port_max": 5432, "remote_group_id": db_sg}),
+        )
+        .await;
+    assert!(st.is_success(), "{rule}");
+    assert_eq!(rule["remote_group_id"], json!(db_sg));
+
+    // A VM gets the project default without asking for it, and the rule reaches
+    // the agent expanded to the member's actual address.
+    let mut app = vm_spec();
+    app["network_interfaces"] = json!([{"network_id": net_id}]);
+    let (st, v) = h.post("/vms", json!({"name": "app", "spec": app})).await;
+    assert!(st.is_success(), "{v}");
+
+    let want = format!("{db_ip}/32");
+    for _ in 0..120 {
+        if agent.lock().unwrap().ingress_seen.contains(&want) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!(
+        "the group rule never reached the agent as {want}; saw {:?}",
+        agent.lock().unwrap().ingress_seen
+    );
 }
 
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
