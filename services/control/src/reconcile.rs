@@ -588,27 +588,27 @@ async fn reconcile_ensure(store: &Store, vm: &Vm) -> anyhow::Result<()> {
         None => {
             let hosts = store.list_schedulable_hosts().await?;
             let committed = committed_by_host(store).await?;
-            match schedule(&vm.spec, &hosts, &committed) {
-                Some(h) => {
+            let pools = store.pools_by_host().await?;
+            match schedule(&vm.spec, &hosts, &committed, &pools) {
+                Ok(h) => {
                     store.assign_vm_host(vm.id, h).await?;
                     store
                         .insert_event("vm", Some(vm.id), "vm.scheduled", "info", &vm.name)
                         .await?;
                     h
                 }
-                None => {
-                    // No capacity right now; keep the task open and retry.
+                Err(why) => {
+                    // Nothing fits right now; keep the task open and retry, but
+                    // say *why* it does not fit. A host that cannot reach the
+                    // VM's storage is not a host that is merely busy, and an
+                    // operator waiting for capacity that will never come is the
+                    // failure this reports (ADR-023).
                     if let Some(task) = store.latest_open_task_for_vm(vm.id).await? {
                         store
-                            .update_task(
-                                task.id,
-                                "Running",
-                                10,
-                                Some("waiting for a schedulable host"),
-                            )
+                            .update_task(task.id, "Running", 10, Some(why.reason()))
                             .await?;
                     }
-                    debug!(vm = %vm.id, "no schedulable host; deferring");
+                    debug!(vm = %vm.id, reason = why.reason(), "not schedulable; deferring");
                     return Ok(());
                 }
             }

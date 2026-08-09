@@ -113,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
             image_type: vquasar_model::DiskImageType::Raw,
             source: None,
             size_bytes: None,
+            pool: None,
         });
     }
 

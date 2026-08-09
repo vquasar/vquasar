@@ -132,6 +132,16 @@ async fn main() -> anyhow::Result<()> {
     // (ADR-023). Deliberately not re-synced: config must not overrule an
     // operator who has since renamed or repointed it.
     store.ensure_default_pool().await?;
+    // Volumes that predate pools join the default one. Here rather than in the
+    // migration because the pool's id is generated at first boot, and a cluster
+    // upgrading straight from pre-pool has no row to point at when 0030 runs.
+    match store.adopt_poolless_volumes().await? {
+        0 => {}
+        n => info!(
+            volumes = n,
+            "adopted pre-pool volumes into the default pool"
+        ),
+    }
     // Seal any pre-existing plaintext secrets now that encryption is on.
     if cryptor.is_some() {
         let n = store.encrypt_existing().await?;

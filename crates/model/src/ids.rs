@@ -94,6 +94,10 @@ typed_id!(
     /// Identifier for an asynchronous [task](crate::ids::TaskId).
     TaskId, "task"
 );
+typed_id!(
+    /// Identifier for a [storage pool](crate::storage) (ADR-023).
+    StoragePoolId, "pool"
+);
 
 #[cfg(test)]
 mod tests {

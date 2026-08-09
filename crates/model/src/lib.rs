@@ -22,7 +22,7 @@ pub mod validation;
 pub mod vm;
 
 pub use host::{Host, HostSpec, HostState, HostStatus};
-pub use ids::{HostId, NetworkId, TaskId, VmId};
+pub use ids::{HostId, NetworkId, StoragePoolId, TaskId, VmId};
 pub use meta::{Generation, Metadata};
 pub use network::{NetworkKind, NetworkValidationError, SegmentKey};
 pub use project::{Project, Scope, DEFAULT_PROJECT_ID};

@@ -38,11 +38,34 @@ pub(crate) fn volume_path(dir: &str, id: Uuid, format: &str) -> PathBuf {
     PathBuf::from(dir).join(format!("vol-{id}.{}", ext(format)))
 }
 
-fn view(store: &Store, v: Volume) -> VolumeView {
-    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format)
+/// Where a volume's bytes live: its pool's root (ADR-023), falling back to the
+/// configured shared directory for one that predates pools and has not been
+/// adopted into `default` yet.
+fn dir_in(store: &Store, pools: &PoolPaths, v: &Volume) -> String {
+    v.pool_id
+        .and_then(|id| pools.get(&id).cloned())
+        .unwrap_or_else(|| store.shared_volumes_dir().to_string())
+}
+
+type PoolPaths = std::collections::HashMap<Uuid, String>;
+
+fn view(store: &Store, pools: &PoolPaths, v: Volume) -> VolumeView {
+    let path = volume_path(&dir_in(store, pools, &v), v.id, &v.format)
         .to_string_lossy()
         .into_owned();
     VolumeView { volume: v, path }
+}
+
+/// The same for a single volume, when the caller has no map to hand. Pools are
+/// a handful of rows, so one read beats threading the map through every path.
+async fn one(store: &Store, v: Volume) -> ApiResult<VolumeView> {
+    let pools = store.pool_paths().await?;
+    Ok(view(store, &pools, v))
+}
+
+/// A volume's own directory, for the file operations that act on it.
+async fn dir_of(store: &Store, v: &Volume) -> ApiResult<String> {
+    Ok(dir_in(store, &store.pool_paths().await?, v))
 }
 
 pub async fn list(
@@ -52,12 +75,13 @@ pub async fn list(
 ) -> ApiResult<Json<Vec<VolumeView>>> {
     user.require("volume:read")?;
     let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
+    let pools = store.pool_paths().await?;
     Ok(Json(
         scoped
             .list_volumes()
             .await?
             .into_iter()
-            .map(|v| view(&store, v))
+            .map(|v| view(&store, &pools, v))
             .collect(),
     ))
 }
@@ -73,7 +97,7 @@ pub async fn get(
         .get_volume(id)
         .await?
         .ok_or(ApiError::not_found("volume"))?;
-    Ok(Json(view(&store, v)))
+    Ok(Json(one(&store, v).await?))
 }
 
 #[derive(Deserialize)]
@@ -87,10 +111,37 @@ pub struct CreateVolume {
     /// Clone from this image to make a bootable volume (design M14d).
     #[serde(default)]
     pub source_image_id: Option<Uuid>,
+    /// Which storage pool to place the volume in, by id or by name (ADR-023).
+    /// Omitted means `default` — the pool an existing cluster was already
+    /// using, so nothing about an unchanged request changes.
+    #[serde(default)]
+    pub pool: Option<String>,
 }
 
 fn default_format() -> String {
     "qcow2".into()
+}
+
+/// Resolve the pool a volume should be placed in: an id, a name, or `default`.
+///
+/// A pool nobody reports is still a legal place to put bytes — the file is
+/// written by the control plane, which can reach its own storage. What it is
+/// not is a place a VM can be *scheduled* against, and that refusal belongs to
+/// the scheduler, where the host is known (ADR-023).
+async fn resolve_pool(
+    store: &Store,
+    requested: Option<&str>,
+) -> ApiResult<crate::store::StoragePool> {
+    let name = requested.unwrap_or("default");
+    if let Ok(id) = name.parse::<Uuid>() {
+        if let Some(p) = store.get_storage_pool(id).await? {
+            return Ok(p);
+        }
+    }
+    store
+        .get_storage_pool_by_name(name)
+        .await?
+        .ok_or_else(|| ApiError::invalid(format!("unknown storage pool {name:?}")))
 }
 
 pub async fn create(
@@ -119,6 +170,13 @@ pub async fn create(
     }
 
     let id = Uuid::new_v4();
+    let pool = resolve_pool(&store, body.pool.as_deref()).await?;
+    let pool_dir = pool
+        .params
+        .0
+        .host_path()
+        .ok_or_else(|| ApiError::invalid("that pool has no host path to place a volume in"))?
+        .to_string();
 
     // Reserve before doing the work, then build the file, then finalise
     // (ADR-019). The old order — provision, then insert — cannot be admitted:
@@ -165,10 +223,11 @@ pub async fn create(
             &format,
             body.source_image_id,
             crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
+            pool.id,
         )
         .await?;
 
-    let path = volume_path(store.shared_volumes_dir(), id, &format);
+    let path = volume_path(&pool_dir, id, &format);
     let built = provision(&store, &body, &path, &format).await;
     let size = match built {
         Ok(size) => size,
@@ -179,7 +238,7 @@ pub async fn create(
         }
     };
     match store.finalize_volume(id, size).await {
-        Ok(Some(v)) => Ok((StatusCode::CREATED, Json(view(&store, v)))),
+        Ok(Some(v)) => Ok((StatusCode::CREATED, Json(one(&store, v).await?))),
         // The reservation vanished, or the true size did not fit after all.
         Ok(None) => {
             let _ = tokio::fs::remove_file(&path).await;
@@ -263,7 +322,7 @@ pub async fn delete(
     if v.attached_vm_id.is_some() {
         return Err(ApiError::invalid("detach the volume before deleting it"));
     }
-    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    let path = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
     let _ = tokio::fs::remove_file(&path).await; // best-effort
     crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .delete_volume(id)
@@ -298,7 +357,7 @@ pub async fn attach(
         .await?
         .ok_or(ApiError::not_found("vm"))?;
 
-    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    let path = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
     let mut spec = vm.spec.0.clone();
     let serial = spec.disks.len() as i32;
     spec.disks.push(DiskSpec {
@@ -311,6 +370,9 @@ pub async fn attach(
         },
         source: None, // already provisioned; reuse as-is
         size_bytes: None,
+        // The disk carries the volume's pool, which is what lets the scheduler
+        // refuse a host that cannot reach it (ADR-023).
+        pool: v.pool_id.map(vquasar_model::StoragePoolId::from_uuid),
     });
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -319,7 +381,7 @@ pub async fn attach(
         .set_volume_attachment(id, Some(body.vm_id), Some(serial))
         .await?;
     let v = store.get_volume(id).await?.unwrap();
-    Ok(Json(view(&store, v)))
+    Ok(Json(one(&store, v).await?))
 }
 
 pub async fn detach(
@@ -344,14 +406,14 @@ pub async fn detach(
                 "stop the VM before detaching this volume (no hot-unplug yet)",
             ));
         }
-        let target = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+        let target = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
         let mut spec = vm.spec.0.clone();
         spec.disks.retain(|d| d.path != target);
         store.set_vm_spec(vm_id, &spec).await?;
     }
     store.set_volume_attachment(id, None, None).await?;
     let v = store.get_volume(id).await?.unwrap();
-    Ok(Json(view(&store, v)))
+    Ok(Json(one(&store, v).await?))
 }
 
 // ---- snapshots (design M14c) -----------------------------------------------
@@ -415,7 +477,7 @@ pub async fn create_snapshot(
         .ok_or(ApiError::not_found("volume"))?;
     snapshottable(&store, &v).await?;
     let snap_id = Uuid::new_v4();
-    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    let path = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
     // Tag the qcow2 internal snapshot with the record id (stable + unique).
     qemu_img(&[
         "snapshot",
@@ -444,7 +506,7 @@ pub async fn delete_snapshot(
     if store.get_volume_snapshot(snap_id).await?.is_none() {
         return Err(ApiError::invalid("snapshot not found"));
     }
-    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    let path = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
     // Best-effort qcow2 delete (ignore if already gone), then drop the record.
     let _ = qemu_img(&[
         "snapshot",
@@ -471,7 +533,7 @@ pub async fn revert_snapshot(
         return Err(ApiError::invalid("snapshot not found"));
     }
     snapshottable(&store, &v).await?;
-    let path = volume_path(store.shared_volumes_dir(), v.id, &v.format);
+    let path = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
     qemu_img(&[
         "snapshot",
         "-a",

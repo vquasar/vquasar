@@ -216,6 +216,15 @@ pub struct DiskSpec {
     /// base image the volume is grown; ignored if the disk already exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    /// The storage pool this disk's file lives in (ADR-023).
+    ///
+    /// Set whenever the control plane chose the location, which is what lets
+    /// the scheduler refuse a host that cannot reach it. `None` means nobody
+    /// knows — an operator pointed the disk at a raw path — and a disk nobody
+    /// can place constrains nothing, because guessing which pool a path
+    /// belongs to would be a claim the platform cannot back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<crate::ids::StoragePoolId>,
 }
 
 impl DiskSpec {
@@ -227,6 +236,7 @@ impl DiskSpec {
             image_type: DiskImageType::Raw,
             source: None,
             size_bytes: None,
+            pool: None,
         }
     }
 
@@ -243,7 +253,14 @@ impl DiskSpec {
             image_type,
             source: Some(source.into()),
             size_bytes,
+            pool: None,
         }
+    }
+
+    /// Record which pool this disk's file lives in (ADR-023).
+    pub fn in_pool(mut self, pool: Option<crate::ids::StoragePoolId>) -> Self {
+        self.pool = pool;
+        self
     }
 
     /// Whether the agent must materialise this disk's backing file before the VM
@@ -261,6 +278,7 @@ impl DiskSpec {
             image_type,
             source: None,
             size_bytes: Some(size_bytes),
+            pool: None,
         }
     }
 }

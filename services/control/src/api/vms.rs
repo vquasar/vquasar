@@ -177,8 +177,9 @@ pub async fn create_from_volume(
         .ok_or_else(|| ApiError::invalid("source image not found"))?;
 
     let vm_id = Uuid::new_v4();
+    let vol_dir = store.volume_dir(&vol).await?;
     let disk = DiskSpec {
-        path: crate::api::volumes::volume_path(store.shared_volumes_dir(), vol.id, &vol.format),
+        path: crate::api::volumes::volume_path(&vol_dir, vol.id, &vol.format),
         readonly: false,
         image_type: if vol.format == "raw" {
             DiskImageType::Raw
@@ -187,6 +188,8 @@ pub async fn create_from_volume(
         },
         source: None, // the volume is already provisioned
         size_bytes: None,
+        // Placement has to know where these bytes are (ADR-023).
+        pool: vol.pool_id.map(vquasar_model::StoragePoolId::from_uuid),
     };
     let network_interfaces = body
         .network_id
@@ -464,14 +467,27 @@ pub async fn create(
     // be auto-placed on shared storage. This lets callers (e.g. the UI Windows
     // preset) request a blank system disk without knowing server-side paths.
     let vm_id = Uuid::new_v4();
+    let (pool_id, pool_dir) = default_pool(&store).await?;
     for (i, disk) in body.spec.disks.iter_mut().enumerate() {
         if disk.needs_provisioning() && disk.path.as_os_str().is_empty() {
             let ext = match disk.image_type {
                 DiskImageType::Qcow2 => "qcow2",
                 DiskImageType::Raw => "raw",
             };
-            disk.path =
-                PathBuf::from(store.shared_volumes_dir()).join(format!("{vm_id}-disk{i}.{ext}"));
+            disk.path = PathBuf::from(&pool_dir).join(format!("{vm_id}-disk{i}.{ext}"));
+            disk.pool = Some(pool_id);
+        }
+    }
+    // A caller may name a pool on a disk it placed itself. An unknown one would
+    // be a VM that can never be scheduled anywhere, so it is refused here
+    // rather than left to look like a capacity problem forever.
+    for (i, disk) in body.spec.disks.iter().enumerate() {
+        if let Some(p) = disk.pool {
+            if store.get_storage_pool(p.as_uuid()).await?.is_none() {
+                return Err(ApiError::invalid(format!(
+                    "disks[{i}].pool names a storage pool that does not exist"
+                )));
+            }
         }
     }
     body.spec
@@ -595,13 +611,15 @@ pub async fn create_from_template(
 
     // Pick the id up front so the provisioned volume path can reference it.
     let vm_id = Uuid::new_v4();
+    let (pool_id, pool_dir) = default_pool(&store).await?;
     let spec = build_spec_from_template(
         vm_id,
         &body.name,
         &template,
         &image,
         &body.overrides,
-        store.shared_volumes_dir(),
+        &pool_dir,
+        pool_id,
     );
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -641,7 +659,8 @@ fn build_spec_from_template(
     template: &Template,
     image: &Image,
     ov: &TemplateOverrides,
-    shared_volumes_dir: &str,
+    pool_dir: &str,
+    pool: vquasar_model::StoragePoolId,
 ) -> VirtualMachineSpec {
     let image_type = if template.disk_format == "raw" {
         DiskImageType::Raw
@@ -652,7 +671,7 @@ fn build_spec_from_template(
         DiskImageType::Raw => "raw",
         DiskImageType::Qcow2 => "qcow2",
     };
-    let volume_path = PathBuf::from(shared_volumes_dir).join(format!("{vm_id}.{ext}"));
+    let volume_path = PathBuf::from(pool_dir).join(format!("{vm_id}.{ext}"));
     let size_bytes = ov
         .disk_size_bytes
         .or_else(|| template.disk_size_bytes.map(|s| s as u64))
@@ -666,7 +685,8 @@ fn build_spec_from_template(
         image_type,
         image.source_path.clone(),
         size_bytes,
-    )];
+    )
+    .in_pool(Some(pool))];
 
     let network_interfaces = ov
         .network_id
@@ -816,10 +836,10 @@ pub async fn update(
             DiskImageType::Raw => "raw",
             DiskImageType::Qcow2 => "qcow2",
         };
-        let path = PathBuf::from(store.shared_volumes_dir())
-            .join(format!("{id}-d{}.{ext}", spec.disks.len()));
+        let (pool_id, pool_dir) = default_pool(&store).await?;
+        let path = PathBuf::from(&pool_dir).join(format!("{id}-d{}.{ext}", spec.disks.len()));
         spec.disks
-            .push(DiskSpec::blank(path, image_type, a.size_bytes));
+            .push(DiskSpec::blank(path, image_type, a.size_bytes).in_pool(Some(pool_id)));
     }
     if let Some(n) = &body.add_nic {
         spec.network_interfaces.push(NetworkInterfaceSpec {
@@ -934,6 +954,26 @@ pub struct MigrateRequest {
 
 /// Request a live migration of a running VM to another host (section 28). The
 /// migration controller drives it asynchronously.
+/// The pool a control-plane-placed disk goes in, and the directory that means.
+///
+/// `default` today: "this VM's disks go on fast storage" needs a per-VM storage
+/// policy, which is deliberately a later milestone (ADR-023). What matters now
+/// is that the disk *records* its pool, so placement can be refused rather than
+/// discovered at launch.
+async fn default_pool(store: &Store) -> ApiResult<(vquasar_model::StoragePoolId, String)> {
+    let pool = store
+        .get_storage_pool_by_name("default")
+        .await?
+        .ok_or_else(|| ApiError::internal("the default storage pool is missing"))?;
+    let dir = pool
+        .params
+        .0
+        .host_path()
+        .ok_or_else(|| ApiError::internal("the default storage pool has no host path"))?
+        .to_string();
+    Ok((vquasar_model::StoragePoolId::from_uuid(pool.id), dir))
+}
+
 pub async fn migrate(
     State(store): State<Store>,
     user: AuthUser,
@@ -967,6 +1007,22 @@ pub async fn migrate(
         return Err(ApiError::invalid(
             "a migration is already in progress for this VM",
         ));
+    }
+    // Live migration has always assumed the destination has the same storage
+    // mounted at the same path; nothing checked it, so a host without the mount
+    // failed at launch on the far side (ADR-023). Now it is a refusal here.
+    let needed = crate::scheduler::required_pools(&vm.spec.0);
+    if !needed.is_empty() {
+        let reachable = store
+            .pools_by_host()
+            .await?
+            .remove(&target.id)
+            .unwrap_or_default();
+        if !needed.is_subset(&reachable) {
+            return Err(ApiError::invalid(
+                "target host does not report the storage pool this VM's disks are in",
+            ));
+        }
     }
 
     // CPU compatibility gate (design M15): Cloud Hypervisor can't mask CPUID,

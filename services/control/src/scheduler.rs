@@ -10,10 +10,49 @@
 //! `filter` and `score` are kept as separate steps so a plugin framework can
 //! replace them later without restructuring callers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 use vquasar_model::VirtualMachineSpec;
+
+/// Which pools each host reports it can use (ADR-023).
+pub type PoolsByHost = HashMap<Uuid, HashSet<Uuid>>;
+
+/// Why nothing could be placed. Carried rather than inferred, because "no
+/// capacity" and "nobody can reach that storage" want different actions from
+/// an operator, and a single "no schedulable host" hides which one it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unschedulable {
+    /// Hosts exist with room, but none reports every pool this VM's disks are
+    /// in. This is the refusal a missing mount used to become a launch failure.
+    UnreachableStorage,
+    /// Nothing had room, or there were no hosts at all.
+    NoCapacity,
+}
+
+impl Unschedulable {
+    /// The message an operator reads on the open task.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Unschedulable::UnreachableStorage => {
+                "no schedulable host reports the storage pool this VM's disks are in"
+            }
+            Unschedulable::NoCapacity => "waiting for a schedulable host",
+        }
+    }
+}
+
+/// The pools a VM's disks need a host to be able to reach.
+///
+/// Only disks the control plane placed carry a pool. A disk pointed at a raw
+/// path constrains nothing here: the platform does not know which pool it is
+/// in, and guessing from the path would be a claim it cannot back.
+pub fn required_pools(spec: &VirtualMachineSpec) -> HashSet<Uuid> {
+    spec.disks
+        .iter()
+        .filter_map(|d| d.pool.map(|p| p.as_uuid()))
+        .collect()
+}
 
 /// Resources already committed to VMs on a host.
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,9 +68,21 @@ pub fn schedule(
     spec: &VirtualMachineSpec,
     hosts: &[Host],
     committed: &HashMap<Uuid, HostCommit>,
-) -> Option<Uuid> {
-    hosts
+    pools: &PoolsByHost,
+) -> Result<Uuid, Unschedulable> {
+    // Storage first, and separately, so the refusal can say which filter
+    // emptied the list. A host that cannot reach a VM's disks is not a host
+    // that is merely busy.
+    let needed = required_pools(spec);
+    let reachable: Vec<&Host> = hosts
         .iter()
+        .filter(|h| can_reach(&needed, pools.get(&h.id)))
+        .collect();
+    if reachable.is_empty() && !hosts.is_empty() && !needed.is_empty() {
+        return Err(Unschedulable::UnreachableStorage);
+    }
+    reachable
+        .into_iter()
         .filter(|h| passes_filters(spec, h, commit_of(committed, h.id)))
         .max_by(|a, b| {
             let sa = score(a, commit_of(committed, a.id));
@@ -39,6 +90,15 @@ pub fn schedule(
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|h| h.id)
+        .ok_or(Unschedulable::NoCapacity)
+}
+
+/// Whether a host reports every pool the VM needs.
+fn can_reach(needed: &HashSet<Uuid>, reported: Option<&HashSet<Uuid>>) -> bool {
+    if needed.is_empty() {
+        return true;
+    }
+    reported.is_some_and(|r| needed.is_subset(r))
 }
 
 fn commit_of(committed: &HashMap<Uuid, HostCommit>, id: Uuid) -> HostCommit {
@@ -104,6 +164,10 @@ mod tests {
         }
     }
 
+    fn no_pools() -> PoolsByHost {
+        PoolsByHost::new()
+    }
+
     fn gib(n: i64) -> i64 {
         n * 1024 * 1024 * 1024
     }
@@ -140,7 +204,7 @@ mod tests {
 
         // With nothing committed, the first host wins the tie deterministically.
         let mut committed = HashMap::new();
-        let first = schedule(&spec(2, 2048), &hosts, &committed).unwrap();
+        let first = schedule(&spec(2, 2048), &hosts, &committed, &no_pools()).unwrap();
 
         // Commit that VM to the chosen host; the next VM must go to the other.
         committed.insert(
@@ -150,7 +214,7 @@ mod tests {
                 memory_bytes: gib(2),
             },
         );
-        let second = schedule(&spec(2, 2048), &hosts, &committed).unwrap();
+        let second = schedule(&spec(2, 2048), &hosts, &committed, &no_pools()).unwrap();
         assert_ne!(
             first, second,
             "second VM spreads to the less-committed host"
@@ -169,7 +233,7 @@ mod tests {
             },
         );
         // 7 GiB committed of 8 -> only 1 GiB free; a 4 GiB VM cannot fit.
-        assert!(schedule(&spec(1, 4096), &[h], &committed).is_none());
+        assert!(schedule(&spec(1, 4096), &[h], &committed, &no_pools()).is_err());
     }
 
     #[test]
@@ -183,7 +247,8 @@ mod tests {
                 memory_bytes: 0,
             },
         );
-        assert!(schedule(&spec(2, 1024), &[h], &committed).is_none()); // only 1 vCPU free
+        // only 1 vCPU free
+        assert!(schedule(&spec(2, 1024), &[h], &committed, &no_pools()).is_err());
     }
 
     #[test]
@@ -200,11 +265,96 @@ mod tests {
             },
         );
         // b is emptier -> chosen.
-        assert_eq!(schedule(&spec(2, 2048), &hosts, &committed).unwrap(), b.id);
+        assert_eq!(
+            schedule(&spec(2, 2048), &hosts, &committed, &no_pools()).unwrap(),
+            b.id
+        );
     }
 
     #[test]
     fn no_hosts_yields_none() {
-        assert!(schedule(&spec(1, 512), &[], &HashMap::new()).is_none());
+        assert_eq!(
+            schedule(&spec(1, 512), &[], &HashMap::new(), &no_pools()),
+            Err(Unschedulable::NoCapacity)
+        );
+    }
+
+    /// A host that does not report the pool a VM's disks are in is refused —
+    /// and the refusal says so, rather than reading as a capacity problem
+    /// (ADR-023). This is the failure that used to be a launch-time path error.
+    #[test]
+    fn a_host_that_cannot_reach_the_storage_is_refused_by_name() {
+        let h = host("h", 32, 64);
+        let h_id = h.id;
+        let pool = Uuid::new_v4();
+        let mut s = spec(2, 2048);
+        s.disks = vec![vquasar_model::DiskSpec::raw("/pool/a.raw")
+            .in_pool(Some(vquasar_model::StoragePoolId::from_uuid(pool)))];
+
+        // Plenty of room, but the host has never reported the pool.
+        assert_eq!(
+            schedule(&s, std::slice::from_ref(&h), &HashMap::new(), &no_pools()),
+            Err(Unschedulable::UnreachableStorage)
+        );
+
+        // Reporting some other pool is not reporting this one.
+        let mut wrong = PoolsByHost::new();
+        wrong.insert(h.id, HashSet::from([Uuid::new_v4()]));
+        assert_eq!(
+            schedule(&s, std::slice::from_ref(&h), &HashMap::new(), &wrong),
+            Err(Unschedulable::UnreachableStorage)
+        );
+
+        // Once it reports the pool, it is a candidate again.
+        let mut right = PoolsByHost::new();
+        right.insert(h.id, HashSet::from([pool]));
+        assert_eq!(schedule(&s, &[h], &HashMap::new(), &right).unwrap(), h_id);
+    }
+
+    /// Every pool, not any: a VM with a disk in two pools needs a host that
+    /// reports both, or it lands somewhere half its storage is invisible.
+    #[test]
+    fn a_host_must_report_every_pool_the_disks_need() {
+        let h = host("h", 32, 64);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut s = spec(2, 2048);
+        s.disks = vec![
+            vquasar_model::DiskSpec::raw("/a/x.raw")
+                .in_pool(Some(vquasar_model::StoragePoolId::from_uuid(a))),
+            vquasar_model::DiskSpec::raw("/b/y.raw")
+                .in_pool(Some(vquasar_model::StoragePoolId::from_uuid(b))),
+        ];
+        let mut half = PoolsByHost::new();
+        half.insert(h.id, HashSet::from([a]));
+        assert_eq!(
+            schedule(&s, std::slice::from_ref(&h), &HashMap::new(), &half),
+            Err(Unschedulable::UnreachableStorage)
+        );
+        let mut both = PoolsByHost::new();
+        both.insert(h.id, HashSet::from([a, b]));
+        assert!(schedule(&s, &[h], &HashMap::new(), &both).is_ok());
+    }
+
+    /// A disk at a raw operator-supplied path has no pool, so it constrains
+    /// nothing. Refusing it would be inventing a constraint from a path.
+    #[test]
+    fn a_disk_with_no_pool_places_anywhere() {
+        let h = host("h", 32, 64);
+        let mut s = spec(2, 2048);
+        s.disks = vec![vquasar_model::DiskSpec::raw("/x/legacy.raw")];
+        assert!(schedule(&s, &[h], &HashMap::new(), &no_pools()).is_ok());
+    }
+
+    /// Running out of room and being unable to see the storage are different
+    /// answers, and the message an operator reads says which.
+    #[test]
+    fn the_two_refusals_do_not_read_the_same() {
+        assert!(Unschedulable::UnreachableStorage
+            .reason()
+            .contains("storage pool"));
+        assert_ne!(
+            Unschedulable::UnreachableStorage.reason(),
+            Unschedulable::NoCapacity.reason()
+        );
     }
 }

@@ -273,7 +273,10 @@ that does not report the pools a VM's disks need, so a missing mount is a
 placement refusal with a reason instead of a launch failure.
 
 The initial kind is `shared_dir` — a path assumed mounted on the hosts that
-report it, which is what live migration has always depended on. Planned kinds:
+report it, which is what live migration has always depended on. A volume's file
+is `<pool>/vol-<uuid>.<ext>`; a disk the control plane placed records its pool,
+and a disk at a raw operator-supplied path records none, so it constrains
+placement not at all. Planned kinds:
 LVM thin, NFS, Ceph RBD/CephFS, iSCSI, NVMe-oF, SPDK, vhost-user-blk. Do not
 implement distributed storage.
 
@@ -884,9 +887,13 @@ authority to decide who leads, undoing the boundary this design exists to hold.
 
 ### ADR-023 — A storage pool is a named place to put bytes, and reachability is observed
 
-*Status:* Accepted. The resource and agent reporting are implemented (M23a,
-M23b); volumes referencing a pool, and the scheduler refusal that depends on
-them, are not yet.
+*Status:* Accepted and implemented (M23a–M23c), except the orphaned-seed sweep.
+
+One detail was dropped in implementation: volumes stay at `<pool>/vol-<uuid>.<ext>`
+rather than moving under `<pool>/volumes/`. The default pool's root *is* the old
+`shared_volumes_dir`, so the extra directory level would have moved every
+existing file — and "a running cluster keeps working and its paths do not move"
+is the consequence this ADR committed to.
 
 *Context.* Storage today is one directory. `[storage] shared_volumes_dir` names
 it, every volume is a file under it, and every host is *assumed* to have it
