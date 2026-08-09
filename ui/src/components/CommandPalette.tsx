@@ -27,6 +27,7 @@ import {
   useVolumes,
 } from "../api/hooks";
 import { usePermissions } from "../auth/permissions";
+import { KindIcon } from "../ui/icons";
 import { ACTION, READ } from "../auth/perm";
 import type { Permission } from "../auth/perm";
 
@@ -226,6 +227,9 @@ export function CommandPalette({
               onMouseEnter={() => setCursor(i)}
               onClick={() => go(e)}
             >
+              {/* The glyph carries the kind, so the word can stay quiet at
+                  the end of the row rather than competing with the name. */}
+              <KindIcon kind={e.kind} size={14} />
               <span className="vq-palette-label">{e.label}</span>
               <span className="vq-palette-kind">{e.kind}</span>
             </button>

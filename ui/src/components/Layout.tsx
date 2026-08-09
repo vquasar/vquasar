@@ -24,6 +24,7 @@ import {
 import { useAuth } from "../auth/AuthProvider";
 import { ProjectSwitch } from "./ProjectSwitch";
 import { CommandPalette } from "./CommandPalette";
+import { KindIcon } from "../ui/icons";
 import { useProject } from "../auth/ProjectProvider";
 import { formatRelative } from "../format";
 import { useProjects } from "../api/hooks";
@@ -39,6 +40,10 @@ interface NavItem {
   to: string;
   label: string;
   count?: number;
+  /// Which glyph stands for this destination. Named by resource kind rather
+  /// than by page, so the nav and the palette cannot disagree about what a
+  /// volume looks like.
+  kind?: string;
 }
 
 function NavGroup({ label, items }: { label: string; items: NavItem[] }) {
@@ -52,6 +57,7 @@ function NavGroup({ label, items }: { label: string; items: NavItem[] }) {
       <div className="vq-navlabel">{label}</div>
       {items.map((it) => (
         <Link key={it.to} to={it.to} className={`vq-navitem${isActive(it.to) ? " active" : ""}`}>
+          {it.kind && <KindIcon kind={it.kind} size={14} />}
           <span>{it.label}</span>
           <span className="vq-navcount">{it.count != null ? it.count : "—"}</span>
         </Link>
@@ -112,15 +118,15 @@ function Sidebar() {
   ).length;
 
   const operations: NavItem[] = [
-    { to: "/tasks", label: "Tasks", count: tasks.data ? openTasks : undefined },
-    { to: "/events", label: "Events" },
+    { to: "/tasks", label: "Tasks", kind: "Task", count: tasks.data ? openTasks : undefined },
+    { to: "/events", label: "Events", kind: "Event" },
     // Only when tenancy is on: a projects page in a single-tenant install is a
     // catalogue of one, and the top bar hides the switcher for the same reason.
     ...(tenancy && can(READ.projects)
-      ? [{ to: "/projects", label: "Projects", count: projects.data?.length }]
+      ? [{ to: "/projects", label: "Projects", kind: "Project", count: projects.data?.length }]
       : []),
-    ...(can(ACTION.iamRead) ? [{ to: "/iam", label: "Access control" }] : []),
-    { to: "/settings", label: "Settings" },
+    ...(can(ACTION.iamRead) ? [{ to: "/iam", label: "Access control", kind: "Access control" }] : []),
+    { to: "/settings", label: "Settings", kind: "Settings" },
   ];
 
   return (
@@ -132,26 +138,26 @@ function Sidebar() {
         <NavGroup
           label="Fleet"
           items={[
-            { to: "/", label: "Overview" },
-            { to: "/hosts", label: "Hosts", count: hosts.data?.length },
+            { to: "/", label: "Overview", kind: "Overview" },
+            { to: "/hosts", label: "Hosts", kind: "Host", count: hosts.data?.length },
           ]}
         />
         <NavGroup
           label="Compute"
           items={[
-            { to: "/vms", label: "Virtual machines", count: vms.data?.length },
-            { to: "/images", label: "Images", count: images.data?.length },
-            { to: "/templates", label: "Templates", count: templates.data?.length },
+            { to: "/vms", label: "Virtual machines", kind: "VM", count: vms.data?.length },
+            { to: "/images", label: "Images", kind: "Image", count: images.data?.length },
+            { to: "/templates", label: "Templates", kind: "Template", count: templates.data?.length },
           ]}
         />
         <NavGroup
           label="Network & storage"
           items={[
-            { to: "/networks", label: "Networks", count: networks.data?.length },
-            { to: "/security-groups", label: "Security groups", count: sgs.data?.length },
-            { to: "/volumes", label: "Volumes", count: volumes.data?.length },
+            { to: "/networks", label: "Networks", kind: "Network", count: networks.data?.length },
+            { to: "/security-groups", label: "Security groups", kind: "Security group", count: sgs.data?.length },
+            { to: "/volumes", label: "Volumes", kind: "Volume", count: volumes.data?.length },
             ...(can(READ.storagePools)
-              ? [{ to: "/storage-pools", label: "Storage pools", count: pools.data?.length }]
+              ? [{ to: "/storage-pools", label: "Storage pools", kind: "Storage pool", count: pools.data?.length }]
               : []),
           ]}
         />

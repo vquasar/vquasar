@@ -1442,3 +1442,15 @@ textarea.vq-input {
   font-size: 12px;
   color: var(--vq-text-3);
 }
+
+/* Icons are dimmer than their label until the row is active or hovered: the
+   word is what you read, the shape is what you find. */
+.vq-navitem svg,
+.vq-palette-row svg {
+  color: var(--vq-text-3);
+}
+.vq-navitem.active svg,
+.vq-navitem:hover svg,
+.vq-palette-row.on svg {
+  color: inherit;
+}
