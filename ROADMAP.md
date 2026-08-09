@@ -592,7 +592,11 @@ Split into three shippable slices.
   present — and says which of the two actually ran rather than implying both.
   The binary reports the build it came from (`git describe`), so `/config` and
   the console name a commit rather than a static `0.1.0`.
-  Not done: Dependabot, and musl builds for older distributions.
+  Dependabot follows for cargo, npm and github-actions — patch and minor
+  grouped weekly per ecosystem, majors on their own, because a bot that opens
+  twenty PRs a week trains everyone to close them unread and the one that
+  mattered arrives in that same pile.
+  Not done: musl builds for older distributions.
 - **Docs: prerequisites.** ✅ **Done.** What each machine needs before an
   install, derived from what the code actually runs and binds rather than from
   a template — the external commands each role shells out to, the PostgreSQL
