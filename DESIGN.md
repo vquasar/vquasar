@@ -287,10 +287,14 @@ the same bytes seen N times, or N different disks with one name — and with it
 how capacity aggregates, whether a VM can be migrated, and whether a volume can
 be created there at all.
 
+A volume in a shared pool is built by the control plane, which can reach that
+storage itself; one in a local pool is built by the host that owns the disk,
+over `ProvisionVolume`/`DeleteVolume`. Attaching a local volume pins its VM to
+that host, which the scheduler checks before any pool constraint.
+
 The kinds still to come are the ones that are **not directories**: LVM thin,
-Ceph RBD, iSCSI, NVMe-oF. What they still need is volume provisioning in the
-agent rather than the control plane — an LV is not a file `qemu-img` can create,
-and a volume exists before any host has been chosen for it. Planned kinds:
+Ceph RBD, iSCSI, NVMe-oF. Each is now a `PoolParams` variant plus the commands
+that build and remove a volume in it. Planned kinds:
 LVM thin, NFS, Ceph RBD/CephFS, iSCSI, NVMe-oF, SPDK, vhost-user-blk. Do not
 implement distributed storage.
 

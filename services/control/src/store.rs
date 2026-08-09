@@ -217,6 +217,10 @@ pub struct Volume {
     /// `None` is the platform's behaviour before policy existed.
     #[sqlx(default)]
     pub policy: Option<Json<vquasar_model::StoragePolicy>>,
+    /// The host holding this volume's bytes, when its pool is local to one
+    /// (ADR-025). `None` means shared storage, which no single host owns.
+    #[sqlx(default)]
+    pub host_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1653,6 +1657,7 @@ impl Store {
         project: Uuid,
         pool: Uuid,
         policy: Option<&vquasar_model::StoragePolicy>,
+        host: Option<Uuid>,
     ) -> std::result::Result<Volume, crate::quota::AdmitError> {
         let now = Utc::now();
         let mut tx = self.pool.begin().await?;
@@ -1665,8 +1670,8 @@ impl Store {
         let v = sqlx::query_as::<_, Volume>(
             "INSERT INTO volumes
                 (id, name, size_bytes, format, source_image_id, project_id,
-                 status, owner, pool_id, policy, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$8,$9,$10,$6,$6) RETURNING *",
+                 status, owner, pool_id, policy, host_id, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$8,$9,$10,$11,$6,$6) RETURNING *",
         )
         .bind(id)
         .bind(name)
@@ -1678,6 +1683,7 @@ impl Store {
         .bind(self.instance())
         .bind(pool)
         .bind(policy.map(Json))
+        .bind(host)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;

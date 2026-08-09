@@ -26,10 +26,11 @@ use tonic::{Request, Response, Status};
 use vquasar_proto::agent::host_agent_server::{HostAgent, HostAgentServer};
 use vquasar_proto::agent::vm_observed_state::Phase;
 use vquasar_proto::agent::{
-    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DiscardVmRequest, EnsureVmRequest,
-    EnsureVmResponse, FinalizeReceiveRequest, GetHostInfoRequest, GetHostInfoResponse,
-    GetVmMetricsRequest, GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse,
-    OperationResponse, PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest,
+    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DeleteVolumeRequest,
+    DiscardVmRequest, EnsureVmRequest, EnsureVmResponse, FinalizeReceiveRequest,
+    GetHostInfoRequest, GetHostInfoResponse, GetVmMetricsRequest, GetVmRequest, GetVmResponse,
+    ListVmsRequest, ListVmsResponse, OperationResponse, PrepareReceiveRequest,
+    PrepareReceiveResponse, ProvisionVolumeRequest, ProvisionVolumeResponse, SendMigrationRequest,
     StartVmRequest, StopVmRequest, StoragePoolReport, VmMetricsResponse, VmObservedState,
 };
 
@@ -100,6 +101,12 @@ struct AgentState {
     /// (design §18). The control plane can accept an egress rule and still
     /// never send it; this is how a test tells those apart.
     egress_seen: Option<(bool, usize)>,
+    /// Volume paths this host has been asked to build, in order (ADR-025).
+    /// A control plane that "provisions" a local volume without ever asking
+    /// the host that owns the disk is the failure this catches.
+    volumes_built: Vec<String>,
+    /// Volume paths this host has been asked to remove.
+    volumes_removed: Vec<String>,
     /// Storage pools this host refuses to report as usable, keyed by pool name
     /// with the reason it gives (ADR-023). Anything else it is asked about, it
     /// can use. Refusing by *name* is deliberate: the control plane is what
@@ -434,6 +441,30 @@ impl HostAgent for FakeAgent {
         Ok(Response::new(OperationResponse {
             accepted: true,
             message: "discarded".into(),
+        }))
+    }
+    async fn provision_volume(
+        &self,
+        r: Request<ProvisionVolumeRequest>,
+    ) -> Result<Response<ProvisionVolumeResponse>, Status> {
+        let req = r.into_inner();
+        self.state.lock().unwrap().volumes_built.push(req.path);
+        // Echo the requested size: a real agent reports what qemu-img made,
+        // and for a blank volume that is what was asked for.
+        Ok(Response::new(ProvisionVolumeResponse {
+            size_bytes: req.size_bytes,
+        }))
+    }
+
+    async fn delete_volume(
+        &self,
+        r: Request<DeleteVolumeRequest>,
+    ) -> Result<Response<OperationResponse>, Status> {
+        let req = r.into_inner();
+        self.state.lock().unwrap().volumes_removed.push(req.path);
+        Ok(Response::new(OperationResponse {
+            accepted: true,
+            message: "removed".into(),
         }))
     }
 }
@@ -2257,6 +2288,145 @@ async fn local_storage_pins_a_vm_and_says_so() {
         .unwrap_or(false);
     assert!(skipped, "drain did not name the pin: {drain}");
     let _ = a;
+}
+
+/// A volume in a local pool is built by the host that owns the disk, and pins
+/// every VM that attaches it to that host (ADR-025).
+#[tokio::test]
+async fn a_local_volume_is_built_on_its_host_and_pins_what_attaches_it() {
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR",
+        "/x/shared/volumes",
+    )])
+    .await;
+    let (st, pool) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "nvme", "kind": "local_dir", "path": "/x/nvme"}),
+        )
+        .await;
+    assert!(st.is_success(), "{pool}");
+
+    let (pa, pb) = (free_port(), free_port());
+    let a = spawn_agent("hostA", pa);
+    let b = spawn_agent("hostB", pb);
+    let host_a = h.register_host("hostA", pa).await;
+    let host_b = h.register_host("hostB", pb).await;
+    h.wait_for(
+        &format!("/storage-pools/{}", pool["id"].as_str().unwrap()),
+        |p| p["reachable_hosts"] == json!(2),
+        "both hosts reporting the local pool",
+    )
+    .await;
+
+    // A local volume has to name its host: nothing else has chosen one, and the
+    // choice pins every VM that later attaches it.
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "scratch", "size_bytes": 1048576, "pool": "nvme"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(format!("{body}").contains("has to name the host"), "{body}");
+
+    // And on shared storage, naming one would record a fact that is not true.
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "shared", "size_bytes": 1048576, "host": host_a}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(format!("{body}").contains("is shared"), "{body}");
+
+    // The host must actually report the pool — asked of the agents, not of the
+    // operator's belief.
+    let ghost = "77777777-7777-4777-8777-777777777777";
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "v", "size_bytes": 1048576, "pool": "nvme", "host": ghost}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 404, "{body}");
+
+    // Built where the bytes are: hostA is asked, hostB is not.
+    let (st, vol) = h
+        .post(
+            "/volumes",
+            json!({"name": "scratch", "size_bytes": 1048576, "pool": "nvme", "host": host_a}),
+        )
+        .await;
+    assert!(st.is_success(), "{vol}");
+    let vol_id = vol["id"].as_str().unwrap().to_string();
+    assert_eq!(vol["host_id"], json!(host_a), "{vol}");
+    let built = a.lock().unwrap().volumes_built.clone();
+    assert_eq!(built.len(), 1, "hostA was not asked to build it: {built:?}");
+    assert!(
+        built[0].contains(&vol_id) && built[0].starts_with("/x/nvme/"),
+        "{built:?}"
+    );
+    assert!(
+        b.lock().unwrap().volumes_built.is_empty(),
+        "the wrong host was asked to build it"
+    );
+
+    // Attaching it pins the VM: the other host reports the pool, but its disk
+    // does not have this volume on it.
+    let (st, v) = h
+        .post("/vms", json!({"name": "attached", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm_id = v["vm_id"].as_str().unwrap().to_string();
+    h.wait_for(
+        &format!("/vms/{vm_id}"),
+        |v| v["phase"] == "Running",
+        "the VM running before the volume is attached",
+    )
+    .await;
+    let (st, att) = h
+        .post(
+            &format!("/volumes/{vol_id}/attach"),
+            json!({"vm_id": vm_id}),
+        )
+        .await;
+    assert!(st.is_success(), "{att}");
+    let vm = h.get(&format!("/vms/{vm_id}")).await;
+    let disk = vm["spec"]["disks"]
+        .as_array()
+        .and_then(|d| d.last())
+        .cloned()
+        .unwrap();
+    assert_eq!(disk["pinned_host"], json!(host_a), "{vm}");
+
+    // Deleting it asks the host that has the bytes — sending this to the
+    // control plane's own filesystem would leave every local volume behind.
+    // (Detach needs the VM off: Cloud Hypervisor has no disk hot-unplug.)
+    assert!(h
+        .post(&format!("/vms/{vm_id}/stop"), json!({}))
+        .await
+        .0
+        .is_success());
+    h.wait_for(
+        &format!("/vms/{vm_id}"),
+        |v| v["phase"] == "Stopped",
+        "the VM stopped so its volume can be detached",
+    )
+    .await;
+    let (st, det) = h
+        .post(&format!("/volumes/{vol_id}/detach"), json!({}))
+        .await;
+    assert!(st.is_success(), "{det}");
+    assert_eq!(h.delete(&format!("/volumes/{vol_id}")).await.as_u16(), 204);
+    let removed = a.lock().unwrap().volumes_removed.clone();
+    assert_eq!(
+        removed.len(),
+        1,
+        "hostA was not asked to remove it: {removed:?}"
+    );
+    assert!(removed[0].contains(&vol_id), "{removed:?}");
+    let _ = host_b;
 }
 
 /// An unknown path under `/api/v1` must answer with the error envelope, not the

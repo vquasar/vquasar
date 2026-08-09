@@ -18,10 +18,11 @@ use vquasar_model::{VirtualMachineSpec, VmId, VmPhase};
 use vquasar_proto::agent::host_agent_server::HostAgent;
 use vquasar_proto::agent::vm_observed_state::Phase;
 use vquasar_proto::agent::{
-    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DiscardVmRequest, EnsureVmRequest,
-    EnsureVmResponse, FinalizeReceiveRequest, GetHostInfoRequest, GetHostInfoResponse,
-    GetVmMetricsRequest, GetVmRequest, GetVmResponse, ListVmsRequest, ListVmsResponse,
-    OperationResponse, PrepareReceiveRequest, PrepareReceiveResponse, SendMigrationRequest,
+    ConsoleClientMessage, ConsoleServerMessage, DeleteVmRequest, DeleteVolumeRequest,
+    DiscardVmRequest, EnsureVmRequest, EnsureVmResponse, FinalizeReceiveRequest,
+    GetHostInfoRequest, GetHostInfoResponse, GetVmMetricsRequest, GetVmRequest, GetVmResponse,
+    ListVmsRequest, ListVmsResponse, OperationResponse, PrepareReceiveRequest,
+    PrepareReceiveResponse, ProvisionVolumeRequest, ProvisionVolumeResponse, SendMigrationRequest,
     StartVmRequest, StopVmRequest, VmMetricsResponse, VmObservedState,
 };
 
@@ -300,6 +301,41 @@ impl HostAgent for AgentService {
             Err(_lagged) => None,
         });
         Ok(Response::new(Box::pin(stream)))
+    }
+    async fn provision_volume(
+        &self,
+        request: Request<ProvisionVolumeRequest>,
+    ) -> Result<Response<ProvisionVolumeResponse>, Status> {
+        let r = request.into_inner();
+        let size_bytes = self
+            .manager
+            .storage()
+            .provision_volume(
+                std::path::Path::new(&r.path),
+                &r.format,
+                r.size_bytes,
+                Some(std::path::Path::new(&r.source_path)).filter(|_| !r.source_path.is_empty()),
+                Some(r.preallocation.as_str()).filter(|p| !p.is_empty()),
+            )
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ProvisionVolumeResponse { size_bytes }))
+    }
+
+    async fn delete_volume(
+        &self,
+        request: Request<DeleteVolumeRequest>,
+    ) -> Result<Response<OperationResponse>, Status> {
+        let r = request.into_inner();
+        self.manager
+            .storage()
+            .delete_volume(std::path::Path::new(&r.path))
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(OperationResponse {
+            accepted: true,
+            message: "removed".into(),
+        }))
     }
 }
 

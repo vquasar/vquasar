@@ -92,10 +92,12 @@ Three things behave differently as a result:
   refused by name, and a drain reports it as pinned rather than as a capacity
   problem — the other host reports the pool, but its disk is empty, so
   "migrating" there would start the guest on nothing.
-* **A volume cannot be created here.** A volume's file is built by the control
-  plane, which cannot reach another host's disk — and a volume exists before any
-  VM references it, so no host has been chosen. Give the VM a disk in the pool
-  instead: the agent creates that one, on the host it lands on.
+* **A volume names its host.** A volume in a local pool is built by the host
+  that owns the disk, so `POST /volumes` requires `host` there (and refuses it
+  on a shared pool, where no single host owns the bytes). The host must already
+  report the pool — asked of the agents, not of the operator. Attaching such a
+  volume **pins** the VM to that host, and deleting it asks that host to remove
+  the file.
 
 Placement of a *new* VM is unrestricted: the disk does not exist yet, so any
 reporting host will do. The pin applies from the moment the agent creates the
@@ -146,12 +148,12 @@ Three things worth knowing:
 
 ### Not yet: LVM thin, RBD, iSCSI, NVMe-oF
 
-The kinds that are not directories. Half of what they needed now exists — a pool
-declares whether its bytes are shared, so a local block kind can be added
-without silently breaking placement (ADR-025). What is still missing is volume
-provisioning in the **agent** rather than the control plane: an LV is not a file
-`qemu-img` can create, and a volume exists before any host has been chosen for
-it.
+The kinds that are not directories. Everything they were blocked on now exists:
+a pool declares whether its bytes are shared (ADR-025), and a volume in a local
+pool is provisioned by the host that owns the disk rather than by the control
+plane. Adding one is now a `PoolParams` variant plus the commands that build and
+remove a volume in it — `lvcreate`/`lvremove` instead of `qemu-img` — not an
+architectural change.
 
 ## Creating one
 

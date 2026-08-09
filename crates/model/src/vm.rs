@@ -324,6 +324,13 @@ pub struct DiskSpec {
     /// mentioned policy round-trips through the database unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<StoragePolicy>,
+    /// The host that holds this disk's bytes, when only one does (ADR-025).
+    ///
+    /// Set when a volume in a local pool is attached. The pool alone is not
+    /// enough there: every host reporting a local pool has a disk by that name,
+    /// and only one of them has *this* volume on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_host: Option<crate::ids::HostId>,
 }
 
 impl DiskSpec {
@@ -337,6 +344,7 @@ impl DiskSpec {
             size_bytes: None,
             pool: None,
             policy: None,
+            pinned_host: None,
         }
     }
 
@@ -355,6 +363,7 @@ impl DiskSpec {
             size_bytes,
             pool: None,
             policy: None,
+            pinned_host: None,
         }
     }
 
@@ -381,6 +390,7 @@ impl DiskSpec {
             size_bytes: Some(size_bytes),
             pool: None,
             policy: None,
+            pinned_host: None,
         }
     }
 }

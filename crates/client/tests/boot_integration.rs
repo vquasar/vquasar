@@ -81,6 +81,7 @@ async fn boots_real_vm_and_emits_serial_output() {
             size_bytes: None,
             pool: None,
             policy: None,
+            pinned_host: None,
         }],
         network_interfaces: vec![],
         placement: PlacementSpec::default(),

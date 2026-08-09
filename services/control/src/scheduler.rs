@@ -42,6 +42,18 @@ impl Unschedulable {
     }
 }
 
+/// The host a VM's disks pin it to, when one of them is on storage only that
+/// host has (ADR-025).
+///
+/// Stronger than a pool constraint and checked before one: a pool says "any
+/// host reporting this", while a pinned disk says "that host, because the bytes
+/// are on it".
+pub fn pinned_host(spec: &VirtualMachineSpec) -> Option<Uuid> {
+    spec.disks
+        .iter()
+        .find_map(|d| d.pinned_host.map(|h| h.as_uuid()))
+}
+
 /// The pools a VM's disks need a host to be able to reach.
 ///
 /// Only disks the control plane placed carry a pool. A disk pointed at a raw
@@ -73,12 +85,16 @@ pub fn schedule(
     // Storage first, and separately, so the refusal can say which filter
     // emptied the list. A host that cannot reach a VM's disks is not a host
     // that is merely busy.
+    // A disk on storage only one host has decides the answer before anything
+    // else is considered: no other host can see those bytes at all.
+    let pinned = pinned_host(spec);
     let needed = required_pools(spec);
     let reachable: Vec<&Host> = hosts
         .iter()
+        .filter(|h| pinned.is_none_or(|p| p == h.id))
         .filter(|h| can_reach(&needed, pools.get(&h.id)))
         .collect();
-    if reachable.is_empty() && !hosts.is_empty() && !needed.is_empty() {
+    if reachable.is_empty() && !hosts.is_empty() && (!needed.is_empty() || pinned.is_some()) {
         return Err(Unschedulable::UnreachableStorage);
     }
     reachable
@@ -343,6 +359,61 @@ mod tests {
         let mut s = spec(2, 2048);
         s.disks = vec![vquasar_model::DiskSpec::raw("/x/legacy.raw")];
         assert!(schedule(&s, &[h], &HashMap::new(), &no_pools()).is_ok());
+    }
+
+    /// A disk on storage only one host has decides placement outright — not a
+    /// preference, and not merely "a host reporting the pool". Every host
+    /// reporting a local pool has a disk by that name; only one has this
+    /// volume on it (ADR-025).
+    #[test]
+    fn a_pinned_disk_decides_which_host_outright() {
+        let a = host("a", 32, 64);
+        let b = host("b", 32, 64);
+        let (a_id, b_id) = (a.id, b.id);
+        let pool = Uuid::new_v4();
+        let mut s = spec(2, 2048);
+        let mut disk = vquasar_model::DiskSpec::raw("/nvme/vol.raw")
+            .in_pool(Some(vquasar_model::StoragePoolId::from_uuid(pool)));
+        disk.pinned_host = Some(vquasar_model::HostId::from_uuid(b_id));
+        s.disks = vec![disk];
+
+        // Both hosts report the pool, and b is the emptier one anyway — so this
+        // has to fail for the right reason when only a is offered.
+        let mut both = PoolsByHost::new();
+        both.insert(a_id, HashSet::from([pool]));
+        both.insert(b_id, HashSet::from([pool]));
+        assert_eq!(
+            schedule(&s, &[a.clone(), b.clone()], &HashMap::new(), &both).unwrap(),
+            b_id
+        );
+
+        // Offered only the other host, this is not "no capacity": the bytes are
+        // somewhere it cannot reach.
+        assert_eq!(
+            schedule(&s, std::slice::from_ref(&a), &HashMap::new(), &both),
+            Err(Unschedulable::UnreachableStorage)
+        );
+    }
+
+    /// A pin with no pool still pins. The two constraints are independent, and
+    /// a disk can name its host without the platform knowing the pool.
+    #[test]
+    fn a_pin_holds_without_a_pool() {
+        let a = host("a", 32, 64);
+        let b = host("b", 32, 64);
+        let b_id = b.id;
+        let mut s = spec(2, 2048);
+        let mut disk = vquasar_model::DiskSpec::raw("/nvme/vol.raw");
+        disk.pinned_host = Some(vquasar_model::HostId::from_uuid(b_id));
+        s.disks = vec![disk];
+        assert_eq!(
+            schedule(&s, &[a.clone(), b], &HashMap::new(), &no_pools()).unwrap(),
+            b_id
+        );
+        assert_eq!(
+            schedule(&s, std::slice::from_ref(&a), &HashMap::new(), &no_pools()),
+            Err(Unschedulable::UnreachableStorage)
+        );
     }
 
     /// Running out of room and being unable to see the storage are different
