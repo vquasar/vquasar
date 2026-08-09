@@ -1,6 +1,7 @@
-// Volumes (handoff §8). The snapshot count is deliberately not a column: it
-// would cost one request per row, and a fleet has hundreds of volumes. The
-// count lives in the snapshots panel, one query, on demand.
+// Volumes (handoff §8). The snapshot count *is* a column now: it arrives on the
+// volume row from a single aggregate, so the page costs the same one request it
+// always did. It was left off while the only way to get it was one request per
+// row — a page that got slower the more storage you had.
 
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -460,8 +461,15 @@ export function Volumes() {
               </div>
               <div className="vq-mono-sm">{v.attached_serial ?? <Dash />}</div>
               <div className="vq-cell vq-mono-sm">{imageName(v.source_image_id) ?? <Dash />}</div>
-              <div>
-                <button className="vq-btn link" onClick={() => setSnapVol(v)}>
+              <div className="vq-cell">
+                {/* The count first, so the column answers "does this volume
+                    have any" at a glance; the action stays where it was. */}
+                <span className="vq-mono-sm">{v.snapshot_count || <Dash />}</span>
+                <button
+                  className="vq-btn link"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => setSnapVol(v)}
+                >
                   manage
                 </button>
               </div>

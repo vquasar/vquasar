@@ -26,6 +26,14 @@ pub enum Unschedulable {
     /// Hosts exist with room, but none reports every pool this VM's disks are
     /// in. This is the refusal a missing mount used to become a launch failure.
     UnreachableStorage,
+    /// The VM asks to be placed on a host that is not available — gone, not
+    /// Ready, or cordoned. Distinct from having no room: waiting will not fix
+    /// it, and an operator has to change the request or the host.
+    RequestedHostUnavailable,
+    /// The VM asks for one host and its disks are on another. Only an operator
+    /// can resolve that, and silently preferring either would put a guest
+    /// somewhere it was not asked to be or somewhere its data is not.
+    PlacementConflict,
     /// Nothing had room, or there were no hosts at all.
     NoCapacity,
 }
@@ -36,6 +44,12 @@ impl Unschedulable {
         match self {
             Unschedulable::UnreachableStorage => {
                 "no schedulable host reports the storage pool this VM's disks are in"
+            }
+            Unschedulable::RequestedHostUnavailable => {
+                "the host this VM asks to be placed on is not available"
+            }
+            Unschedulable::PlacementConflict => {
+                "this VM asks for one host and its disks are on another"
             }
             Unschedulable::NoCapacity => "waiting for a schedulable host",
         }
@@ -52,6 +66,23 @@ pub fn pinned_host(spec: &VirtualMachineSpec) -> Option<Uuid> {
     spec.disks
         .iter()
         .find_map(|d| d.pinned_host.map(|h| h.as_uuid()))
+}
+
+/// The one host this VM must go to, if any.
+///
+/// A disk on storage only one host has is a *fact* and wins; `placement.host`
+/// is a *request*. When both are set and disagree there is no defensible
+/// answer — preferring the request puts the guest where its data is not, and
+/// preferring the fact puts it where the operator did not ask — so it is an
+/// error rather than a preference.
+pub fn required_host(spec: &VirtualMachineSpec) -> Result<Option<Uuid>, Unschedulable> {
+    let pinned = pinned_host(spec);
+    let requested = spec.placement.host.map(|h| h.as_uuid());
+    match (pinned, requested) {
+        (Some(p), Some(r)) if p != r => Err(Unschedulable::PlacementConflict),
+        (Some(p), _) => Ok(Some(p)),
+        (None, r) => Ok(r),
+    }
 }
 
 /// The pools a VM's disks need a host to be able to reach.
@@ -85,17 +116,25 @@ pub fn schedule(
     // Storage first, and separately, so the refusal can say which filter
     // emptied the list. A host that cannot reach a VM's disks is not a host
     // that is merely busy.
-    // A disk on storage only one host has decides the answer before anything
-    // else is considered: no other host can see those bytes at all.
-    let pinned = pinned_host(spec);
+    // A required host — asked for, or forced by where the disks are — decides
+    // the answer before anything else is considered.
+    let required = required_host(spec)?;
     let needed = required_pools(spec);
     let reachable: Vec<&Host> = hosts
         .iter()
-        .filter(|h| pinned.is_none_or(|p| p == h.id))
+        .filter(|h| required.is_none_or(|p| p == h.id))
         .filter(|h| can_reach(&needed, pools.get(&h.id)))
         .collect();
-    if reachable.is_empty() && !hosts.is_empty() && (!needed.is_empty() || pinned.is_some()) {
-        return Err(Unschedulable::UnreachableStorage);
+    if reachable.is_empty() && !hosts.is_empty() {
+        // Which of the two filters emptied it, so the message is actionable:
+        // an unavailable host is not a fleet that is merely full, and neither
+        // is storage nobody can reach.
+        if required.is_some() && pinned_host(spec).is_none() {
+            return Err(Unschedulable::RequestedHostUnavailable);
+        }
+        if !needed.is_empty() || required.is_some() {
+            return Err(Unschedulable::UnreachableStorage);
+        }
     }
     reachable
         .into_iter()
@@ -414,6 +453,81 @@ mod tests {
             schedule(&s, std::slice::from_ref(&a), &HashMap::new(), &no_pools()),
             Err(Unschedulable::UnreachableStorage)
         );
+    }
+
+    /// `placement.host` was accepted, stored and never read: a VM could ask to
+    /// be pinned and the scheduler would put it anywhere. Now it is honoured.
+    #[test]
+    fn an_explicit_placement_decides_which_host() {
+        let a = host("a", 32, 64);
+        let b = host("b", 32, 64);
+        let (a_id, b_id) = (a.id, b.id);
+        let mut s = spec(2, 2048);
+        s.placement.host = Some(vquasar_model::HostId::from_uuid(b_id));
+        assert_eq!(
+            schedule(&s, &[a.clone(), b], &HashMap::new(), &no_pools()).unwrap(),
+            b_id
+        );
+        // And a host that is not on offer is not "no capacity": waiting will
+        // never fix it, so the message must not say to wait.
+        assert_eq!(
+            schedule(&s, std::slice::from_ref(&a), &HashMap::new(), &no_pools()),
+            Err(Unschedulable::RequestedHostUnavailable)
+        );
+        let _ = a_id;
+    }
+
+    /// A request and a fact that disagree have no defensible answer: preferring
+    /// the request puts the guest where its data is not, and preferring the
+    /// fact puts it where nobody asked.
+    #[test]
+    fn asking_for_one_host_while_the_disks_are_on_another_is_an_error() {
+        let a = host("a", 32, 64);
+        let b = host("b", 32, 64);
+        let (a_id, b_id) = (a.id, b.id);
+        let mut s = spec(2, 2048);
+        s.placement.host = Some(vquasar_model::HostId::from_uuid(a_id));
+        let mut disk = vquasar_model::DiskSpec::raw("/nvme/v.raw");
+        disk.pinned_host = Some(vquasar_model::HostId::from_uuid(b_id));
+        s.disks = vec![disk];
+        assert_eq!(required_host(&s), Err(Unschedulable::PlacementConflict));
+        assert_eq!(
+            schedule(&s, &[a, b], &HashMap::new(), &no_pools()),
+            Err(Unschedulable::PlacementConflict)
+        );
+    }
+
+    /// Agreeing is not a conflict, and the storage fact is what is used.
+    #[test]
+    fn a_placement_that_agrees_with_the_disks_is_honoured() {
+        let b = host("b", 32, 64);
+        let b_id = b.id;
+        let mut s = spec(2, 2048);
+        s.placement.host = Some(vquasar_model::HostId::from_uuid(b_id));
+        let mut disk = vquasar_model::DiskSpec::raw("/nvme/v.raw");
+        disk.pinned_host = Some(vquasar_model::HostId::from_uuid(b_id));
+        s.disks = vec![disk];
+        assert_eq!(required_host(&s), Ok(Some(b_id)));
+        assert_eq!(
+            schedule(&s, &[b], &HashMap::new(), &no_pools()).unwrap(),
+            b_id
+        );
+    }
+
+    /// Each refusal has to read differently, or an operator cannot tell which
+    /// of four quite different problems they have.
+    #[test]
+    fn the_refusals_do_not_read_the_same() {
+        let all = [
+            Unschedulable::UnreachableStorage,
+            Unschedulable::RequestedHostUnavailable,
+            Unschedulable::PlacementConflict,
+            Unschedulable::NoCapacity,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for r in all {
+            assert!(seen.insert(r.reason()), "duplicate reason: {}", r.reason());
+        }
     }
 
     /// Running out of room and being unable to see the storage are different

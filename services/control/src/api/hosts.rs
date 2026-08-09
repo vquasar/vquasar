@@ -175,6 +175,16 @@ pub async fn drain(
             })
             .cloned()
             .collect();
+        // An explicit placement pins as firmly as local storage does, and for
+        // a reason the scheduler cannot second-guess: somebody asked for it.
+        if vm.spec.0.placement.host.map(|h| h.as_uuid()) == Some(id) {
+            skipped.push(DrainSkip {
+                vm_id: vm.id,
+                vm_name: vm.name,
+                reason: "pinned to this host by its placement".into(),
+            });
+            continue;
+        }
         if crate::scheduler::required_pools(&vm.spec.0)
             .iter()
             .any(|p| local.contains(p))
@@ -219,6 +229,12 @@ pub async fn drain(
                 vm_id: vm.id,
                 vm_name: vm.name,
                 reason: "no CPU-compatible host reports this VM's storage pool".into(),
+            }),
+            Err(crate::scheduler::Unschedulable::RequestedHostUnavailable)
+            | Err(crate::scheduler::Unschedulable::PlacementConflict) => skipped.push(DrainSkip {
+                vm_id: vm.id,
+                vm_name: vm.name,
+                reason: "pinned by its placement — change that first".into(),
             }),
             Err(crate::scheduler::Unschedulable::NoCapacity) => skipped.push(DrainSkip {
                 vm_id: vm.id,

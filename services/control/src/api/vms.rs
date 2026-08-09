@@ -578,6 +578,17 @@ pub struct TemplateOverrides {
     pub security_groups: Vec<Uuid>,
     #[serde(default)]
     pub cloud_init: Option<CloudInitSpec>,
+    /// Pin the VM to a host instead of letting the scheduler choose.
+    ///
+    /// The same field a full `POST /vms` spec carries. A template says what a
+    /// VM *is*; where it goes and whether it starts are decisions about this
+    /// one instance, so they belong here rather than in the template.
+    #[serde(default)]
+    pub host: Option<Uuid>,
+    /// Create it stopped. Omitted means running, which is what every
+    /// template-created VM did before this existed.
+    #[serde(default)]
+    pub desired_power_state: Option<DesiredPowerState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -735,7 +746,7 @@ fn build_spec_from_template(
     };
 
     VirtualMachineSpec {
-        desired_power_state: DesiredPowerState::Running,
+        desired_power_state: ov.desired_power_state.unwrap_or(DesiredPowerState::Running),
         cpu: CpuSpec {
             boot_vcpus: ov.boot_vcpus.unwrap_or(template.boot_vcpus as u32),
             max_vcpus: ov.max_vcpus.unwrap_or(template.max_vcpus as u32),
@@ -747,7 +758,9 @@ fn build_spec_from_template(
         boot: image.boot.0.clone(),
         disks,
         network_interfaces,
-        placement: PlacementSpec::default(),
+        placement: PlacementSpec {
+            host: ov.host.map(vquasar_model::HostId::from_uuid),
+        },
         cloud_init,
         machine_type: if template.machine_type == "microvm" {
             vquasar_model::MachineType::MicroVm
@@ -1017,6 +1030,17 @@ pub async fn migrate(
         return Err(ApiError::invalid(
             "a migration is already in progress for this VM",
         ));
+    }
+    // An explicit placement is a decision somebody made; migrating past it
+    // would leave the VM contradicting its own spec, and nothing would ever put
+    // it back — the scheduler only places a VM that has no host.
+    if let Some(pinned) = vm.spec.0.placement.host {
+        if pinned.as_uuid() != body.target_host_id {
+            return Err(ApiError::invalid(
+                "this VM is pinned to a host by its placement; change the placement before \
+                 migrating it",
+            ));
+        }
     }
     // A disk on local storage cannot arrive anywhere: the destination has its
     // own filesystem behind the same pool name, and "migrating" there would

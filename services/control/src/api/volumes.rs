@@ -23,6 +23,9 @@ pub struct VolumeView {
     #[serde(flatten)]
     pub volume: Volume,
     pub path: String,
+    /// How many snapshots this volume has. Carried on the row because the
+    /// alternative — one request per volume — is what kept it off the list.
+    pub snapshot_count: i64,
 }
 
 fn ext(format: &str) -> &str {
@@ -49,18 +52,26 @@ fn dir_in(store: &Store, pools: &PoolPaths, v: &Volume) -> String {
 
 type PoolPaths = std::collections::HashMap<Uuid, String>;
 
-fn view(store: &Store, pools: &PoolPaths, v: Volume) -> VolumeView {
+type SnapshotCounts = std::collections::HashMap<Uuid, i64>;
+
+fn view(store: &Store, pools: &PoolPaths, snaps: &SnapshotCounts, v: Volume) -> VolumeView {
     let path = volume_path(&dir_in(store, pools, &v), v.id, &v.format)
         .to_string_lossy()
         .into_owned();
-    VolumeView { volume: v, path }
+    let snapshot_count = snaps.get(&v.id).copied().unwrap_or(0);
+    VolumeView {
+        volume: v,
+        path,
+        snapshot_count,
+    }
 }
 
 /// The same for a single volume, when the caller has no map to hand. Pools are
 /// a handful of rows, so one read beats threading the map through every path.
 async fn one(store: &Store, v: Volume) -> ApiResult<VolumeView> {
     let pools = store.pool_paths().await?;
-    Ok(view(store, &pools, v))
+    let snaps = store.snapshot_counts().await?;
+    Ok(view(store, &pools, &snaps, v))
 }
 
 /// A volume's own directory, for the file operations that act on it.
@@ -76,12 +87,14 @@ pub async fn list(
     user.require("volume:read")?;
     let scoped = crate::scoped::ScopedStore::new(store.clone(), scope.0);
     let pools = store.pool_paths().await?;
+    // One aggregate for the whole page, not one request per row.
+    let snaps = store.snapshot_counts().await?;
     Ok(Json(
         scoped
             .list_volumes()
             .await?
             .into_iter()
-            .map(|v| view(&store, &pools, v))
+            .map(|v| view(&store, &pools, &snaps, v))
             .collect(),
     ))
 }

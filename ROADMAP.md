@@ -518,6 +518,23 @@ Split into three shippable slices.
   exist by design (ADR-014); the Settings page now says that instead of
   promising a section that was never there.
 
+- **Console: placement, power, and snapshot counts.** ✅ **Done.**
+  Creating a VM from a template can now pin it to a host and create it stopped —
+  decisions about *this instance*, not about the template, so they are plain
+  controls rather than overrides.
+  Building that found a real defect: **`placement.host` was accepted, stored and
+  never read**. A caller could pin a VM and the scheduler would put it anywhere,
+  which is the same "accepted and ignored" failure ADR-024 names. It is now
+  honoured, and the interaction with a disk on local storage is decided rather
+  than fudged: the disk is a *fact* and the placement is a *request*, so the
+  fact wins and a disagreement is an error — preferring either silently would
+  put a guest where its data is not, or where nobody asked. A migration past an
+  explicit placement is refused and a drain reports the pin, since nothing would
+  ever put the VM back.
+  The volumes list carries `snapshot_count` from one aggregate. The column was
+  left off while the only way to get it was a request per row — a page that got
+  slower the more storage you had.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH
