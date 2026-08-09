@@ -456,15 +456,29 @@ Split into three shippable slices.
   host has been chosen, so the refusal names the alternative instead.
   `local_dir` is deliberately identical to `shared_dir` apart from the
   declaration: that is the point.
+- **M27 — a volume on local storage is built by the host that owns the disk.**
+  ✅ **Done.** Two new agent RPCs (`ProvisionVolume`, `DeleteVolume`) run the
+  same `qemu-img` work the control plane does for a shared pool, on the machine
+  that can actually reach the bytes. A shared pool keeps the control-plane path:
+  it works, and the control plane *is* the NFS server.
+  `POST /volumes` requires `host` for a local pool — a volume exists before any
+  VM references it, so nothing else has chosen, and the choice pins every VM
+  that later attaches it — and refuses `host` on a shared pool, where naming one
+  would record a fact that is not true. The host must already report the pool,
+  asked of the agents rather than of the operator.
+  A `DiskSpec` gained `pinned_host`, set at attach: the pool is not enough,
+  because every host reporting a local pool has a disk by that name and only one
+  of them has *this* volume. The scheduler checks it before anything else, and
+  failing it is "unreachable storage", not "no capacity". Deletion asks the
+  owning host; sending it to the control plane's own filesystem would leave
+  every local volume's bytes behind forever.
 - **Storage, the rest of feature-complete.** The kinds that are *not*
-  directories — LVM thin, Ceph RBD, iSCSI, NVMe-oF — plus per-VM storage policy
-  (cache mode, discard/TRIM, IO throttling, thin vs thick).
-  Half of what they needed landed in M26: a pool declares its sharing, so a
-  local block kind can be added without silently breaking placement. What is
-  still missing is **volume provisioning in the agent** rather than the control
-  plane — an LV is not a file `qemu-img` can create, and a volume exists before
-  any host has been chosen for it. Per-VM storage policy is done (M25); this is
-  the last piece.
+  directories — LVM thin, Ceph RBD, iSCSI, NVMe-oF.
+  Everything they were blocked on now exists: a pool declares its sharing (M26)
+  and a local volume is provisioned by its host (M27). Adding one is a
+  `PoolParams` variant plus the commands that build and remove a volume in it —
+  `lvcreate`/`lvremove` rather than `qemu-img` — and no longer an architectural
+  change.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`

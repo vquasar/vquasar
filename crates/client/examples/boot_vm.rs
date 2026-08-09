@@ -115,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
             size_bytes: None,
             pool: None,
             policy: None,
+            pinned_host: None,
         });
     }
 

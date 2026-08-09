@@ -192,6 +192,8 @@ pub async fn create_from_volume(
         pool: vol.pool_id.map(vquasar_model::StoragePoolId::from_uuid),
         // The volume carries its own policy, applied when the disk is attached.
         policy: vol.policy.as_ref().map(|p| p.0.clone()),
+        // A volume on local storage exists on exactly one machine (ADR-025).
+        pinned_host: vol.host_id.map(vquasar_model::HostId::from_uuid),
     };
     let network_interfaces = body
         .network_id

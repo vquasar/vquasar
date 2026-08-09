@@ -117,6 +117,12 @@ pub struct VmManager {
 }
 
 impl VmManager {
+    /// The host's storage provisioner, for the volume RPCs that have to run on
+    /// the machine that owns the disk (ADR-025).
+    pub fn storage(&self) -> &StorageProvisioner {
+        &self.storage
+    }
+
     pub fn new(
         backend: Arc<dyn Backend>,
         network: Arc<dyn NetworkBackend>,

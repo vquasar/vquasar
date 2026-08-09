@@ -165,6 +165,29 @@ impl Agent {
             .into_inner())
     }
 
+    /// Build a volume's file on this host's own storage (ADR-025).
+    ///
+    /// Synchronous, like the control plane's own `qemu-img` path it mirrors: a
+    /// volume is `provisioning` until its bytes exist, and turning that into a
+    /// task state machine would be a different change from moving where the
+    /// work happens.
+    pub async fn provision_volume(
+        &self,
+        req: vquasar_proto::agent::ProvisionVolumeRequest,
+    ) -> Result<u64, AgentError> {
+        let mut client = self.client().await?;
+        Ok(client.provision_volume(req).await?.into_inner().size_bytes)
+    }
+
+    /// Remove a volume's file from this host. Idempotent on the agent side.
+    pub async fn delete_volume(&self, path: String) -> Result<(), AgentError> {
+        let mut client = self.client().await?;
+        client
+            .delete_volume(vquasar_proto::agent::DeleteVolumeRequest { path })
+            .await?;
+        Ok(())
+    }
+
     /// Observed state of every VM the host currently manages (used to refresh
     /// live fields like the discovered IP each tick — design M11).
     pub async fn list_vms(&self) -> Result<Vec<VmObservedState>, AgentError> {

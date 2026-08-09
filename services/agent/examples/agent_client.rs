@@ -156,6 +156,7 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
             size_bytes: None,
             pool: None,
             policy: None,
+            pinned_host: None,
         });
     }
 

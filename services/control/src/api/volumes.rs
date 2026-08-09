@@ -115,6 +115,11 @@ pub struct CreateVolume {
     /// Omitted keeps the platform's previous behaviour exactly.
     #[serde(default)]
     pub policy: Option<vquasar_model::StoragePolicy>,
+    /// Which host holds it, for a pool that is local to one machine (ADR-025).
+    /// Required there and refused elsewhere: on shared storage no single host
+    /// owns the bytes, and naming one would record a fact that is not true.
+    #[serde(default)]
+    pub host: Option<Uuid>,
     /// Which storage pool to place the volume in, by id or by name (ADR-023).
     /// Omitted means `default` — the pool an existing cluster was already
     /// using, so nothing about an unchanged request changes.
@@ -178,20 +183,30 @@ pub async fn create(
     }
     let id = Uuid::new_v4();
     let pool = resolve_pool(&store, body.pool.as_deref()).await?;
-    // A volume's file is built here, by this process, with qemu-img. For a
-    // local pool that file has to exist on some *other* machine's disk, and
-    // there is no host to build it on until a VM is scheduled — so the honest
-    // answer is a refusal that names what is missing, not a file written into
-    // the control plane's own filesystem under a path that means something
-    // else on every host (ADR-025).
-    if !pool.params.0.sharing().is_shared() {
-        return Err(ApiError::invalid(format!(
-            "storage pool {:?} is local to each host, and a volume is provisioned by the \
-             control plane, which cannot reach another host's disk. Give the VM a disk in \
-             this pool instead — the agent creates that one.",
-            pool.name
-        )));
-    }
+    // Where the file gets built depends on who can reach the storage: the
+    // control plane for a shared pool, the host that owns the disk for a local
+    // one (ADR-025). Which host is the operator's call — a volume exists before
+    // any VM references it, so nothing else has chosen yet, and the choice
+    // pins every VM that later attaches it.
+    let local = !pool.params.0.sharing().is_shared();
+    let host = match (local, body.host) {
+        (true, Some(h)) => Some(host_for_pool(&store, h, pool.id, &pool.name).await?),
+        (true, None) => {
+            return Err(ApiError::invalid(format!(
+                "storage pool {:?} is local to each host, so a volume in it has to name the \
+                 host that will hold it: pass \"host\".",
+                pool.name
+            )))
+        }
+        (false, Some(_)) => {
+            return Err(ApiError::invalid(format!(
+                "storage pool {:?} is shared, so no single host holds a volume in it — \
+                 remove \"host\".",
+                pool.name
+            )))
+        }
+        (false, None) => None,
+    };
     let pool_dir = pool
         .params
         .0
@@ -246,15 +261,19 @@ pub async fn create(
             crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
             pool.id,
             body.policy.as_ref(),
+            host.as_ref().map(|h| h.id),
         )
         .await?;
 
     let path = volume_path(&pool_dir, id, &format);
-    let built = provision(&store, &body, &path, &format).await;
+    let built = match &host {
+        Some(h) => provision_on_host(&store, &body, h, &path, &format).await,
+        None => provision(&store, &body, &path, &format).await,
+    };
     let size = match built {
         Ok(size) => size,
         Err(e) => {
-            let _ = tokio::fs::remove_file(&path).await;
+            cleanup_partial(&store, host.as_ref(), &path).await;
             let _ = store.drop_volume_reservation(id).await;
             return Err(e);
         }
@@ -263,15 +282,127 @@ pub async fn create(
         Ok(Some(v)) => Ok((StatusCode::CREATED, Json(one(&store, v).await?))),
         // The reservation vanished, or the true size did not fit after all.
         Ok(None) => {
-            let _ = tokio::fs::remove_file(&path).await;
+            cleanup_partial(&store, host.as_ref(), &path).await;
             Err(ApiError::internal("volume reservation disappeared"))
         }
         Err(e) => {
-            let _ = tokio::fs::remove_file(&path).await;
+            cleanup_partial(&store, host.as_ref(), &path).await;
             let _ = store.drop_volume_reservation(id).await;
             Err(e.into())
         }
     }
+}
+
+/// Drop a half-built volume file, on whichever machine was building it.
+async fn cleanup_partial(store: &Store, host: Option<&crate::store::Host>, path: &std::path::Path) {
+    let _ = store;
+    match host {
+        None => {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        Some(h) => {
+            let agent = crate::agent::Agent::new(h.endpoint.clone());
+            let _ = agent
+                .delete_volume(path.to_string_lossy().into_owned())
+                .await;
+        }
+    }
+}
+
+/// Remove a volume's file, from whichever machine can reach it (ADR-025).
+///
+/// Best-effort in both cases, as deletion has always been here: the row going
+/// is what the caller asked for, and a file left behind is what the orphan
+/// sweep exists to find. Sending the request to the wrong machine, though,
+/// would silently leave every local volume's bytes on disk forever — so the
+/// host is asked rather than assumed.
+async fn remove_file_wherever_it_is(store: &Store, v: &Volume, path: &std::path::Path) {
+    let Some(host_id) = v.host_id else {
+        let _ = tokio::fs::remove_file(path).await;
+        return;
+    };
+    match store.get_host(host_id).await {
+        Ok(Some(h)) => {
+            let agent = crate::agent::Agent::new(h.endpoint.clone());
+            if let Err(e) = agent
+                .delete_volume(path.to_string_lossy().into_owned())
+                .await
+            {
+                tracing::warn!(volume = %v.id, host = %h.name, error = %e,
+                               "could not remove a local volume's file");
+            }
+        }
+        _ => tracing::warn!(volume = %v.id, host = %host_id,
+                            "a local volume's host is gone; its file stays behind"),
+    }
+}
+
+/// Resolve the host a local volume is to be built on, refusing one that does
+/// not report the pool.
+///
+/// The same question the scheduler asks for a VM, asked here because a volume
+/// has no VM to be scheduled with — and answered against the agents' reports
+/// rather than the operator's belief (ADR-023).
+async fn host_for_pool(
+    store: &Store,
+    host: Uuid,
+    pool: Uuid,
+    pool_name: &str,
+) -> ApiResult<crate::store::Host> {
+    let h = store
+        .get_host(host)
+        .await?
+        .ok_or_else(|| ApiError::host_not_found(host))?;
+    let reports = store
+        .pools_by_host()
+        .await?
+        .remove(&host)
+        .is_some_and(|p| p.contains(&pool));
+    if !reports {
+        return Err(ApiError::invalid(format!(
+            "host {:?} does not report storage pool {pool_name:?}, so it cannot hold a \
+             volume there",
+            h.name
+        )));
+    }
+    Ok(h)
+}
+
+/// Build the volume's file on the host that owns the disk (ADR-025).
+async fn provision_on_host(
+    store: &Store,
+    body: &CreateVolume,
+    host: &crate::store::Host,
+    path: &std::path::Path,
+    format: &str,
+) -> ApiResult<i64> {
+    let source_path = match body.source_image_id {
+        Some(image_id) => {
+            let img = store
+                .get_image(image_id)
+                .await?
+                .ok_or(ApiError::not_found("image"))?;
+            img.source_path
+        }
+        None => String::new(),
+    };
+    let agent = crate::agent::Agent::new(host.endpoint.clone());
+    let size = agent
+        .provision_volume(vquasar_proto::agent::ProvisionVolumeRequest {
+            path: path.to_string_lossy().into_owned(),
+            format: ext(format).to_string(),
+            size_bytes: body.size_bytes.max(0) as u64,
+            source_path,
+            preallocation: body
+                .policy
+                .as_ref()
+                .and_then(|p| p.preallocation())
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .await
+        .map_err(|e| ApiError::internal(format!("provisioning on {}: {e}", host.name)))?;
+    Ok(size as i64)
 }
 
 /// Build the volume's file, returning its guest-visible size.
@@ -348,7 +479,7 @@ pub async fn delete(
         return Err(ApiError::invalid("detach the volume before deleting it"));
     }
     let path = volume_path(&dir_of(&store, &v).await?, v.id, &v.format);
-    let _ = tokio::fs::remove_file(&path).await; // best-effort
+    remove_file_wherever_it_is(&store, &v, &path).await;
     crate::scoped::ScopedStore::new(store.clone(), scope.0)
         .delete_volume(id)
         .await?;
@@ -401,6 +532,10 @@ pub async fn attach(
         // …and the volume's policy, so a throttle set on the volume follows it
         // onto whichever VM it is attached to rather than being re-typed there.
         policy: v.policy.as_ref().map(|p| p.0.clone()),
+        // …and, for a local volume, the one host that has those bytes. The pool
+        // is not enough: every host reporting a local pool has a disk by that
+        // name, and only one of them has this volume on it (ADR-025).
+        pinned_host: v.host_id.map(vquasar_model::HostId::from_uuid),
     });
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;

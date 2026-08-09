@@ -41,6 +41,14 @@ service HostAgent {
   rpc SendMigration(SendMigrationRequest) returns (OperationResponse);
   rpc FinalizeReceive(FinalizeReceiveRequest) returns (EnsureVmResponse);
   rpc DiscardVm(DiscardVmRequest) returns (OperationResponse);
+
+  // ---- Volumes on storage only this host can reach (ADR-025) --------------
+  //
+  // A volume in a *shared* pool is still built by the control plane, which can
+  // reach that storage itself. These exist for a pool that is local to one
+  // host, where the file has to be created on the machine that owns the disk.
+  rpc ProvisionVolume(ProvisionVolumeRequest) returns (ProvisionVolumeResponse);
+  rpc DeleteVolume(DeleteVolumeRequest) returns (OperationResponse);
 }
 
 message PrepareReceiveRequest {
@@ -72,6 +80,30 @@ message ConsoleServerMessage {
   // Serial output bytes from the guest.
   bytes output = 1;
 }
+
+// ---- Volumes -------------------------------------------------------------
+
+message ProvisionVolumeRequest {
+  // Absolute path of the file to create, already resolved against the pool.
+  string path = 1;
+  // raw | qcow2
+  string format = 2;
+  // Guest-visible size. Ignored when `source_path` is a larger image.
+  uint64 size_bytes = 3;
+  // Base image to clone from, on storage this host can read. Empty means a
+  // blank volume.
+  string source_path = 4;
+  // `qemu-img -o preallocation=<this>` for a thick volume; empty means sparse.
+  string preallocation = 5;
+}
+
+message ProvisionVolumeResponse {
+  // The volume's true guest-visible size, which for a clone is only known once
+  // qemu-img has run.
+  uint64 size_bytes = 1;
+}
+
+message DeleteVolumeRequest { string path = 1; }
 
 // ---- Host ----------------------------------------------------------------
 

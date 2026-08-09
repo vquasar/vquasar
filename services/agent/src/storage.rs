@@ -55,6 +55,81 @@ impl StorageProvisioner {
         self
     }
 
+    /// Build a volume's backing file on storage only this host can reach
+    /// (ADR-025).
+    ///
+    /// The same `qemu-img` work the control plane does for a shared pool, moved
+    /// to the machine that owns the disk. Returns the volume's true
+    /// guest-visible size, which for a clone is only known once the convert has
+    /// run.
+    ///
+    /// Idempotent: a file that is already there is the desired state, and a
+    /// retry after a dropped connection must not destroy a volume somebody is
+    /// already using.
+    pub async fn provision_volume(
+        &self,
+        path: &Path,
+        format: &str,
+        size_bytes: u64,
+        source: Option<&Path>,
+        preallocation: Option<&str>,
+    ) -> Result<u64> {
+        if tokio::fs::metadata(path).await.is_ok() {
+            let existing = virtual_size(path).await.unwrap_or(size_bytes);
+            info!(volume = %path.display(), "volume already provisioned");
+            return Ok(existing);
+        }
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let dst = path_str(path)?;
+        let fmt = if format == "raw" { "raw" } else { "qcow2" };
+        let prealloc = preallocation
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("preallocation={p}"));
+        let size = size_bytes.to_string();
+
+        match source {
+            None => {
+                let mut args = vec!["create", "-f", fmt];
+                if let Some(o) = &prealloc {
+                    args.extend_from_slice(&["-o", o]);
+                }
+                args.extend_from_slice(&[dst, &size]);
+                run("qemu-img", &args).await?;
+            }
+            Some(src) => {
+                let src = path_str(src)?;
+                let mut args = vec!["convert", "-O", fmt];
+                if let Some(o) = &prealloc {
+                    args.extend_from_slice(&["-o", o]);
+                }
+                args.extend_from_slice(&[src, dst]);
+                run("qemu-img", &args).await?;
+                if size_bytes > 0 {
+                    // Grow to the requested size when it exceeds the image's.
+                    // Best-effort: a resize that shrinks is refused by
+                    // qemu-img, and the clone is still a usable volume.
+                    let _ = run("qemu-img", &["resize", dst, &size]).await;
+                }
+            }
+        }
+        let actual = virtual_size(path).await.unwrap_or(size_bytes);
+        info!(volume = %path.display(), bytes = actual, fmt, "provisioned volume");
+        Ok(actual)
+    }
+
+    /// Remove a volume's backing file. Best-effort and idempotent: a file that
+    /// is already gone is the desired state.
+    pub async fn delete_volume(&self, path: &Path) -> Result<()> {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => info!(volume = %path.display(), "removed volume"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StorageError::Io(e)),
+        }
+        Ok(())
+    }
+
     /// Where this VM's cloud-init seed lives.
     fn seed_path(&self, id: VmId) -> PathBuf {
         self.shared_dir.join("seeds").join(format!("{id}.iso"))
@@ -277,6 +352,8 @@ impl StorageProvisioner {
             // A read-only ISO of a few hundred kilobytes: nothing to cache,
             // throttle or preallocate.
             policy: None,
+            // The seed follows the VM, and the VM is already placed.
+            pinned_host: None,
         })
     }
 }
