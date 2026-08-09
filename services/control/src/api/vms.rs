@@ -190,6 +190,8 @@ pub async fn create_from_volume(
         size_bytes: None,
         // Placement has to know where these bytes are (ADR-023).
         pool: vol.pool_id.map(vquasar_model::StoragePoolId::from_uuid),
+        // The volume carries its own policy, applied when the disk is attached.
+        policy: vol.policy.as_ref().map(|p| p.0.clone()),
     };
     let network_interfaces = body
         .network_id
@@ -476,6 +478,12 @@ pub async fn create(
             };
             disk.path = PathBuf::from(&pool_dir).join(format!("{vm_id}-disk{i}.{ext}"));
             disk.pool = Some(pool_id);
+        }
+    }
+    for (i, disk) in body.spec.disks.iter().enumerate() {
+        if let Some(p) = &disk.policy {
+            p.validate()
+                .map_err(|e| ApiError::invalid(format!("disks[{i}].policy: {e}")))?;
         }
     }
     // A caller may name a pool on a disk it placed itself. An unknown one would

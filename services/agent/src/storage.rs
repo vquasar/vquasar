@@ -159,8 +159,22 @@ impl StorageProvisioner {
                 DiskImageType::Raw => "raw",
                 DiskImageType::Qcow2 => "qcow2",
             };
-            run("qemu-img", &["create", "-f", fmt, path, &size.to_string()]).await?;
-            info!(disk = %disk.path.display(), bytes = size, fmt, "created blank data disk");
+            // Thick allocation reserves the blocks now, so the guest cannot
+            // later hit ENOSPC on a filesystem somebody else filled.
+            let prealloc = disk
+                .policy
+                .as_ref()
+                .and_then(|p| p.preallocation())
+                .map(|v| format!("preallocation={v}"));
+            let size_s = size.to_string();
+            let mut args = vec!["create", "-f", fmt];
+            if let Some(o) = &prealloc {
+                args.extend_from_slice(&["-o", o]);
+            }
+            args.extend_from_slice(&[path, &size_s]);
+            run("qemu-img", &args).await?;
+            info!(disk = %disk.path.display(), bytes = size, fmt,
+                  thick = prealloc.is_some(), "created blank data disk");
             return Ok(());
         };
 
@@ -260,6 +274,9 @@ impl StorageProvisioner {
             // carries no pool: placement has already happened, and it lives
             // wherever this host's shared directory is.
             pool: None,
+            // A read-only ISO of a few hundred kilobytes: nothing to cache,
+            // throttle or preallocate.
+            policy: None,
         })
     }
 }

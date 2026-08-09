@@ -423,6 +423,22 @@ Split into three shippable slices.
   path, so a kind needs no wire change; and "one host path is one pool" became
   a cross-kind unique index, since a `shared_dir` and an `nfs` mount point at
   the same place would double-count one filesystem.
+- **M25 — per-disk storage policy.** ✅ **Done.** A disk (and a volume, which
+  copies its policy onto the disk when attached, so a throttle follows the
+  bytes) can set `cache` (`writeback` | `direct`, i.e. `O_DIRECT`),
+  `allocation` (`thin` | `thick`, reserved with `fallocate` rather than a pass
+  of zeroes), and ceilings on bandwidth and IOPS, translated to Cloud
+  Hypervisor's one-second token buckets. A zero ceiling is refused: it means
+  "no I/O at all", which is a field left at its numeric default rather than an
+  intention.
+  Absent policy keeps the previous behaviour *byte for byte* — a disk with none
+  serialises without the key and sends Cloud Hypervisor exactly what it sent
+  before, and defaults inside a policy are skipped too, so setting a throttle
+  does not also record a cache choice nobody made.
+  No discard/TRIM switch, deliberately: Cloud Hypervisor exposes no knob for
+  it, and a field that is accepted, stored, displayed and ignored is what
+  ADR-024 exists to stop. Policy is per disk, not per VM: a second place to say
+  the same thing is a second thing to keep in step.
 - **Storage, the rest of feature-complete.** The kinds that are *not*
   directories — LVM thin, Ceph RBD, iSCSI, NVMe-oF — plus per-VM storage policy
   (cache mode, discard/TRIM, IO throttling, thin vs thick).

@@ -157,6 +157,57 @@ selector once more than one pool exists.
 A VM's own system disk goes in `default`. Choosing a pool per VM needs per-VM
 storage policy, which does not exist yet.
 
+## Storage policy
+
+A disk can say how it is cached, allocated and rate-limited:
+
+```json
+{"path": "", "image_type": "qcow2", "size_bytes": 42949672960,
+ "policy": {"cache": "direct", "allocation": "thick",
+            "bandwidth_bytes_per_sec": 52428800, "iops": 2000}}
+```
+
+A volume can carry the same object at creation, and attaching it copies the
+policy onto the VM's disk — so a throttle follows the bytes rather than being
+re-typed on every VM the volume moves to.
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `cache` | `writeback` | `direct` opens the file `O_DIRECT`, so the guest's writes skip the host page cache. Slower, and what a database or a host that may lose power wants: the guest's own barriers then mean what the guest thinks they mean. |
+| `allocation` | `thin` | `thick` reserves the whole size at creation (`fallocate`, not a pass of zeroes), so the guest cannot hit `ENOSPC` on a filesystem somebody else filled. |
+| `bandwidth_bytes_per_sec` | unlimited | Throughput ceiling. |
+| `iops` | unlimited | Operations ceiling. |
+
+Both ceilings are token buckets refilled once a second. **Zero is refused**: it
+would mean "this disk may never do any I/O", and a zero in one of these fields
+is almost always a form left at its numeric default rather than an intention.
+
+Omitting `policy` entirely keeps exactly the previous behaviour, and a spec that
+never mentioned it does not grow the key on upgrade. Fields left at their
+defaults inside a policy are not written down either, so "I set a throttle" does
+not silently also record "and I chose writeback".
+
+`allocation` is a *provisioning* concern and never reaches Cloud Hypervisor;
+`cache` and the ceilings are runtime options and never reach `qemu-img`.
+
+### No discard/TRIM switch
+
+There deliberately is not one. Cloud Hypervisor's virtio-blk advertises DISCARD
+and WRITE_ZEROES based on what its block backend can do and exposes no knob to
+turn that on or off, so a field here would be accepted, stored, displayed and
+ignored — the failure [ADR-024](../DESIGN.md) exists to stop. Guest TRIM already
+works where the backend supports it.
+
+### Per disk, not per VM
+
+Policy lives on the disk because that is where Cloud Hypervisor applies it, and
+because a VM's system disk and a large attached data volume rarely want the same
+treatment. There is no VM-wide default: a second place to say the same thing is
+a second thing to keep in step.
+
+Choosing *where* a VM's disks live is a separate question, answered by the pool
+on each disk.
+
 ## Upgrading an existing cluster
 
 Nothing moves. The first time a control plane starts after the upgrade it

@@ -92,6 +92,55 @@ pub struct DiskConfig {
     /// Set explicitly to avoid CH's deprecated image-type auto-detection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_type: Option<ImageType>,
+    /// `O_DIRECT`: bypass the host page cache (design §20).
+    ///
+    /// Skipped when false so a VM with no storage policy serialises exactly the
+    /// bytes it did before this field existed — the containment that makes this
+    /// safe to add to a fleet mid-flight.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
+    /// Token-bucket I/O ceilings (design §20).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limiter_config: Option<RateLimiterConfig>,
+}
+
+/// Cloud Hypervisor `RateLimiterConfig`: one bucket for throughput, one for
+/// operations. Either may be absent, meaning unlimited in that dimension.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RateLimiterConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bandwidth: Option<TokenBucketConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ops: Option<TokenBucketConfig>,
+}
+
+/// Cloud Hypervisor `TokenBucketConfig`.
+///
+/// `size` tokens are granted every `refill_time` milliseconds, so a rate of
+/// *n* per second is `size = n` with `refill_time = 1000`. `one_time_burst` is
+/// a one-off allowance on top, left unset here: a burst that only applies once
+/// per boot is a strange thing to express as policy, and the ceiling is what
+/// an operator means.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenBucketConfig {
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub one_time_burst: Option<u64>,
+    pub refill_time: u64,
+}
+
+/// The refill window every ceiling is expressed against: one second.
+const REFILL_MS: u64 = 1000;
+
+impl TokenBucketConfig {
+    /// A ceiling of `per_second`, as a bucket.
+    fn per_second(per_second: u64) -> Self {
+        Self {
+            size: per_second,
+            one_time_burst: None,
+            refill_time: REFILL_MS,
+        }
+    }
 }
 
 /// Cloud Hypervisor `ImageType`. The JSON API uses PascalCase variant names
@@ -213,6 +262,15 @@ pub struct TranslateOptions {
 /// Translate one domain [`DiskSpec`] into a CH [`DiskConfig`]. Also used to
 /// hot-add a disk to a running VM (design M10).
 pub fn disk_config(d: &vquasar_model::DiskSpec) -> DiskConfig {
+    let policy = d.policy.as_ref();
+    let limits = policy.and_then(|p| {
+        let bandwidth = p.bandwidth_bytes_per_sec.map(TokenBucketConfig::per_second);
+        let ops = p.iops.map(TokenBucketConfig::per_second);
+        // No ceiling in either dimension is no rate limiter at all, not an
+        // empty one: an empty `rate_limiter_config` is a different thing to
+        // send, and this path has to keep producing today's bytes.
+        (bandwidth.is_some() || ops.is_some()).then_some(RateLimiterConfig { bandwidth, ops })
+    });
     DiskConfig {
         path: d.path.to_string_lossy().into_owned(),
         readonly: d.readonly,
@@ -220,6 +278,8 @@ pub fn disk_config(d: &vquasar_model::DiskSpec) -> DiskConfig {
             DiskImageType::Raw => ImageType::Raw,
             DiskImageType::Qcow2 => ImageType::Qcow2,
         }),
+        direct: policy.is_some_and(|p| p.cache == vquasar_model::DiskCache::Direct),
+        rate_limiter_config: limits,
     }
 }
 
@@ -459,5 +519,80 @@ mod tests {
         }
         .into();
         assert_eq!(info.state, HypervisorState::Running);
+    }
+    /// A disk with no policy must produce the same JSON Cloud Hypervisor was
+    /// being sent before policy existed. This is the containment the whole
+    /// feature rests on: an existing fleet's VMs are byte-identical.
+    #[test]
+    fn a_disk_without_a_policy_sends_what_it_always_did() {
+        let d = vquasar_model::DiskSpec::raw("/x/a.raw");
+        let value = serde_json::to_value(disk_config(&d)).unwrap();
+        assert!(value.get("direct").is_none(), "{value}");
+        assert!(value.get("rate_limiter_config").is_none(), "{value}");
+        assert_eq!(value["path"], "/x/a.raw");
+    }
+
+    #[test]
+    fn direct_cache_becomes_o_direct() {
+        let mut d = vquasar_model::DiskSpec::raw("/x/a.raw");
+        d.policy = Some(vquasar_model::StoragePolicy {
+            cache: vquasar_model::DiskCache::Direct,
+            ..Default::default()
+        });
+        let value = serde_json::to_value(disk_config(&d)).unwrap();
+        assert_eq!(value["direct"], true);
+        // Cache is not a rate limit; asking for one must not invent the other.
+        assert!(value.get("rate_limiter_config").is_none(), "{value}");
+    }
+
+    /// A ceiling of *n* per second is a bucket of *n* refilled every 1000ms.
+    #[test]
+    fn ceilings_become_one_second_token_buckets() {
+        let mut d = vquasar_model::DiskSpec::raw("/x/a.raw");
+        d.policy = Some(vquasar_model::StoragePolicy {
+            bandwidth_bytes_per_sec: Some(50 * 1024 * 1024),
+            iops: Some(2000),
+            ..Default::default()
+        });
+        let value = serde_json::to_value(disk_config(&d)).unwrap();
+        let rl = &value["rate_limiter_config"];
+        assert_eq!(rl["bandwidth"]["size"], 50 * 1024 * 1024);
+        assert_eq!(rl["bandwidth"]["refill_time"], 1000);
+        assert_eq!(rl["ops"]["size"], 2000);
+        assert_eq!(rl["ops"]["refill_time"], 1000);
+        // A burst that only applies once per boot is not what an operator
+        // means by a ceiling, so it is left unset rather than guessed.
+        assert!(rl["bandwidth"].get("one_time_burst").is_none(), "{rl}");
+    }
+
+    /// One dimension limited, the other not: the unlimited one is absent, not
+    /// present as a zero bucket, which would stop the disk.
+    #[test]
+    fn limiting_one_dimension_leaves_the_other_alone() {
+        let mut d = vquasar_model::DiskSpec::raw("/x/a.raw");
+        d.policy = Some(vquasar_model::StoragePolicy {
+            iops: Some(2000),
+            ..Default::default()
+        });
+        let value = serde_json::to_value(disk_config(&d)).unwrap();
+        let rl = &value["rate_limiter_config"];
+        assert_eq!(rl["ops"]["size"], 2000);
+        assert!(rl.get("bandwidth").is_none(), "{rl}");
+    }
+
+    /// A policy that sets only non-limiting fields must not produce an empty
+    /// rate limiter — an empty one is a different thing to send.
+    #[test]
+    fn a_policy_with_no_ceilings_sends_no_rate_limiter() {
+        let mut d = vquasar_model::DiskSpec::raw("/x/a.raw");
+        d.policy = Some(vquasar_model::StoragePolicy {
+            allocation: vquasar_model::Allocation::Thick,
+            ..Default::default()
+        });
+        let value = serde_json::to_value(disk_config(&d)).unwrap();
+        assert!(value.get("rate_limiter_config").is_none(), "{value}");
+        // Allocation is a provisioning concern; it must not leak onto the wire
+        // as a runtime option Cloud Hypervisor has no field for.
+        assert!(value.get("allocation").is_none(), "{value}");
     }
 }
