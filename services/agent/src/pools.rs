@@ -61,6 +61,9 @@ async fn probe_one(probe: &StoragePoolProbe, host_id: &str) -> StoragePoolReport
         (true, "shared_dir") => Ok(PoolParams::SharedDir {
             path: probe.path.clone(),
         }),
+        (true, "local_dir") => Ok(PoolParams::LocalDir {
+            path: probe.path.clone(),
+        }),
         (true, _) => Err(()),
         (false, _) => serde_json::from_str::<PoolParams>(&probe.params).map_err(|_| ()),
     };
@@ -78,7 +81,11 @@ async fn probe_one(probe: &StoragePoolProbe, host_id: &str) -> StoragePoolReport
     };
 
     let ready = match &params {
-        PoolParams::SharedDir { .. } => Ok(()),
+        // A local directory is probed exactly like a shared one, and is not
+        // created either: the usual reason it is missing is an NVMe that did
+        // not mount, and quietly using the root filesystem instead is the same
+        // failure with a different blast radius.
+        PoolParams::SharedDir { .. } | PoolParams::LocalDir { .. } => Ok(()),
         PoolParams::Nfs { .. } => ensure_mounted(&params).await,
     };
     if let Err(why) = ready {

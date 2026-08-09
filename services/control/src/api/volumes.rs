@@ -178,6 +178,20 @@ pub async fn create(
     }
     let id = Uuid::new_v4();
     let pool = resolve_pool(&store, body.pool.as_deref()).await?;
+    // A volume's file is built here, by this process, with qemu-img. For a
+    // local pool that file has to exist on some *other* machine's disk, and
+    // there is no host to build it on until a VM is scheduled — so the honest
+    // answer is a refusal that names what is missing, not a file written into
+    // the control plane's own filesystem under a path that means something
+    // else on every host (ADR-025).
+    if !pool.params.0.sharing().is_shared() {
+        return Err(ApiError::invalid(format!(
+            "storage pool {:?} is local to each host, and a volume is provisioned by the \
+             control plane, which cannot reach another host's disk. Give the VM a disk in \
+             this pool instead — the agent creates that one.",
+            pool.name
+        )));
+    }
     let pool_dir = pool
         .params
         .0

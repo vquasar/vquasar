@@ -405,12 +405,14 @@ pub struct StoragePool {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PoolReachability {
     pub reachable_hosts: i64,
-    /// The *smallest* capacity any reporting host sees, not the sum.
+    /// For a shared pool, the *smallest* capacity any reporting host sees; for
+    /// a local one, the sum across hosts (ADR-025).
     ///
-    /// A `shared_dir` pool is one filesystem that several hosts have mounted,
-    /// so summing would multiply one disk by its number of mounts. Taking the
-    /// minimum also stays right if hosts disagree — the pessimistic number is
-    /// the one a scheduler can act on.
+    /// A shared pool is one filesystem several hosts have mounted, so summing
+    /// would multiply one disk by its number of mounts; the minimum also stays
+    /// right if hosts disagree, and the pessimistic number is the one a
+    /// scheduler can act on. A local pool is genuinely N filesystems, and the
+    /// minimum would understate the fleet by the same factor.
     pub capacity_bytes: Option<i64>,
     pub available_bytes: Option<i64>,
 }
@@ -427,6 +429,18 @@ pub struct PoolHostReport {
     pub available_bytes: Option<i64>,
     pub reported_at: DateTime<Utc>,
 }
+
+/// One row of the per-pool aggregate: pool, reporting hosts, then the smallest
+/// and the summed capacity/available. Which pair is used depends on the pool's
+/// sharing (ADR-025).
+type PoolAggregateRow = (
+    Uuid,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+);
 
 /// What an agent just said about one pool, on its way into the store.
 #[derive(Debug, Clone)]
@@ -1820,17 +1834,38 @@ impl Store {
     pub async fn pool_reachability_all(
         &self,
     ) -> Result<std::collections::HashMap<Uuid, PoolReachability>> {
-        let rows: Vec<(Uuid, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        // Shared and local pools aggregate differently, and the difference is
+        // not cosmetic: MIN over a shared pool is one filesystem seen N times,
+        // while SUM over a local pool is N filesystems that happen to share a
+        // name. Using either everywhere reports a fleet's storage wrong by a
+        // factor of N (ADR-025).
+        let rows: Vec<PoolAggregateRow> = sqlx::query_as(
             // `usable` only: a host that reported "I cannot see this" is an
             // observation worth keeping and not a host that can use the pool.
-            "SELECT pool_id, COUNT(*), MIN(capacity_bytes), MIN(available_bytes)
+            "SELECT pool_id, COUNT(*),
+                    MIN(capacity_bytes), MIN(available_bytes),
+                    -- SUM over bigint is numeric in PostgreSQL; cast, or every
+                    -- read of this decodes as the wrong type.
+                    SUM(capacity_bytes)::bigint, SUM(available_bytes)::bigint
                FROM storage_pool_reachability WHERE usable GROUP BY pool_id",
         )
         .fetch_all(&self.pool)
         .await?;
+        let shared: std::collections::HashMap<Uuid, bool> = self
+            .list_storage_pools()
+            .await?
+            .into_iter()
+            .map(|p| (p.id, p.params.0.sharing().is_shared()))
+            .collect();
         Ok(rows
             .into_iter()
-            .map(|(id, hosts, capacity_bytes, available_bytes)| {
+            .map(|(id, hosts, min_cap, min_avail, sum_cap, sum_avail)| {
+                let is_shared = shared.get(&id).copied().unwrap_or(true);
+                let (capacity_bytes, available_bytes) = if is_shared {
+                    (min_cap, min_avail)
+                } else {
+                    (sum_cap, sum_avail)
+                };
                 (
                     id,
                     PoolReachability {
@@ -1964,6 +1999,18 @@ impl Store {
         sqlx::query_scalar("SELECT id FROM volumes")
             .fetch_all(&self.pool)
             .await
+    }
+
+    /// Pools whose bytes are local to one host (ADR-025). The input to every
+    /// refusal that exists because a VM there cannot move.
+    pub async fn local_pool_ids(&self) -> Result<std::collections::HashSet<Uuid>> {
+        Ok(self
+            .list_storage_pools()
+            .await?
+            .into_iter()
+            .filter(|p| !p.params.0.sharing().is_shared())
+            .map(|p| p.id)
+            .collect())
     }
 
     /// How many volumes a pool holds, for the refusal when deleting it.

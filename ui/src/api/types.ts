@@ -490,6 +490,10 @@ export interface StoragePool {
     options?: string;
   };
   state: "pending" | "ready";
+  /// Whether every reporting host sees the same bytes (ADR-025). It changes
+  /// what the host count means, so it is never inferred from the kind's name.
+  sharing: "shared" | "local";
+  sharing_note: string;
   reachable_hosts: number;
   capacity_bytes: number | null;
   available_bytes: number | null;

@@ -439,17 +439,32 @@ Split into three shippable slices.
   it, and a field that is accepted, stored, displayed and ignored is what
   ADR-024 exists to stop. Policy is per disk, not per VM: a second place to say
   the same thing is a second thing to keep in step.
+- **M26 — a pool declares whether its bytes are shared** (ADR-025). ✅ **Done.**
+  Every rule ADR-023 built read "a host reports this pool" as "that host can see
+  this volume's data" — true for shared storage, false for storage attached to
+  one host, where two hosts reporting a pool have two different disks with one
+  name. Left alone the failure was silent and total: a live migration would pass
+  the reachability check, transfer the guest, and start it on the destination's
+  empty disk.
+  Sharing is now a property of the kind (`shared_dir` and `nfs` shared,
+  `local_dir` local), never an operator-set field — a directory on local NVMe is
+  not shared because somebody ticked a box. Capacity aggregates as MIN for a
+  shared pool and SUM for a local one; a VM with a disk in a local pool is
+  pinned, so migration is refused *by name* and a drain reports it as pinned
+  rather than as no capacity; and a volume cannot be created in a local pool,
+  because a volume's file is built by the control plane and exists before any
+  host has been chosen, so the refusal names the alternative instead.
+  `local_dir` is deliberately identical to `shared_dir` apart from the
+  declaration: that is the point.
 - **Storage, the rest of feature-complete.** The kinds that are *not*
   directories — LVM thin, Ceph RBD, iSCSI, NVMe-oF — plus per-VM storage policy
   (cache mode, discard/TRIM, IO throttling, thin vs thick).
-  The block kinds need two things first, and neither is a variant: **volume
-  provisioning has to move into the agent** (an LV is not a file the control
-  plane can `qemu-img create`), and **a pool has to declare whether its bytes
-  are shared between hosts or local to one**. Every part of placement now rests
-  on "a host reporting a pool can see that pool's data", which is false for
-  local storage: a VM there is pinned to its host and live migration must be
-  refused rather than attempted. Adding a block kind before that would break
-  the assumption quietly.
+  Half of what they needed landed in M26: a pool declares its sharing, so a
+  local block kind can be added without silently breaking placement. What is
+  still missing is **volume provisioning in the agent** rather than the control
+  plane — an LV is not a file `qemu-img` can create, and a volume exists before
+  any host has been chosen for it. Per-VM storage policy is done (M25); this is
+  the last piece.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`

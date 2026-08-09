@@ -140,6 +140,9 @@ pub async fn drain(
     // what makes live migration possible at all (§28), and it has been assumed
     // rather than checked since it was written (ADR-023).
     let pools = store.pools_by_host().await?;
+    // A VM pinned to this host by local storage cannot be evacuated at all, so
+    // a drain has to say so rather than report it as "no capacity" (ADR-025).
+    let local = store.local_pool_ids().await?;
 
     let mut migrating = Vec::new();
     let mut skipped = Vec::new();
@@ -172,6 +175,17 @@ pub async fn drain(
             })
             .cloned()
             .collect();
+        if crate::scheduler::required_pools(&vm.spec.0)
+            .iter()
+            .any(|p| local.contains(p))
+        {
+            skipped.push(DrainSkip {
+                vm_id: vm.id,
+                vm_name: vm.name,
+                reason: "pinned to this host by a disk on local storage".into(),
+            });
+            continue;
+        }
         match crate::scheduler::schedule(&vm.spec, &compat, &committed, &pools) {
             Ok(dest_id) => {
                 let dest_name = compat

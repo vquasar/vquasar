@@ -42,12 +42,27 @@ import {
 import { formatBytes, formatDate } from "../format";
 import type { StoragePool } from "../api/types";
 
+type PoolKind = "shared_dir" | "local_dir" | "nfs";
+
 const COLS = "1.4fr 110px 1.6fr 110px 90px 1fr 60px";
+
+/// `local` is called out because it changes what the host count means and what
+/// the VMs on it can do — not decoration.
+function SharingChip({ pool }: { pool: StoragePool }) {
+  return (
+    <StateChip
+      value={pool.sharing}
+      tone={pool.sharing === "local" ? "amber" : "blue"}
+      dense
+      title={pool.sharing_note}
+    />
+  );
+}
 
 function CreateDialog({ onClose }: { onClose: () => void }) {
   const create = useCreateStoragePool();
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<"shared_dir" | "nfs">("shared_dir");
+  const [kind, setKind] = useState<PoolKind>("shared_dir");
   const [path, setPath] = useState("");
   const [server, setServer] = useState("");
   const [exportPath, setExportPath] = useState("");
@@ -71,13 +86,14 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
         </Field>
         <Field
           label="Kind"
-          help="A shared directory is one you have already mounted on the hosts yourself. An NFS pool records the export, and the agents mount it."
+          help="A shared directory is one you have already mounted on the hosts yourself; an NFS pool records the export and the agents mount it. A local directory is each host's own disk — fast, and a VM with a disk there cannot be live-migrated."
         >
           <Select
             value={kind}
-            onChange={(e) => setKind(e.target.value as "shared_dir" | "nfs")}
+            onChange={(e) => setKind(e.target.value as PoolKind)}
           >
             <option value="shared_dir">shared directory (already mounted)</option>
+            <option value="local_dir">local directory (each host&apos;s own disk)</option>
             <option value="nfs">NFS export (mounted by the agents)</option>
           </Select>
         </Field>
@@ -213,7 +229,12 @@ function Row({ pool, canManage }: { pool: StoragePool; canManage: boolean }) {
             </span>
           )}
         </span>
-        <span>{pool.kind}</span>
+        <span>
+          {pool.kind}
+          <span style={{ display: "block", marginTop: 2 }}>
+            <SharingChip pool={pool} />
+          </span>
+        </span>
         <Mono>{pool.params.path ?? pool.params.mount_point ?? <Dash />}</Mono>
         <StateChip value={pool.state} dense />
         <span>{pool.reachable_hosts}</span>

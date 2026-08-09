@@ -29,14 +29,23 @@ pub struct PoolView {
     pub pool: StoragePool,
     /// `pending` until some host reports the pool (ADR-023).
     pub state: &'static str,
+    /// `shared` or `local` (ADR-025). Reported next to the state because it
+    /// changes what "3 hosts report this" means — the same bytes three times,
+    /// or three different disks.
+    pub sharing: &'static str,
+    /// What that sharing actually guarantees, in one line.
+    pub sharing_note: &'static str,
     #[serde(flatten)]
     pub reachability: PoolReachability,
 }
 
 impl PoolView {
     fn new(pool: StoragePool, reachability: PoolReachability) -> Self {
+        let sharing = pool.params.0.sharing();
         Self {
             state: StoragePoolState::from_reporting_hosts(reachability.reachable_hosts).as_str(),
+            sharing: sharing.as_str(),
+            sharing_note: sharing.guarantee(),
             pool,
             reachability,
         }

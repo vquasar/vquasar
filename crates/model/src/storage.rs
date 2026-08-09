@@ -14,6 +14,54 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Whether a pool's bytes are the same bytes on every host that reports it.
+///
+/// This is the distinction the rest of the storage model turns on, and getting
+/// it wrong is silent. Every placement rule written before this existed assumed
+/// "a host reports the pool" meant "that host can see this volume's data" —
+/// true for shared storage, false for local, where two hosts reporting the same
+/// pool have two different disks that merely share a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sharing {
+    /// One filesystem, reachable from every host that reports it. A VM may be
+    /// scheduled onto any of them and live-migrated between them.
+    Shared,
+    /// Storage attached to one host. A VM with a disk here is pinned to the
+    /// host it was placed on: no other host can see those bytes, so a live
+    /// migration is not slow — it is data loss.
+    Local,
+}
+
+impl Sharing {
+    pub fn is_shared(self) -> bool {
+        self == Sharing::Shared
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sharing::Shared => "shared",
+            Sharing::Local => "local",
+        }
+    }
+
+    /// A one-line statement for the API and the console.
+    ///
+    /// Part of the model rather than the UI: what a pool guarantees is a
+    /// property of its kind, and an operator should not have to infer it from
+    /// the kind's name.
+    pub fn guarantee(self) -> &'static str {
+        match self {
+            Sharing::Shared => {
+                "One filesystem seen by every host that reports it. VMs here can be live-migrated."
+            }
+            Sharing::Local => {
+                "Storage on each host separately. A VM here is pinned to its host and cannot be live-migrated."
+            }
+        }
+    }
+}
+
 /// What kind of storage a pool is, and therefore how bytes are placed in it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +73,12 @@ pub enum StoragePoolKind {
     /// their fleet already uses, and the agents report who managed to.
     #[default]
     SharedDir,
+    /// A directory on each host, holding that host's own bytes.
+    ///
+    /// Two hosts reporting this pool have two different disks that share a
+    /// name — fast local NVMe, typically. A VM with a disk here is pinned to
+    /// the host it landed on.
+    LocalDir,
     /// An NFS export the *agents* mount, at a path the pool names.
     ///
     /// The difference from a `shared_dir` that happens to be NFS is who is
@@ -38,7 +92,16 @@ impl StoragePoolKind {
     pub fn as_str(self) -> &'static str {
         match self {
             StoragePoolKind::SharedDir => "shared_dir",
+            StoragePoolKind::LocalDir => "local_dir",
             StoragePoolKind::Nfs => "nfs",
+        }
+    }
+
+    /// Whether every host reporting this kind sees the *same* bytes.
+    pub fn sharing(self) -> Sharing {
+        match self {
+            StoragePoolKind::SharedDir | StoragePoolKind::Nfs => Sharing::Shared,
+            StoragePoolKind::LocalDir => Sharing::Local,
         }
     }
 }
@@ -49,6 +112,7 @@ impl std::str::FromStr for StoragePoolKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "shared_dir" => Ok(StoragePoolKind::SharedDir),
+            "local_dir" => Ok(StoragePoolKind::LocalDir),
             "nfs" => Ok(StoragePoolKind::Nfs),
             other => Err(InvalidStoragePoolKind(other.to_string())),
         }
@@ -56,7 +120,7 @@ impl std::str::FromStr for StoragePoolKind {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("unknown storage pool kind {0:?} — expected shared_dir or nfs")]
+#[error("unknown storage pool kind {0:?} — expected shared_dir, local_dir or nfs")]
 pub struct InvalidStoragePoolKind(pub String);
 
 /// A pool's kind together with the parameters that kind needs.
@@ -69,6 +133,12 @@ pub struct InvalidStoragePoolKind(pub String);
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PoolParams {
     SharedDir {
+        path: String,
+    },
+    /// The same shape as a shared directory, and deliberately a separate kind:
+    /// nothing about the path says whether other hosts can see it, and that is
+    /// exactly what placement needs to know.
+    LocalDir {
         path: String,
     },
     Nfs {
@@ -89,6 +159,7 @@ impl PoolParams {
     pub fn kind(&self) -> StoragePoolKind {
         match self {
             PoolParams::SharedDir { .. } => StoragePoolKind::SharedDir,
+            PoolParams::LocalDir { .. } => StoragePoolKind::LocalDir,
             PoolParams::Nfs { .. } => StoragePoolKind::Nfs,
         }
     }
@@ -101,8 +172,13 @@ impl PoolParams {
             PoolParams::Nfs { server, export, .. } => {
                 Some(format!("{}:{}", server.trim(), export.trim()))
             }
-            PoolParams::SharedDir { .. } => None,
+            PoolParams::SharedDir { .. } | PoolParams::LocalDir { .. } => None,
         }
+    }
+
+    /// Whether every host reporting this pool sees the same bytes.
+    pub fn sharing(&self) -> Sharing {
+        self.kind().sharing()
     }
 
     /// The pool's root as the agents see it, when the kind has one.
@@ -111,7 +187,7 @@ impl PoolParams {
     /// path, which is why this is an `Option` rather than a field.
     pub fn host_path(&self) -> Option<&str> {
         match self {
-            PoolParams::SharedDir { path } => Some(path),
+            PoolParams::SharedDir { path } | PoolParams::LocalDir { path } => Some(path),
             PoolParams::Nfs { mount_point, .. } => Some(mount_point),
         }
     }
@@ -132,7 +208,7 @@ impl PoolParams {
             Ok(())
         };
         match self {
-            PoolParams::SharedDir { path } => absolute(path),
+            PoolParams::SharedDir { path } | PoolParams::LocalDir { path } => absolute(path),
             PoolParams::Nfs {
                 server,
                 export,
@@ -409,5 +485,57 @@ mod tests {
             StoragePoolState::Ready
         );
         assert_eq!(StoragePoolState::Ready.as_str(), "ready");
+    }
+    /// The distinction the whole storage model turns on. Two hosts reporting a
+    /// local pool have two different disks that share a name; two reporting a
+    /// shared one have the same filesystem twice.
+    #[test]
+    fn a_kind_says_whether_its_bytes_are_shared() {
+        assert!(StoragePoolKind::SharedDir.sharing().is_shared());
+        assert!(StoragePoolKind::Nfs.sharing().is_shared());
+        assert!(!StoragePoolKind::LocalDir.sharing().is_shared());
+        assert_eq!(StoragePoolKind::LocalDir.sharing(), Sharing::Local);
+        assert_eq!(StoragePoolKind::LocalDir.sharing().as_str(), "local");
+        // The guarantee is stated, not left for a reader to infer from a name.
+        assert!(Sharing::Local
+            .guarantee()
+            .contains("cannot be live-migrated"));
+        assert!(Sharing::Shared.guarantee().contains("live-migrated"));
+        assert_ne!(Sharing::Local.guarantee(), Sharing::Shared.guarantee());
+    }
+
+    /// A local directory looks exactly like a shared one — same field, same
+    /// validation — and is a separate kind precisely because nothing about the
+    /// path itself says whether other hosts can see it.
+    #[test]
+    fn a_local_directory_is_a_shared_one_that_admits_it_is_not() {
+        let local = PoolParams::LocalDir {
+            path: "/var/lib/vquasar/local".into(),
+        };
+        let shared = PoolParams::SharedDir {
+            path: "/var/lib/vquasar/local".into(),
+        };
+        assert_eq!(local.host_path(), shared.host_path());
+        assert!(local.validate().is_ok());
+        assert_eq!(local.mount_source(), None);
+        assert!(!local.sharing().is_shared() && shared.sharing().is_shared());
+        let json = serde_json::to_value(&local).unwrap();
+        assert_eq!(json["kind"], "local_dir");
+        assert_eq!(serde_json::from_value::<PoolParams>(json).unwrap(), local);
+        assert_eq!(
+            "local_dir".parse::<StoragePoolKind>().unwrap(),
+            StoragePoolKind::LocalDir
+        );
+    }
+
+    #[test]
+    fn a_local_directory_still_needs_an_absolute_path() {
+        assert_eq!(
+            PoolParams::LocalDir {
+                path: "local".into()
+            }
+            .validate(),
+            Err(PoolValidationError::RelativePath("local".into()))
+        );
     }
 }

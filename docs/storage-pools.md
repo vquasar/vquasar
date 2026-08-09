@@ -18,7 +18,9 @@ migration depended on the same assumption silently.
 ## Pending and ready
 
 A pool is `pending` until some host reports it, and `ready` while at least one
-does. A brand-new pool is `pending`; so is a correctly-configured one whose NFS
+does. What a report *means* depends on the pool's sharing: for a shared pool,
+three hosts reporting it are three hosts seeing one filesystem; for a local
+pool, they are three separate disks (ADR-025). A brand-new pool is `pending`; so is a correctly-configured one whose NFS
 server is down.
 
 Open a pool in the console (**Storage pools** → click a row) to see every
@@ -68,6 +70,42 @@ already uses. vquasar does not mount it and **never creates it** — a host
 missing the mount would otherwise get an empty directory on its own root
 filesystem and then report the pool as usable.
 
+### `local_dir`
+
+A directory on each host, holding **that host's own bytes**:
+
+```bash
+curl -X POST https://vquasar/api/v1/storage-pools \
+  -d '{"name":"nvme","kind":"local_dir","path":"/var/lib/vquasar/local"}'
+```
+
+It is the same shape as a `shared_dir`, and that is exactly why it is a separate
+kind: nothing about `/var/lib/vquasar/local` tells you whether another host can
+see it, so the pool has to say (ADR-025). Two hosts reporting this pool have two
+different disks that share a name.
+
+Three things behave differently as a result:
+
+* **Capacity is the sum across hosts**, not the smallest one. A shared pool is
+  one filesystem seen N times; a local pool is N filesystems.
+* **A VM with a disk here is pinned to its host.** `POST /vms/:id/migrate` is
+  refused by name, and a drain reports it as pinned rather than as a capacity
+  problem — the other host reports the pool, but its disk is empty, so
+  "migrating" there would start the guest on nothing.
+* **A volume cannot be created here.** A volume's file is built by the control
+  plane, which cannot reach another host's disk — and a volume exists before any
+  VM references it, so no host has been chosen. Give the VM a disk in the pool
+  instead: the agent creates that one, on the host it lands on.
+
+Placement of a *new* VM is unrestricted: the disk does not exist yet, so any
+reporting host will do. The pin applies from the moment the agent creates the
+file.
+
+The directory is never created, for the same reason a `shared_dir` is not: the
+usual cause of it being missing is an NVMe that did not mount, and quietly
+filling the root filesystem instead is the same failure with a different blast
+radius.
+
 ### `nfs`
 
 The pool names the export, and the agents mount it:
@@ -108,15 +146,12 @@ Three things worth knowing:
 
 ### Not yet: LVM thin, RBD, iSCSI, NVMe-oF
 
-These are the kinds that are not directories, and they need two things the
-platform does not have yet. Volume provisioning would have to move into the
-agent — an LV is not a file the control plane can `qemu-img create` — and a
-pool would have to declare whether its bytes are **shared between hosts or local
-to one**. Everything about placement currently rests on "a host reporting a pool
-can see that pool's data", which is false for local storage: a VM there is
-pinned to its host, and a live migration to another host has to be refused
-rather than attempted. Adding a block kind before that would break the
-assumption quietly, which is the failure mode this whole area exists to remove.
+The kinds that are not directories. Half of what they needed now exists — a pool
+declares whether its bytes are shared, so a local block kind can be added
+without silently breaking placement (ADR-025). What is still missing is volume
+provisioning in the **agent** rather than the control plane: an LV is not a file
+`qemu-img` can create, and a volume exists before any host has been chosen for
+it.
 
 ## Creating one
 
