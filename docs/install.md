@@ -22,6 +22,10 @@ That downloads the latest stable build, checks it, installs the binary to
 and starts it. The control tarball carries the web console too, so a control
 plane is never installed without the UI that matches it.
 
+Installing an agent does not put its host in the fleet — the control plane has
+to be told it exists. See [**registering hosts**](registering-hosts.md), which
+is the step most first installs miss.
+
 `--allow-no-auth` is a deliberate speed bump: without it the installer refuses
 to bring up a control plane that anyone can talk to. It is right for a lab and
 wrong for anything else — see [authentication and RBAC](oidc-keycloak.md).

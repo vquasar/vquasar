@@ -12,6 +12,10 @@ Guides for running and developing vquasar. Start at the
   channels, what the installer verifies (and what it does not), upgrades, and
   the pieces it deliberately leaves to you.
 
+* [**Registering hosts**](registering-hosts.md) — how the control plane learns
+  a host exists, the enrolment flow, and why a `NotReady` host is almost always
+  a reachability problem in the direction people do not expect.
+
 ## Operating
 
 * [**Booting VMs**](booting-vms.md) — host prerequisites, image preparation,

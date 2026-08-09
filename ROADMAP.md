@@ -603,6 +603,13 @@ Split into three shippable slices.
   in a test, and bound by nothing — the control plane dials the agents and
   nothing dials it. Removed, because the visible harm is an operator opening a
   firewall rule for a port that never answers.
+- **Docs: registering hosts.** ✅ **Done.** The step between "the agent is
+  installed" and "the fleet has a host", which nothing documented: the
+  enrolment flow (one call for a one-time token, one flag on the agent, and the
+  private key never leaves the host), manual registration for an existing PKI,
+  and what a host that stays `NotReady` is telling you. Leads with the
+  direction, because it is what confuses people first — the control plane dials
+  the agent, never the reverse.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
