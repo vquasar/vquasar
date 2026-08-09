@@ -133,6 +133,15 @@ async fn main() -> anyhow::Result<()> {
     // cluster that predates pools keeps working and none of its paths move
     // (ADR-023). Deliberately not re-synced: config must not overrule an
     // operator who has since renamed or repointed it.
+    // Every project gets a default policy group, including the ones that
+    // predate the column (design §18).
+    match store.ensure_project_default_groups().await? {
+        0 => {}
+        n => info!(
+            projects = n,
+            "created default policy groups for existing projects"
+        ),
+    }
     store.ensure_default_pool().await?;
     // Volumes that predate pools join the default one. Here rather than in the
     // migration because the pool's id is generated at first boot, and a cluster

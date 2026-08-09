@@ -68,6 +68,11 @@ pub struct Project {
     pub name: String,
     pub description: Option<String>,
     pub is_default: bool,
+    /// Policy applied to every NIC of this project's VMs, unioned with the
+    /// network's default and the NIC's own groups (design §18). `None` only
+    /// until startup gives a pre-existing project one.
+    #[sqlx(default)]
+    pub default_security_group_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -255,8 +260,21 @@ pub struct SecurityGroupRule {
     pub port_min: Option<i32>,
     pub port_max: Option<i32>,
     pub remote_cidr: Option<String>,
+    /// The remote is every member of this group, resolved to addresses each
+    /// reconcile tick (design §18). Mutually exclusive with `remote_cidr`.
+    #[sqlx(default)]
+    pub remote_group_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
+
+/// Addresses that belong to a security group's members (design §18).
+///
+/// Deliberately the *allocated* addresses, not the observed ones. An observed
+/// address comes from an ARP sweep or a guest's own callback, and letting
+/// either widen a firewall rule would mean a guest could talk its way into
+/// somebody else's allow-list. What the platform assigned is what it will
+/// vouch for.
+pub type GroupMembers = std::collections::HashMap<Uuid, Vec<String>>;
 
 /// A base image row: a read-only golden disk + boot recipe (design M9).
 #[derive(Debug, Clone, serde::Serialize, FromRow)]
@@ -1267,14 +1285,27 @@ impl Store {
     }
 
     pub async fn delete_project(&self, id: Uuid) -> Result<bool> {
-        Ok(
-            sqlx::query("DELETE FROM projects WHERE id=$1 AND NOT is_default")
-                .bind(id)
-                .execute(&self.pool)
-                .await?
-                .rows_affected()
-                > 0,
-        )
+        let mut tx = self.pool.begin().await?;
+        // The project's own managed groups go with it. They exist because the
+        // project does (design §18), and `security_groups.project_id` is
+        // ON DELETE RESTRICT — leaving them would make the project undeletable
+        // for a reason no operator could see or fix.
+        sqlx::query("UPDATE projects SET default_security_group_id=NULL WHERE id=$1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM security_groups WHERE project_id=$1 AND managed")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let gone = sqlx::query("DELETE FROM projects WHERE id=$1 AND NOT is_default")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            > 0;
+        tx.commit().await?;
+        Ok(gone)
     }
 
     /// What a project still owns.
@@ -1288,7 +1319,12 @@ impl Store {
             "SELECT (SELECT count(*) FROM virtual_machines WHERE project_id=$1),
                     (SELECT count(*) FROM volumes          WHERE project_id=$1),
                     (SELECT count(*) FROM templates        WHERE project_id=$1),
-                    (SELECT count(*) FROM security_groups  WHERE project_id=$1),
+                    -- Managed groups are the platform's own: a project's
+                    -- default (design §18) and a network's (ADR-017). They are
+                    -- not a tenant's contents, and counting them would make a
+                    -- project that has never been used undeletable.
+                    (SELECT count(*) FROM security_groups
+                      WHERE project_id=$1 AND NOT managed),
                     (SELECT count(*) FROM networks         WHERE project_id=$1)",
         )
         .bind(id)
@@ -1343,6 +1379,95 @@ impl Store {
     }
 
     /// Attach a network's default policy group (ADR-017).
+    /// Every address the platform has allocated to a NIC in each of `groups`.
+    ///
+    /// A NIC on external DHCP has no allocation, so a group whose members are
+    /// all on DHCP expands to nothing and its rules match nothing — which is
+    /// the safe direction, and is said out loud in the docs rather than
+    /// silently widened with an observed address.
+    pub async fn addresses_in_groups(&self, groups: &[Uuid]) -> Result<GroupMembers> {
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            // A NIC's groups live in the VM spec, so the join is through the
+            // allocation's (vm, nic) back to the spec's nic entry.
+            "SELECT g.gid, a.ip
+               FROM ip_allocations a
+               JOIN virtual_machines v ON v.id = a.vm_id
+               CROSS JOIN LATERAL (
+                   SELECT (jsonb_array_elements_text(
+                       COALESCE(v.spec->'network_interfaces'->a.nic_index->'security_groups',
+                                '[]'::jsonb)))::uuid AS gid
+               ) g
+              WHERE g.gid = ANY($1)",
+        )
+        .bind(groups)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out: GroupMembers = std::collections::HashMap::new();
+        for (gid, ip) in rows {
+            out.entry(gid).or_default().push(ip);
+        }
+        Ok(out)
+    }
+
+    /// Give every project a default policy group, for the ones that predate the
+    /// column. Runs at startup, like the built-in roles.
+    pub async fn ensure_project_default_groups(&self) -> Result<u64> {
+        let mut made = 0;
+        for p in self.list_projects().await? {
+            if p.default_security_group_id.is_some() {
+                continue;
+            }
+            let sg = self.insert_project_default_group(p.id, &p.name).await?;
+            self.set_project_default_group(p.id, sg).await?;
+            made += 1;
+        }
+        Ok(made)
+    }
+
+    /// Create a project's default policy group (design §18).
+    pub async fn insert_project_default_group(&self, project: Uuid, name: &str) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO security_groups
+                (id, name, description, managed, project_id, created_at, updated_at)
+             VALUES ($1,$2,$3,true,$4,$5,$5)",
+        )
+        .bind(id)
+        .bind(format!("default-project-{name}"))
+        .bind(format!(
+            "Default policy for every VM in the {name} project. Applies to each NIC              alongside its network's default and the NIC's own groups."
+        ))
+        .bind(project)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn set_project_default_group(&self, project: Uuid, sg: Uuid) -> Result<()> {
+        sqlx::query("UPDATE projects SET default_security_group_id=$2, updated_at=$3 WHERE id=$1")
+            .bind(project)
+            .bind(sg)
+            .bind(Utc::now())
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+    }
+
+    /// The default policy group of the project a VM belongs to.
+    pub async fn project_default_group(&self, vm: Uuid) -> Result<Option<Uuid>> {
+        sqlx::query_scalar(
+            "SELECT p.default_security_group_id
+               FROM virtual_machines v JOIN projects p ON p.id = v.project_id
+              WHERE v.id = $1",
+        )
+        .bind(vm)
+        .fetch_optional(&self.pool)
+        .await
+        .map(Option::flatten)
+    }
+
     pub async fn set_network_default_group(&self, network: Uuid, sg: Uuid) -> Result<()> {
         sqlx::query("UPDATE networks SET default_security_group_id=$2, updated_at=$3 WHERE id=$1")
             .bind(network)
@@ -1574,13 +1699,14 @@ impl Store {
         protocol: &str,
         port_min: Option<i32>,
         port_max: Option<i32>,
+        remote_group_id: Option<Uuid>,
         remote_cidr: Option<&str>,
     ) -> Result<SecurityGroupRule> {
         sqlx::query_as::<_, SecurityGroupRule>(
             "INSERT INTO security_group_rules
                 (id, security_group_id, direction, ethertype, protocol, port_min, port_max,
-                 remote_cidr, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+                 remote_cidr, remote_group_id, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$10,$9) RETURNING *",
         )
         .bind(Uuid::new_v4())
         .bind(sg_id)
@@ -1591,6 +1717,7 @@ impl Store {
         .bind(port_max)
         .bind(remote_cidr)
         .bind(Utc::now())
+        .bind(remote_group_id)
         .fetch_one(&self.pool)
         .await
     }
