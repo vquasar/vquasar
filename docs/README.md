@@ -3,6 +3,12 @@
 Guides for running and developing vquasar. Start at the
 [project README](../README.md) for what it is and a quickstart.
 
+## Installing
+
+* [**Installing vquasar**](install.md) — one command per machine, the release
+  channels, what the installer verifies (and what it does not), upgrades, and
+  the pieces it deliberately leaves to you.
+
 ## Operating
 
 * [**Booting VMs**](booting-vms.md) — host prerequisites, image preparation,
