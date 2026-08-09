@@ -314,7 +314,7 @@ impl HostAgent for AgentService {
                 std::path::Path::new(&r.path),
                 &r.format,
                 r.size_bytes,
-                Some(std::path::Path::new(&r.source_path)).filter(|_| !r.source_path.is_empty()),
+                (!r.source_path.is_empty()).then(|| std::path::Path::new(&r.source_path)),
                 Some(r.preallocation.as_str()).filter(|p| !p.is_empty()),
             )
             .await
