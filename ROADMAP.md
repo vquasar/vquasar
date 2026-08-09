@@ -384,7 +384,14 @@ Split into three shippable slices.
     is leaking before the platform deletes anything on their behalf — and
     `delete` opts in. Each sweep that finds something records a
     `storage.orphans` event.
-  - **M23e — the console.**
+  - **M23e — the console.** ✅ **Done.** A Storage pools page: name, kind and
+    path (what an operator typed) kept visually apart from state, host count
+    and free space (what the fleet reports). Opening a pool lists every host's
+    word on it, so "why was my placement refused" is one click rather than an
+    ssh session, and a pool nobody reports explains itself instead of showing
+    an empty table. The volume dialog grows a pool selector once a second pool
+    exists, and a volume outside `default` says so on the list.
+    Also [`docs/storage-pools.md`](docs/storage-pools.md) for operators.
 - **Storage, the rest of feature-complete.** Additional backends and per-VM
   storage policy (cache mode, discard/TRIM, IO throttling, thin vs thick). Both
   need pools to exist first: a backend has nowhere to live without one, and

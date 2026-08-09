@@ -17,6 +17,7 @@ import {
   useTasks,
   useTemplates,
   useVms,
+  useStoragePools,
   useVolumes,
 } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
@@ -98,6 +99,7 @@ function Sidebar() {
   const networks = useNetworks();
   const sgs = useSecurityGroups();
   const volumes = useVolumes();
+  const pools = useStoragePools();
   const tasks = useTasks();
   const { enabled: tenancy } = useProject();
   const projects = useProjects(tenancy);
@@ -145,6 +147,9 @@ function Sidebar() {
             { to: "/networks", label: "Networks", count: networks.data?.length },
             { to: "/security-groups", label: "Security groups", count: sgs.data?.length },
             { to: "/volumes", label: "Volumes", count: volumes.data?.length },
+            ...(can(READ.storagePools)
+              ? [{ to: "/storage-pools", label: "Storage pools", count: pools.data?.length }]
+              : []),
           ]}
         />
         <NavGroup label="Operations" items={operations} />
@@ -163,6 +168,7 @@ const CRUMB: Record<string, string> = {
   networks: "Networks",
   "security-groups": "Security groups",
   volumes: "Volumes",
+  "storage-pools": "Storage pools",
   tasks: "Tasks",
   events: "Events",
   iam: "Access control",

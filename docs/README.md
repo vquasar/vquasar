@@ -11,6 +11,9 @@ Guides for running and developing vquasar. Start at the
 * [**Running more than one control plane**](control-plane-ha.md) — what an
   extra instance needs (one certificate CN, a stable address in front), how to
   tell who is leading, and what happens when the leader goes away.
+* [**Storage pools**](storage-pools.md) — where volumes put their bytes, why
+  reachability is reported by the hosts rather than configured, what `pending`
+  means, and how to reclaim files whose VM is long gone.
 * [**Windows guests**](windows-guests.md) — what Cloud Hypervisor's headless,
   virtio-only device model means for Windows, and the two workable install
   paths.

@@ -36,6 +36,9 @@ export function toneFor(value: string): { tone: Tone; pulse: boolean } {
     case "Deleting":
       return { tone: "cyan", pulse: false };
     case "Pending":
+    // A storage pool no host reports (ADR-023) — configured, not yet known to
+    // work anywhere. Amber, because it needs attention and is not an error.
+    case "pending":
     case "Scheduling":
     case "Maintenance":
     case "Cordoned":

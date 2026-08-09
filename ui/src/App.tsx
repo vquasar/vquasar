@@ -12,6 +12,7 @@ import { Networks } from "./pages/Networks";
 import { SecurityGroups } from "./pages/SecurityGroups";
 import { Images } from "./pages/Images";
 import { Volumes } from "./pages/Volumes";
+import { StoragePools } from "./pages/StoragePools";
 import { Templates } from "./pages/Templates";
 import { Tasks } from "./pages/Tasks";
 import { Events } from "./pages/Events";
@@ -101,6 +102,7 @@ function AuthedApp() {
         <Route path="/security-groups" element={<SecurityGroups />} />
         <Route path="/images" element={<Images />} />
         <Route path="/volumes" element={<Volumes />} />
+        <Route path="/storage-pools" element={<StoragePools />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/templates/:id/launch" element={<CreateVmFromTemplate />} />
         <Route path="/tasks" element={<Tasks />} />

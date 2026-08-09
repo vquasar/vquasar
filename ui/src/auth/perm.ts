@@ -24,6 +24,10 @@ export const CATALOG = [
   "network:read",
   "network:update",
   "network:delete",
+  // A storage pool is a platform resource like a host: read is broad,
+  // management is admin-only (ADR-023).
+  "storagepool:read",
+  "storagepool:manage",
   "volume:create",
   "volume:read",
   "volume:update",
@@ -85,6 +89,10 @@ export const ACTION = {
   // Setting a quota is shaping the boundary, so it shares project:update.
   quotaSet: "project:update",
 
+  poolCreate: "storagepool:manage",
+  poolUpdate: "storagepool:manage",
+  poolDelete: "storagepool:manage",
+
   volumeCreate: "volume:create",
   volumeUpdate: "volume:update",
   volumeDelete: "volume:delete",
@@ -116,6 +124,7 @@ export const READ = {
   networks: "network:read",
   securityGroups: "network:read",
   volumes: "volume:read",
+  storagePools: "storagepool:read",
   images: "image:read",
   templates: "template:read",
   iam: "iam:read",

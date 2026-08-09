@@ -1,0 +1,248 @@
+// Storage pools (ADR-023).
+//
+// The page is shaped around the one thing a pool row cannot tell you: whether
+// it works. Name, kind and path are what an operator typed; state, host count
+// and free space are what the fleet reports back, and the two are kept visually
+// apart for that reason. A pool that reads as perfectly configured and is
+// reported by nobody is the situation this resource exists to make visible, so
+// `pending` is a first-class state here rather than an absence.
+
+import { useState } from "react";
+import Dialog from "@mui/material/Dialog";
+import {
+  useCreateStoragePool,
+  useDeleteStoragePool,
+  useStoragePool,
+  useStoragePools,
+} from "../api/hooks";
+import { usePermissions } from "../auth/permissions";
+import { ACTION, READ } from "../auth/perm";
+import {
+  Btn,
+  Dash,
+  DialogBody,
+  DialogFoot,
+  DialogHead,
+  EmptyState,
+  ErrorPanel,
+  Field,
+  Input,
+  Mono,
+  PageHeader,
+  QueryError,
+  RowMenu,
+  Select,
+  SkeletonRows,
+  StateChip,
+  Table,
+  THead,
+  TRow,
+} from "../ui/kit";
+import { formatBytes, formatDate } from "../format";
+import type { StoragePool } from "../api/types";
+
+const COLS = "1.4fr 110px 1.6fr 110px 90px 1fr 60px";
+
+function CreateDialog({ onClose }: { onClose: () => void }) {
+  const create = useCreateStoragePool();
+  const [name, setName] = useState("");
+  const [path, setPath] = useState("");
+  const [description, setDescription] = useState("");
+  const valid = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name) && path.startsWith("/");
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogHead>Add storage pool</DialogHead>
+      <DialogBody>
+        <Field
+          label="Name"
+          help="Lowercase letters, digits and dashes. Volumes refer to it by this."
+        >
+          <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Kind">
+          <Select value="shared_dir" disabled onChange={() => {}}>
+            <option value="shared_dir">shared directory</option>
+          </Select>
+        </Field>
+        <Field
+          label="Path"
+          help="Where the bytes go, as the hosts see it. The directory must already exist on a host for that host to report the pool — nothing here creates it."
+        >
+          <Input
+            value={path}
+            placeholder="/srv/fast"
+            onChange={(e) => setPath(e.target.value)}
+          />
+        </Field>
+        <Field label="Description" help="Optional.">
+          <Input value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        {create.isError && <ErrorPanel summary="Create rejected" detail={create.error} />}
+      </DialogBody>
+      <DialogFoot>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn
+          kind="primary"
+          disabled={!valid || create.isPending}
+          onClick={() =>
+            create.mutate(
+              {
+                name,
+                kind: "shared_dir",
+                path,
+                description: description || null,
+              },
+              { onSuccess: onClose },
+            )
+          }
+        >
+          {create.isPending ? "Creating…" : "Create"}
+        </Btn>
+      </DialogFoot>
+    </Dialog>
+  );
+}
+
+/// Every host's word on one pool. This is the answer to "why was my placement
+/// refused", so an unusable host leads with its reason rather than a red dot.
+function Reports({ id }: { id: string }) {
+  const detail = useStoragePool(id);
+  if (detail.isLoading) return <SkeletonRows cols="1fr 1fr" rows={2} />;
+  if (detail.isError) return <QueryError error={detail.error} what="pool detail" />;
+  const hosts = detail.data?.hosts ?? [];
+  if (hosts.length === 0) {
+    return (
+      <EmptyState
+        headline="No host has reported this pool"
+        hint="A pool is usable only while some host says it is. Check that the directory exists and is writable on the hosts that should have it mounted — an agent that cannot use a pool says why here."
+      />
+    );
+  }
+  return (
+    <Table style={{ margin: "8px 0 16px" }}>
+      <THead cols="1fr 110px 2fr 1fr">
+        <span>Host</span>
+        <span>Usable</span>
+        <span>Reported</span>
+        <span>Free / total</span>
+      </THead>
+      {hosts.map((h) => (
+        <TRow key={h.host_id} cols="1fr 110px 2fr 1fr">
+          <span>{h.host_name}</span>
+          <StateChip value={h.usable ? "ready" : "Failed"} dense />
+          <span title={formatDate(h.reported_at)}>
+            {h.usable ? "usable" : (h.message ?? "not usable")}
+          </span>
+          <span>
+            {h.available_bytes !== null && h.capacity_bytes !== null ? (
+              `${formatBytes(h.available_bytes)} / ${formatBytes(h.capacity_bytes)}`
+            ) : (
+              <Dash />
+            )}
+          </span>
+        </TRow>
+      ))}
+    </Table>
+  );
+}
+
+function Row({ pool, canManage }: { pool: StoragePool; canManage: boolean }) {
+  const [open, setOpen] = useState(false);
+  const del = useDeleteStoragePool();
+  return (
+    <>
+      <TRow cols={COLS} onClick={() => setOpen((v) => !v)}>
+        <span>
+          {pool.name}
+          {pool.description && (
+            <span className="vq-sub" style={{ display: "block" }}>
+              {pool.description}
+            </span>
+          )}
+        </span>
+        <span>{pool.kind}</span>
+        <Mono>{pool.params.path ?? <Dash />}</Mono>
+        <StateChip value={pool.state} dense />
+        <span>{pool.reachable_hosts}</span>
+        <span>
+          {pool.available_bytes !== null && pool.capacity_bytes !== null ? (
+            `${formatBytes(pool.available_bytes)} / ${formatBytes(pool.capacity_bytes)}`
+          ) : (
+            <Dash />
+          )}
+        </span>
+        {canManage ? (
+          <RowMenu
+            items={[
+              {
+                label: "Delete",
+                danger: true,
+                onClick: () => del.mutate(pool.id),
+              },
+            ]}
+          />
+        ) : (
+          <span />
+        )}
+      </TRow>
+      {del.isError && <ErrorPanel summary="Delete rejected" detail={del.error} />}
+      {open && <Reports id={pool.id} />}
+    </>
+  );
+}
+
+export function StoragePools() {
+  const pools = useStoragePools();
+  const { can } = usePermissions();
+  const [creating, setCreating] = useState(false);
+  const canManage = can(ACTION.poolCreate);
+
+  if (!can(READ.storagePools)) {
+    return (
+      <EmptyState
+        headline="You do not have access to storage pools"
+        hint="Ask an administrator for storagepool:read."
+      />
+    );
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Storage pools"
+        subtitle="Where volumes put their bytes. Whether a pool works is reported by the hosts, not configured here."
+        actions={
+          canManage ? (
+            <Btn kind="primary" onClick={() => setCreating(true)}>
+              Add pool
+            </Btn>
+          ) : undefined
+        }
+      />
+      {pools.isError && <QueryError error={pools.error} what="storage pools" />}
+      <Table>
+        <THead cols={COLS}>
+          <span>Name</span>
+          <span>Kind</span>
+          <span>Path</span>
+          <span>State</span>
+          <span>Hosts</span>
+          <span>Free / total</span>
+          <span />
+        </THead>
+        {pools.isLoading && <SkeletonRows cols={COLS} rows={3} />}
+        {pools.data?.map((p) => (
+          <Row key={p.id} pool={p} canManage={canManage} />
+        ))}
+      </Table>
+      {pools.data?.length === 0 && (
+        <EmptyState
+          headline="No storage pools"
+          hint="A cluster gets a `default` pool from its configured shared directory the first time the control plane starts."
+        />
+      )}
+      {creating && <CreateDialog onClose={() => setCreating(false)} />}
+    </>
+  );
+}
