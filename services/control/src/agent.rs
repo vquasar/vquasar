@@ -151,10 +151,16 @@ impl Agent {
         connect_host_agent(&self.endpoint).await
     }
 
-    pub async fn get_host_info(&self) -> Result<GetHostInfoResponse, AgentError> {
+    /// Host inventory, and what this host can do with each pool it is asked
+    /// about (ADR-023). The pool list travels with the request because pools
+    /// are defined in the control plane; the host only answers.
+    pub async fn get_host_info(
+        &self,
+        pools: Vec<vquasar_proto::agent::StoragePoolProbe>,
+    ) -> Result<GetHostInfoResponse, AgentError> {
         let mut client = self.client().await?;
         Ok(client
-            .get_host_info(GetHostInfoRequest {})
+            .get_host_info(GetHostInfoRequest { pools })
             .await?
             .into_inner())
     }

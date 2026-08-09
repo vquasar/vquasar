@@ -122,18 +122,34 @@ pub async fn list(State(store): State<Store>, user: AuthUser) -> ApiResult<Json<
     ))
 }
 
+/// One pool, with every host's word on it.
+///
+/// The aggregate answers "can this be used"; the per-host list answers "why
+/// not", which is the question an operator actually has once a placement has
+/// been refused.
+#[derive(Debug, serde::Serialize)]
+pub struct PoolDetail {
+    #[serde(flatten)]
+    pub view: PoolView,
+    pub hosts: Vec<crate::store::PoolHostReport>,
+}
+
 pub async fn get(
     State(store): State<Store>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-) -> ApiResult<Json<PoolView>> {
+) -> ApiResult<Json<PoolDetail>> {
     user.require("storagepool:read")?;
     let pool = store
         .get_storage_pool(id)
         .await?
         .ok_or(ApiError::not_found("storage pool"))?;
     let reach = store.pool_reachability(id).await?;
-    Ok(Json(PoolView::new(pool, reach)))
+    let hosts = store.pool_host_reports(id).await?;
+    Ok(Json(PoolDetail {
+        view: PoolView::new(pool, reach),
+        hosts,
+    }))
 }
 
 pub async fn update(

@@ -3838,6 +3838,7 @@ dependencies = [
  "clap",
  "figment",
  "prost 0.13.5",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

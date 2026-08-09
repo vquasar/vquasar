@@ -406,6 +406,29 @@ pub struct PoolReachability {
     pub available_bytes: Option<i64>,
 }
 
+/// One host's word on one pool, as the API reports it.
+#[derive(Debug, Clone, serde::Serialize, FromRow)]
+pub struct PoolHostReport {
+    pub host_id: Uuid,
+    pub host_name: String,
+    pub usable: bool,
+    /// Why not, in the agent's words. `None` when usable.
+    pub message: Option<String>,
+    pub capacity_bytes: Option<i64>,
+    pub available_bytes: Option<i64>,
+    pub reported_at: DateTime<Utc>,
+}
+
+/// What an agent just said about one pool, on its way into the store.
+#[derive(Debug, Clone)]
+pub struct PoolReport {
+    pub pool_id: Uuid,
+    pub usable: bool,
+    pub message: Option<String>,
+    pub capacity_bytes: Option<i64>,
+    pub available_bytes: Option<i64>,
+}
+
 /// The persistence layer.
 #[derive(Clone)]
 pub struct Store {
@@ -1755,8 +1778,10 @@ impl Store {
         &self,
     ) -> Result<std::collections::HashMap<Uuid, PoolReachability>> {
         let rows: Vec<(Uuid, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+            // `usable` only: a host that reported "I cannot see this" is an
+            // observation worth keeping and not a host that can use the pool.
             "SELECT pool_id, COUNT(*), MIN(capacity_bytes), MIN(available_bytes)
-               FROM storage_pool_reachability GROUP BY pool_id",
+               FROM storage_pool_reachability WHERE usable GROUP BY pool_id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1773,6 +1798,70 @@ impl Store {
                 )
             })
             .collect())
+    }
+
+    /// Every host's report about one pool, newest information first — the
+    /// operator-facing half of a placement refusal.
+    pub async fn pool_host_reports(&self, pool: Uuid) -> Result<Vec<PoolHostReport>> {
+        sqlx::query_as::<_, PoolHostReport>(
+            "SELECT r.host_id, h.name AS host_name, r.usable, r.message,
+                    r.capacity_bytes, r.available_bytes, r.reported_at
+               FROM storage_pool_reachability r
+               JOIN hosts h ON h.id = r.host_id
+              WHERE r.pool_id = $1
+              ORDER BY h.name",
+        )
+        .bind(pool)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Replace this host's pool observations with what it just reported.
+    ///
+    /// A full replace, because the control plane probes every pool on every
+    /// tick: whatever is not in `reports` is something this host no longer has
+    /// an opinion about, and a stale opinion is the failure mode this whole
+    /// resource exists to remove.
+    pub async fn record_pool_reports(&self, host: Uuid, reports: &[PoolReport]) -> Result<()> {
+        let now = Utc::now();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM storage_pool_reachability WHERE host_id = $1")
+            .bind(host)
+            .execute(&mut *tx)
+            .await?;
+        for r in reports {
+            // A pool deleted between the probe and this write is not an error,
+            // so the insert is guarded rather than left to trip a foreign key.
+            sqlx::query(
+                "INSERT INTO storage_pool_reachability
+                     (pool_id, host_id, usable, message, capacity_bytes, available_bytes, reported_at)
+                 SELECT $1,$2,$3,$4,$5,$6,$7
+                  WHERE EXISTS (SELECT 1 FROM storage_pools WHERE id = $1)",
+            )
+            .bind(r.pool_id)
+            .bind(host)
+            .bind(r.usable)
+            .bind(r.message.as_deref())
+            .bind(r.capacity_bytes)
+            .bind(r.available_bytes)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Forget what an unreachable host used to say about pools.
+    ///
+    /// A host that cannot be polled is not reporting anything, and leaving its
+    /// last word in place would keep a pool `ready` on the strength of a
+    /// machine that is gone.
+    pub async fn clear_pool_reports_for_host(&self, host: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM storage_pool_reachability WHERE host_id = $1")
+            .bind(host)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
     }
 
     /// Make sure the `default` pool exists, seeded from `[storage]

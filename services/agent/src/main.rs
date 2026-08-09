@@ -19,6 +19,7 @@ mod manager;
 mod metrics;
 mod network;
 mod peerid;
+mod pools;
 mod runtime;
 mod storage;
 
