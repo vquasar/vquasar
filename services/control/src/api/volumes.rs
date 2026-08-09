@@ -111,6 +111,10 @@ pub struct CreateVolume {
     /// Clone from this image to make a bootable volume (design M14d).
     #[serde(default)]
     pub source_image_id: Option<Uuid>,
+    /// Cache mode, allocation and I/O ceilings for this volume (design §20).
+    /// Omitted keeps the platform's previous behaviour exactly.
+    #[serde(default)]
+    pub policy: Option<vquasar_model::StoragePolicy>,
     /// Which storage pool to place the volume in, by id or by name (ADR-023).
     /// Omitted means `default` — the pool an existing cluster was already
     /// using, so nothing about an unchanged request changes.
@@ -169,6 +173,9 @@ pub async fn create(
         )));
     }
 
+    if let Some(p) = &body.policy {
+        p.validate().map_err(|e| ApiError::invalid(e.to_string()))?;
+    }
     let id = Uuid::new_v4();
     let pool = resolve_pool(&store, body.pool.as_deref()).await?;
     let pool_dir = pool
@@ -224,6 +231,7 @@ pub async fn create(
             body.source_image_id,
             crate::scoped::ScopedStore::new(store.clone(), scope.0).owning_project(),
             pool.id,
+            body.policy.as_ref(),
         )
         .await?;
 
@@ -259,8 +267,9 @@ async fn provision(
     path: &std::path::Path,
     format: &str,
 ) -> ApiResult<i64> {
+    let prealloc = body.policy.as_ref().and_then(|p| p.preallocation());
     let Some(image_id) = body.source_image_id else {
-        provision_blank(path, format, body.size_bytes as u64).await?;
+        provision_blank(path, format, body.size_bytes as u64, prealloc).await?;
         return Ok(body.size_bytes);
     };
     let img = store
@@ -268,14 +277,16 @@ async fn provision(
         .await?
         .ok_or(ApiError::not_found("image"))?;
     // Full, independent copy so the volume outlives the image.
-    qemu_img(&[
-        "convert",
-        "-O",
-        ext(format),
-        &img.source_path,
-        &path.to_string_lossy(),
-    ])
-    .await?;
+    let mut convert = vec!["convert", "-O", ext(format)];
+    let prealloc_opt = prealloc.map(|v| format!("preallocation={v}"));
+    if let Some(o) = &prealloc_opt {
+        convert.extend_from_slice(&["-o", o]);
+    }
+    let src = img.source_path.clone();
+    let dst = path.to_string_lossy().into_owned();
+    convert.push(&src);
+    convert.push(&dst);
+    qemu_img(&convert).await?;
     if body.size_bytes > 0 {
         // Grow to the requested size if it exceeds the image's virtual size.
         let _ = qemu_img(&[
@@ -373,6 +384,9 @@ pub async fn attach(
         // The disk carries the volume's pool, which is what lets the scheduler
         // refuse a host that cannot reach it (ADR-023).
         pool: v.pool_id.map(vquasar_model::StoragePoolId::from_uuid),
+        // …and the volume's policy, so a throttle set on the volume follows it
+        // onto whichever VM it is attached to rather than being re-typed there.
+        policy: v.policy.as_ref().map(|p| p.0.clone()),
     });
     spec.validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
@@ -564,7 +578,12 @@ async fn qemu_img(args: &[&str]) -> ApiResult<()> {
 
 /// Provision a blank disk image on shared storage via `qemu-img` (run on a
 /// blocking thread; control's tokio has no process feature).
-async fn provision_blank(path: &std::path::Path, format: &str, size_bytes: u64) -> ApiResult<()> {
+async fn provision_blank(
+    path: &std::path::Path,
+    format: &str,
+    size_bytes: u64,
+    prealloc: Option<&'static str>,
+) -> ApiResult<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -573,10 +592,16 @@ async fn provision_blank(path: &std::path::Path, format: &str, size_bytes: u64) 
     let fmt = ext(format).to_string();
     let p = path.to_string_lossy().into_owned();
     let size = size_bytes.to_string();
+    // Thick allocation reserves the space now, so the guest cannot later hit
+    // ENOSPC on a filesystem somebody else filled.
+    let prealloc = prealloc.map(|v| format!("preallocation={v}"));
     let out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("qemu-img")
-            .args(["create", "-f", &fmt, &p, &size])
-            .output()
+        let mut cmd = std::process::Command::new("qemu-img");
+        cmd.args(["create", "-f", &fmt]);
+        if let Some(o) = &prealloc {
+            cmd.args(["-o", o]);
+        }
+        cmd.args([&p, &size]).output()
     })
     .await
     .map_err(|e| ApiError::internal(format!("qemu-img join: {e}")))?

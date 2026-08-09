@@ -31,7 +31,8 @@ pub use storage::{
 };
 pub use validation::ValidationError;
 pub use vm::{
-    allocate_mac, BootSpec, CloudInitSpec, CpuSpec, DesiredPowerState, DiskImageType, DiskSpec,
-    MachineType, MemorySpec, NetworkInterfaceSpec, PlacementSpec, VirtualMachine,
-    VirtualMachineSpec, VirtualMachineStatus, VmPhase,
+    allocate_mac, Allocation, BootSpec, CloudInitSpec, CpuSpec, DesiredPowerState, DiskCache,
+    DiskImageType, DiskSpec, MachineType, MemorySpec, NetworkInterfaceSpec, PlacementSpec,
+    StoragePolicy, StoragePolicyError, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
+    VmPhase,
 };

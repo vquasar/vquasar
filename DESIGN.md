@@ -297,6 +297,16 @@ trait in the agent as the first move. See ADR-023 for why the pool came first:
 the trait puts an abstraction where the plugin goes, and the problem was the
 undeclared assumption about who can see what.
 
+A disk carries an optional **storage policy**: cache mode (`O_DIRECT` or the
+host page cache), allocation (thin, or reserved with `fallocate`), and token-
+bucket ceilings on bandwidth and IOPS. Allocation is a provisioning concern and
+never reaches Cloud Hypervisor; cache and the ceilings are runtime options and
+never reach `qemu-img`. Absent policy serialises to nothing and sends what the
+platform sent before it existed, which is what makes it safe to add to a
+running fleet. There is deliberately no discard/TRIM switch — Cloud Hypervisor
+exposes no knob for it, and a field that is stored and ignored is the failure
+ADR-024 names.
+
 ## 21. Images
 
 Separate images from volumes. Image metadata eventually: name, architecture,

@@ -1,0 +1,13 @@
+-- Per-volume storage policy (design §20): cache mode, allocation, and I/O
+-- ceilings.
+--
+-- On the volume rather than only on a VM's disk, because a volume outlives the
+-- VM it is attached to. A throttle typed onto a VM would have to be re-typed
+-- every time the volume moved; here it follows the bytes, and attaching copies
+-- it onto the disk.
+--
+-- NULL means "whatever the platform did before this column existed", which is
+-- why there is no default: an empty policy object and no policy at all are
+-- different statements, and only the second one is what every existing row is
+-- making.
+ALTER TABLE volumes ADD COLUMN policy JSONB;

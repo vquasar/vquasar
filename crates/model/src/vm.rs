@@ -196,6 +196,98 @@ pub enum BootSpec {
     },
 }
 
+/// How a disk is cached, allocated and rate-limited (design §20).
+///
+/// Every field is optional-shaped and the default is "whatever the platform
+/// did before this existed", so a spec that says nothing about policy behaves
+/// exactly as it did — and serialises without these keys at all.
+///
+/// Deliberately absent: a discard/TRIM switch. Cloud Hypervisor's virtio-blk
+/// advertises DISCARD and WRITE_ZEROES based on what its block backend can do,
+/// and exposes no knob to turn that on or off. A field here would be accepted,
+/// stored, displayed and ignored — which is the failure ADR-024 exists to stop.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePolicy {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub cache: DiskCache,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub allocation: Allocation,
+    /// Ceiling on throughput, in bytes per second. `None` is unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bandwidth_bytes_per_sec: Option<u64>,
+    /// Ceiling on operations per second. `None` is unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iops: Option<u64>,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// Whether the host page cache sits between the guest and the file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskCache {
+    /// The host caches, which is faster and is what every existing VM does.
+    #[default]
+    Writeback,
+    /// `O_DIRECT`: the guest's writes go to the device, not to the host's page
+    /// cache. Slower, and what a database or a host that may lose power wants —
+    /// the guest's own barriers then mean what the guest thinks they mean.
+    Direct,
+}
+
+/// Whether a disk's blocks are reserved when it is created.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Allocation {
+    /// Allocate on write. Fast to create and oversubscribable, at the cost of
+    /// a guest that can hit ENOSPC on a filesystem someone else filled.
+    #[default]
+    Thin,
+    /// Reserve the whole size up front, so the space is the guest's from the
+    /// moment the disk exists.
+    Thick,
+}
+
+impl StoragePolicy {
+    /// Whether anything here is non-default, i.e. whether it is worth carrying.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `qemu-img create -o preallocation=<this>`, or `None` when the default
+    /// (sparse) allocation is wanted.
+    ///
+    /// `falloc` rather than `full`: both reserve the space, and `falloc` does
+    /// it with `fallocate` instead of writing zeroes over the whole disk, which
+    /// on a terabyte volume is the difference between a moment and an hour.
+    pub fn preallocation(&self) -> Option<&'static str> {
+        match self.allocation {
+            Allocation::Thin => None,
+            Allocation::Thick => Some("falloc"),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), StoragePolicyError> {
+        // A limiter of zero is not "no limit", it is "no I/O" — a VM that can
+        // never read a block. Whoever wrote it meant to leave it unset.
+        if self.bandwidth_bytes_per_sec == Some(0) {
+            return Err(StoragePolicyError::ZeroLimit("bandwidth_bytes_per_sec"));
+        }
+        if self.iops == Some(0) {
+            return Err(StoragePolicyError::ZeroLimit("iops"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum StoragePolicyError {
+    #[error("{0} must be greater than zero — omit it for no limit, rather than setting 0, which would stop the disk entirely")]
+    ZeroLimit(&'static str),
+}
+
 /// A block device attached to the VM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskSpec {
@@ -225,6 +317,13 @@ pub struct DiskSpec {
     /// belongs to would be a claim the platform cannot back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<crate::ids::StoragePoolId>,
+    /// How this disk is cached, allocated and rate-limited (design §20).
+    ///
+    /// Absent means the platform's previous behaviour, which is why it is an
+    /// `Option` rather than a `StoragePolicy::default()`: a spec that never
+    /// mentioned policy round-trips through the database unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<StoragePolicy>,
 }
 
 impl DiskSpec {
@@ -237,6 +336,7 @@ impl DiskSpec {
             source: None,
             size_bytes: None,
             pool: None,
+            policy: None,
         }
     }
 
@@ -254,6 +354,7 @@ impl DiskSpec {
             source: Some(source.into()),
             size_bytes,
             pool: None,
+            policy: None,
         }
     }
 
@@ -279,6 +380,7 @@ impl DiskSpec {
             source: None,
             size_bytes: Some(size_bytes),
             pool: None,
+            policy: None,
         }
     }
 }
@@ -416,5 +518,68 @@ mod tests {
         assert!(VmPhase::Running.is_settled());
         assert!(VmPhase::Stopped.is_settled());
         assert!(!VmPhase::Creating.is_settled());
+    }
+    /// A disk that says nothing about policy must serialise exactly as it did
+    /// before policy existed — that containment is what makes this safe to add
+    /// to a fleet already running.
+    #[test]
+    fn a_disk_without_a_policy_carries_no_policy_keys() {
+        let d = DiskSpec::raw("/x/a.raw");
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("policy").is_none(), "{json}");
+        assert_eq!(serde_json::from_value::<DiskSpec>(json).unwrap(), d);
+    }
+
+    /// And the defaults inside a policy are skipped too, so "I set a throttle"
+    /// does not silently also record "and I chose writeback".
+    #[test]
+    fn policy_defaults_do_not_get_written_down() {
+        let p = StoragePolicy {
+            iops: Some(500),
+            ..StoragePolicy::default()
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["iops"], 500);
+        assert!(json.get("cache").is_none(), "{json}");
+        assert!(json.get("allocation").is_none(), "{json}");
+        assert!(json.get("bandwidth_bytes_per_sec").is_none(), "{json}");
+        assert!(StoragePolicy::default().is_default());
+        assert!(!p.is_default());
+    }
+
+    #[test]
+    fn thick_allocation_reserves_without_writing_the_whole_disk() {
+        assert_eq!(StoragePolicy::default().preallocation(), None);
+        let thick = StoragePolicy {
+            allocation: Allocation::Thick,
+            ..StoragePolicy::default()
+        };
+        // `falloc`, not `full`: both reserve, and only one of them takes an
+        // hour on a terabyte.
+        assert_eq!(thick.preallocation(), Some("falloc"));
+    }
+
+    /// Zero is not "unlimited", it is "no I/O at all" — a VM that can never
+    /// read a block, from a field somebody left at its numeric default.
+    #[test]
+    fn a_zero_ceiling_is_refused_rather_than_read_as_unlimited() {
+        let zero_bw = StoragePolicy {
+            bandwidth_bytes_per_sec: Some(0),
+            ..StoragePolicy::default()
+        };
+        assert_eq!(
+            zero_bw.validate(),
+            Err(StoragePolicyError::ZeroLimit("bandwidth_bytes_per_sec"))
+        );
+        let zero_iops = StoragePolicy {
+            iops: Some(0),
+            ..StoragePolicy::default()
+        };
+        assert_eq!(
+            zero_iops.validate(),
+            Err(StoragePolicyError::ZeroLimit("iops"))
+        );
+        // Unset really is unlimited.
+        assert!(StoragePolicy::default().validate().is_ok());
     }
 }

@@ -2068,6 +2068,60 @@ async fn an_enforced_egress_rule_reaches_the_agent() {
     );
 }
 
+/// Per-disk storage policy (design §20): a ceiling that means something, a
+/// zero that is refused, and a spec that says nothing being left exactly alone.
+#[tokio::test]
+async fn storage_policy_is_carried_or_refused_but_never_guessed() {
+    let h = Harness::start().await;
+
+    // Zero is not "unlimited", it is "this disk may never do any I/O" — almost
+    // certainly a field left at its numeric default.
+    let mut zero = vm_spec();
+    zero["disks"] = json!([{
+        "path": "/x/a.raw", "image_type": "raw",
+        "policy": {"iops": 0},
+    }]);
+    let (st, body) = h.post("/vms", json!({"name": "zero", "spec": zero})).await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(format!("{body}").contains("disks[0].policy"), "{body}");
+
+    // A real policy survives the round trip through the database.
+    let mut throttled = vm_spec();
+    throttled["disks"] = json!([{
+        "path": "/x/a.raw", "image_type": "raw",
+        "policy": {"cache": "direct", "allocation": "thick", "iops": 2000},
+    }]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "throttled", "spec": throttled}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm = h
+        .get(&format!("/vms/{}", v["vm_id"].as_str().unwrap()))
+        .await;
+    let policy = &vm["spec"]["disks"][0]["policy"];
+    assert_eq!(policy["cache"], "direct", "{vm}");
+    assert_eq!(policy["allocation"], "thick", "{vm}");
+    assert_eq!(policy["iops"], 2000, "{vm}");
+    // Untouched dimensions stay unsaid rather than becoming a stored zero.
+    assert!(policy.get("bandwidth_bytes_per_sec").is_none(), "{policy}");
+
+    // And a disk that says nothing about policy still says nothing after a
+    // round trip: an existing fleet's specs do not grow keys on upgrade.
+    let mut plain = vm_spec();
+    plain["disks"] = json!([{"path": "/x/b.raw", "image_type": "raw"}]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "plain", "spec": plain}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm = h
+        .get(&format!("/vms/{}", v["vm_id"].as_str().unwrap()))
+        .await;
+    assert!(
+        vm["spec"]["disks"][0].get("policy").is_none(),
+        "a policy appeared on a disk that never asked for one: {vm}"
+    );
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback
