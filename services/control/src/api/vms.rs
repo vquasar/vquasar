@@ -997,6 +997,105 @@ async fn default_pool(store: &Store) -> ApiResult<(vquasar_model::StoragePoolId,
     Ok((vquasar_model::StoragePoolId::from_uuid(pool.id), dir))
 }
 
+/// One host, and whether this VM can be migrated to it (design §28).
+#[derive(Debug, serde::Serialize)]
+pub struct MigrationTarget {
+    pub host_id: Uuid,
+    pub host_name: String,
+    /// Whether a migration to this host would be accepted as-is.
+    pub eligible: bool,
+    /// Why not, when it would not. `None` when eligible.
+    pub reason: Option<String>,
+    /// Whether `force: true` would make it eligible.
+    ///
+    /// True only for a CPU verdict, which is a risk an operator may knowingly
+    /// accept. Storage is never forceable: a host that cannot see the guest's
+    /// disks does not have them, and no amount of insisting changes that.
+    pub forceable: bool,
+    /// The CPU verdict on its own, so the console can show it next to a host
+    /// that is otherwise fine.
+    pub cpu: String,
+}
+
+/// `GET /vms/:id/migration-targets` — where this VM could go, and why not.
+///
+/// The rules live here rather than in the console because they already live in
+/// three places on this side (the scheduler, the migrate handler, and drain).
+/// A fourth copy in TypeScript would drift from all of them, and the first
+/// anyone would know is a dialog offering a host the API then refuses.
+pub async fn migration_targets(
+    State(store): State<Store>,
+    user: AuthUser,
+    scope: crate::authz::RequestScope,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<MigrationTarget>>> {
+    user.require("vm:migrate")?;
+    let vm = crate::scoped::ScopedStore::new(store.clone(), scope.0)
+        .get_vm(id)
+        .await?
+        .ok_or_else(|| ApiError::vm_not_found(id))?;
+    let source = match vm.host_id {
+        Some(h) => store.get_host(h).await?,
+        None => None,
+    };
+
+    // Computed once for the whole fleet rather than per host.
+    let needed = crate::scheduler::required_pools(&vm.spec.0);
+    let local = store.local_pool_ids().await?;
+    let pinned_local = needed.iter().find(|p| local.contains(p));
+    let pinned_pool_name = match pinned_local {
+        Some(p) => store.get_storage_pool(*p).await?.map(|p| p.name),
+        None => None,
+    };
+    let placement = vm.spec.0.placement.host.map(|h| h.as_uuid());
+    let reachable = store.pools_by_host().await?;
+
+    let mut out = Vec::new();
+    for host in store.list_hosts().await? {
+        if Some(host.id) == vm.host_id {
+            continue;
+        }
+        let cpu = crate::cpucompat::check(
+            source.as_ref().and_then(|s| s.cpu_vendor.as_deref()),
+            source
+                .as_ref()
+                .map(|s| s.cpu_features.as_slice())
+                .unwrap_or(&[]),
+            host.cpu_vendor.as_deref(),
+            &host.cpu_features,
+        );
+        // Ordered by how fundamental the obstacle is, so the reason an operator
+        // reads is the one they have to solve first.
+        let hard = if host.state != "Ready" || !host.schedulable {
+            Some("host is not Ready and schedulable".to_string())
+        } else if let Some(name) = &pinned_pool_name {
+            Some(format!(
+                "this VM has a disk in storage pool {name:?}, which is local to its host"
+            ))
+        } else if placement.is_some_and(|p| p != host.id) {
+            Some("this VM is pinned to another host by its placement".to_string())
+        } else if !needed.is_subset(&reachable.get(&host.id).cloned().unwrap_or_default()) {
+            Some("does not report the storage pool this VM's disks are in".to_string())
+        } else {
+            None
+        };
+        let cpu_blocks = matches!(
+            cpu,
+            crate::cpucompat::CpuCompat::VendorMismatch { .. }
+                | crate::cpucompat::CpuCompat::MissingFeatures(_)
+        );
+        out.push(MigrationTarget {
+            host_id: host.id,
+            host_name: host.name,
+            eligible: hard.is_none() && !cpu_blocks,
+            forceable: hard.is_none() && cpu_blocks,
+            reason: hard.clone().or_else(|| cpu_blocks.then(|| cpu.reason())),
+            cpu: cpu.reason(),
+        });
+    }
+    Ok(Json(out))
+}
+
 pub async fn migrate(
     State(store): State<Store>,
     user: AuthUser,

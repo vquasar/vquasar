@@ -591,3 +591,20 @@ export interface ControlConfig {
   };
   tenancy: { enabled: boolean };
 }
+
+/// One host, and whether this VM can be migrated to it (§28).
+///
+/// Answered by the control plane rather than worked out here: the same rules
+/// live in the scheduler, the migrate handler and drain, and a fourth copy in
+/// the console would drift from all three.
+export interface MigrationTarget {
+  host_id: string;
+  host_name: string;
+  eligible: boolean;
+  reason: string | null;
+  /// Whether `force` would make it eligible — true only for a CPU verdict.
+  /// Storage is never forceable: a host that cannot see the disks does not
+  /// have them.
+  forceable: boolean;
+  cpu: string;
+}

@@ -535,6 +535,18 @@ Split into three shippable slices.
   left off while the only way to get it was a request per row — a page that got
   slower the more storage you had.
 
+- **Console: where a VM can migrate, answered once** (§28). ✅ **Done.**
+  `GET /vms/:id/migration-targets` lists every host with `eligible`, a `reason`
+  when not, and whether `force` would help — true only for a CPU verdict, since
+  a host that cannot see the guest's disks does not have them however hard an
+  operator insists.
+  The console worked this out from CPU features alone, which was the whole
+  story when that code was written. Storage pools, local storage and explicit
+  placement have each since become a reason a target is refused, so the dialog
+  was offering hosts the API then rejected. The client-side mirror is deleted
+  rather than extended: a copy of half the rules looks authoritative right up
+  until it is wrong, and these rules already live in three places on the server.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH

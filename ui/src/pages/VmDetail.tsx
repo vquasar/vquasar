@@ -10,6 +10,7 @@ import {
   useEvents,
   useHosts,
   useMigrateVm,
+  useMigrationTargets,
   useNetworks,
   useSecurityGroups,
   useTasks,
@@ -47,7 +48,7 @@ import {
   TRow,
 } from "../ui/kit";
 import { duration, formatBytes, formatMib, formatTime } from "../format";
-import type { Host, UpdateVmRequest, Vm } from "../api/types";
+import type { MigrationTarget, UpdateVmRequest, Vm } from "../api/types";
 
 const GIB = 1024 * 1024 * 1024;
 const NIC_COLS = "1fr 1fr 1fr 1fr";
@@ -56,42 +57,11 @@ const TASK_COLS = "1fr 1.3fr 1fr 1fr 1fr";
 const TABS = ["Overview", "Spec", "Networking", "Storage", "Tasks", "Events"] as const;
 type Tab = (typeof TABS)[number];
 
-/// Client-side mirror of the server's CPU migration gate (design M15): a guest
-/// can migrate to `target` only if it has the same vendor and a superset of the
-/// source host's guest-visible CPU features. Advisory — the control plane
-/// enforces it — but it lets us annotate incompatible targets before the click.
-type CpuVerdict =
-  | { kind: "ok" }
-  | { kind: "unknown" }
-  | { kind: "vendor"; source: string; target: string }
-  | { kind: "missing"; missing: string[] };
-
-function cpuCompat(source: Host | undefined, target: Host): CpuVerdict {
-  if (!source) return { kind: "unknown" };
-  const sv = source.cpu_vendor;
-  const tv = target.cpu_vendor;
-  if (sv && tv && sv !== tv) return { kind: "vendor", source: sv, target: tv };
-  if (!sv || !tv) return { kind: "unknown" };
-  const sf = source.cpu_features ?? [];
-  const tf = target.cpu_features ?? [];
-  if (sf.length === 0 || tf.length === 0) return { kind: "unknown" };
-  const have = new Set(tf);
-  const missing = sf.filter((f) => !have.has(f));
-  return missing.length ? { kind: "missing", missing } : { kind: "ok" };
-}
-
-function verdictLabel(v: CpuVerdict): string {
-  switch (v.kind) {
-    case "ok":
-      return "CPU-compatible";
-    case "unknown":
-      return "CPU features unknown";
-    case "vendor":
-      return `vendor mismatch (${v.source} → ${v.target})`;
-    case "missing":
-      return `missing: ${v.missing.join(", ")}`;
-  }
-}
+// The client-side mirror of the CPU migration gate used to live here. It is
+// gone: the server answers `/vms/:id/migration-targets` now, and CPU stopped
+// being the whole story the moment storage pools, local storage and explicit
+// placement each became a reason a target is refused. A copy of half the rules
+// is worse than no copy — it looks authoritative right up until it is wrong.
 
 /// A rolling window of the last 12 samples, so the sparkline shows a trend
 /// rather than a single reading. Never interpolated — each bar is one poll.
@@ -229,52 +199,66 @@ function EditVmDialog({ vm, onClose }: { vm: Vm; onClose: () => void }) {
   );
 }
 
+/// Where this VM can go.
+///
+/// The eligibility comes from the control plane (`/vms/:id/migration-targets`)
+/// rather than being worked out here. It used to consider CPU alone, which was
+/// the whole story when it was written; storage pools, local storage and an
+/// explicit placement have all become reasons a target is refused since, and a
+/// dialog that offered a host the API then rejected would be worse than one
+/// that offers nothing.
 function MigrateDialog({ vm, onClose }: { vm: Vm; onClose: () => void }) {
-  const hosts = useHosts();
+  const targets = useMigrationTargets(vm.id);
   const migrate = useMigrateVm();
   const [target, setTarget] = useState("");
   const [force, setForce] = useState(false);
 
-  const sourceHost = (hosts.data ?? []).find((h) => h.id === vm.host_id);
-  const candidates = (hosts.data ?? []).filter(
-    (h) => h.state === "Ready" && h.schedulable && h.id !== vm.host_id,
-  );
-  const targetHost = candidates.find((h) => h.id === target);
-  const verdict = targetHost ? cpuCompat(sourceHost, targetHost) : null;
-  const incompatible = verdict?.kind === "vendor" || verdict?.kind === "missing";
+  const list = targets.data ?? [];
+  const chosen = list.find((t) => t.host_id === target);
+  // A host is offered when it is eligible, or when forcing would make it so.
+  const selectable = (t: MigrationTarget) => t.eligible || (t.forceable && force);
+  // Only a CPU verdict can be forced, so the checkbox is only meaningful when
+  // something is actually blocked by one.
+  const anyForceable = list.some((t) => t.forceable);
+  const nowhere = list.length > 0 && !list.some((t) => t.eligible || t.forceable);
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogHead>Migrate {vm.name}</DialogHead>
       <DialogBody>
+        {targets.isLoading && <SkeletonRows cols="1fr" rows={2} />}
+        {targets.isError && <QueryError error={targets.error} what="migration targets" />}
         <Field label="Target host">
           <Select value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="">— pick a host —</option>
-            {candidates.map((h) => {
-              const vd = cpuCompat(sourceHost, h);
-              const bad = vd.kind === "vendor" || vd.kind === "missing";
-              return (
-                <option key={h.id} value={h.id} disabled={bad && !force}>
-                  {h.name} — {verdictLabel(vd)}
-                </option>
-              );
-            })}
+            {list.map((t) => (
+              <option key={t.host_id} value={t.host_id} disabled={!selectable(t)}>
+                {t.host_name} — {t.eligible ? t.cpu : (t.reason ?? "not eligible")}
+              </option>
+            ))}
           </Select>
         </Field>
-        {incompatible && verdict && (
+        {nowhere && (
           <div className="vq-warnpanel">
-            Target CPU is not compatible with the source: {verdictLabel(verdict)}. Cloud Hypervisor
-            cannot mask CPU features, so the guest may crash if it uses one the target lacks.
+            This VM cannot be migrated anywhere right now. Each host above says why.
           </div>
         )}
-        <Check on={force} onChange={setForce} label="Force migrate despite CPU incompatibility" />
+        {chosen && !chosen.eligible && chosen.forceable && (
+          <div className="vq-warnpanel">
+            {chosen.reason}. Cloud Hypervisor cannot mask CPU features, so the guest may crash if
+            it uses one the target lacks.
+          </div>
+        )}
+        {anyForceable && (
+          <Check on={force} onChange={setForce} label="Force migrate despite CPU incompatibility" />
+        )}
         {migrate.isError && <ErrorPanel summary="Migration rejected" detail={migrate.error} />}
       </DialogBody>
       <DialogFoot>
         <Btn onClick={onClose}>Cancel</Btn>
         <Btn
           kind="primary"
-          disabled={!target || migrate.isPending}
+          disabled={!target || !chosen || !selectable(chosen) || migrate.isPending}
           onClick={() =>
             migrate.mutate({ id: vm.id, targetHostId: target, force }, { onSuccess: onClose })
           }

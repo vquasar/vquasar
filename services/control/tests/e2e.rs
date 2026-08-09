@@ -2696,6 +2696,118 @@ async fn a_volume_carries_its_snapshot_count() {
     );
 }
 
+/// Where a VM can go, answered once by the side that owns the rules (§28).
+///
+/// The console used to work this out from CPU features alone, which was the
+/// whole story when it was written. It stopped being so the moment storage
+/// pools, local storage and explicit placement each became a reason a target is
+/// refused — and a dialog that offers a host the API then rejects is worse than
+/// one that offers nothing.
+#[tokio::test]
+async fn migration_targets_say_why_a_host_is_not_one() {
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR",
+        "/x/shared/volumes",
+    )])
+    .await;
+    let (st, fast) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "fast", "kind": "shared_dir", "path": "/x/fast"}),
+        )
+        .await;
+    assert!(st.is_success(), "{fast}");
+    let fast_id = fast["id"].as_str().unwrap().to_string();
+
+    let (pa, pb) = (free_port(), free_port());
+    let a = spawn_agent("hostA", pa);
+    let b = spawn_agent("hostB", pb);
+    // hostB cannot see `fast`. Everything else about it is fine, which is the
+    // case CPU-only reasoning got wrong.
+    b.lock()
+        .unwrap()
+        .pools_refused
+        .insert("fast".into(), "not mounted on this host".into());
+    let host_a = h.register_host("hostA", pa).await;
+    let host_b = h.register_host("hostB", pb).await;
+
+    let mut spec = vm_spec();
+    spec["disks"] = json!([{"path": "/x/fast/d.qcow2", "image_type": "qcow2", "pool": fast_id}]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "on-fast", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm_id = v["vm_id"].as_str().unwrap().to_string();
+    h.wait_for(
+        &format!("/vms/{vm_id}"),
+        |v| v["host_id"] == json!(host_a),
+        "the VM placed on the host that reports the pool",
+    )
+    .await;
+
+    // hostB is listed, ineligible, with the reason — and *not* forceable, since
+    // insisting does not put the disks on it.
+    let targets = h.get(&format!("/vms/{vm_id}/migration-targets")).await;
+    let arr = targets.as_array().expect("a list");
+    assert!(
+        arr.iter().all(|t| t["host_id"] != json!(host_a)),
+        "the VM's own host was offered as a target: {targets}"
+    );
+    let bt = arr
+        .iter()
+        .find(|t| t["host_id"] == json!(host_b))
+        .expect("hostB listed");
+    assert_eq!(bt["eligible"], json!(false), "{bt}");
+    assert_eq!(
+        bt["forceable"],
+        json!(false),
+        "storage is not forceable: {bt}"
+    );
+    assert!(
+        bt["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("storage pool"),
+        "{bt}"
+    );
+
+    // And the endpoint agrees with the handler: what it calls ineligible is
+    // what a migration is actually refused for.
+    let (st, body) = h
+        .post(
+            &format!("/vms/{vm_id}/migrate"),
+            json!({"target_host_id": host_b}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+
+    // Once hostB reports the pool, the same host becomes eligible with no
+    // change to the VM.
+    b.lock().unwrap().pools_refused.clear();
+    let targets = h
+        .wait_for(
+            &format!("/vms/{vm_id}/migration-targets"),
+            |t| {
+                t.as_array()
+                    .is_some_and(|a| a.iter().any(|x| x["eligible"] == json!(true)))
+            },
+            "hostB becoming eligible once it reports the pool",
+        )
+        .await;
+    let bt = targets
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["host_id"] == json!(host_b))
+        .unwrap()
+        .clone();
+    assert!(
+        bt["reason"].is_null(),
+        "an eligible host needs no reason: {bt}"
+    );
+    let _ = a;
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback
