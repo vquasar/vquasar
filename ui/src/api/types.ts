@@ -471,6 +471,39 @@ export interface UpdateRoleRequest {
   permissions: string[];
 }
 
+// Storage pools (ADR-023). A pool says where bytes go; whether it *works* is
+// observed from the agents, so `state`, `reachable_hosts` and the sizes are
+// reported rather than configured — nothing here is editable.
+export interface StoragePool {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: string; // shared_dir
+  params: { kind: string; path?: string };
+  state: "pending" | "ready";
+  reachable_hosts: number;
+  capacity_bytes: number | null;
+  available_bytes: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/// One host's word on one pool. `usable: false` carries the reason, which is
+/// the only thing that answers "why was my placement refused".
+export interface PoolHostReport {
+  host_id: string;
+  host_name: string;
+  usable: boolean;
+  message: string | null;
+  capacity_bytes: number | null;
+  available_bytes: number | null;
+  reported_at: string;
+}
+
+export interface StoragePoolDetail extends StoragePool {
+  hosts: PoolHostReport[];
+}
+
 // Volumes (M14a)
 export interface Volume {
   id: string;
@@ -480,6 +513,9 @@ export interface Volume {
   attached_vm_id: string | null;
   attached_serial: number | null;
   source_image_id: string | null; // set ⇒ bootable (M14d)
+  /// The pool this volume's bytes are in (ADR-023). `null` only for a volume
+  /// that predates pools and has not yet been adopted into `default`.
+  pool_id: string | null;
   path: string;
   created_at: string;
   updated_at: string;

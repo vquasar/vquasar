@@ -524,6 +524,54 @@ export function useChangeNic() {
   });
 }
 
+// --- Storage pools (ADR-023) ---
+import type { StoragePool, StoragePoolDetail } from "./types";
+
+export function useStoragePools() {
+  const { can } = usePermissions();
+  return useQuery({
+    queryKey: ["storage-pools"],
+    queryFn: () => api.get<StoragePool[]>("/storage-pools"),
+    enabled: can(READ.storagePools),
+    // A pool's state and free space come from the agents, so this moves on its
+    // own without anybody touching the console.
+    refetchInterval: SLOW_MS,
+  });
+}
+
+/// One pool with every host's report. Separate from the list because the
+/// per-host detail is what an operator opens *after* something looks wrong.
+export function useStoragePool(id: string | undefined) {
+  const { can } = usePermissions();
+  return useQuery({
+    queryKey: ["storage-pools", id],
+    queryFn: () => api.get<StoragePoolDetail>(`/storage-pools/${id}`),
+    enabled: !!id && can(READ.storagePools),
+    refetchInterval: SLOW_MS,
+  });
+}
+
+export function useCreateStoragePool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      name: string;
+      kind: string;
+      path: string;
+      description?: string | null;
+    }) => api.post<StoragePool>("/storage-pools", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["storage-pools"] }),
+  });
+}
+
+export function useDeleteStoragePool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/storage-pools/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["storage-pools"] }),
+  });
+}
+
 // --- Volumes (M14a) ---
 import type { Volume } from "./types";
 
@@ -545,6 +593,9 @@ export function useCreateVolume() {
       size_bytes: number;
       format: string;
       source_image_id?: string | null;
+      /// Which pool to place it in, by id or name (ADR-023). Omitted means
+      /// `default`, which is where an existing cluster's volumes already are.
+      pool?: string;
     }) => api.post<Volume>("/volumes", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["volumes"] }),
   });

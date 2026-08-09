@@ -15,6 +15,7 @@ import {
   useDetachVolume,
   useImages,
   useNetworks,
+  useStoragePools,
   useRevertSnapshot,
   useVms,
   useVolumes,
@@ -53,6 +54,8 @@ const PAGE_SIZE = 25;
 function CreateDialog({ onClose }: { onClose: () => void }) {
   const create = useCreateVolume();
   const images = useImages();
+  const pools = useStoragePools();
+  const [pool, setPool] = useState("");
   const [name, setName] = useState("");
   const [source, setSource] = useState<"blank" | "image">("blank");
   const [imageId, setImageId] = useState("");
@@ -89,6 +92,24 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
             </Select>
           </Field>
         )}
+        {(pools.data?.length ?? 0) > 1 && (
+          <Field
+            label="Storage pool"
+            help="Where the bytes go. A pool no host reports is still a legal place to put a volume — but no VM using it can be scheduled until some host does."
+          >
+            <Select value={pool} onChange={(e) => setPool(e.target.value)}>
+              <option value="">default</option>
+              {(pools.data ?? [])
+                .filter((p) => p.name !== "default")
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.state === "pending" ? " (no host reports it)" : ""}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        )}
         <Grid cols="1fr 1fr">
           <Field
             label="Size (GiB)"
@@ -118,6 +139,7 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
                 name,
                 size_bytes: gib ? Math.round(Number(gib) * GIB) : 0,
                 format,
+                ...(pool ? { pool } : {}),
                 source_image_id: source === "image" ? imageId : null,
               },
               { onSuccess: onClose },
@@ -323,6 +345,7 @@ export function Volumes() {
   const volumes = useVolumes();
   const vms = useVms();
   const images = useImages();
+  const pools = useStoragePools();
   const del = useDeleteVolume();
   const detach = useDetachVolume();
   const { can } = usePermissions();
@@ -331,6 +354,14 @@ export function Volumes() {
   const [snapVol, setSnapVol] = useState<Volume | null>(null);
   const [bootVol, setBootVol] = useState<Volume | null>(null);
   const [page, setPage] = useState(1);
+
+  /// A volume's pool, named — but only when it is not the default one. A
+  /// volume that predates pools has none, and its bytes are in the default
+  /// location, so it reads the same way.
+  const poolName = (id: string | null) => {
+    const p = (pools.data ?? []).find((x) => x.id === id);
+    return p && p.name !== "default" ? p.name : null;
+  };
 
   const list = volumes.data ?? [];
   // A fleet carries hundreds of volumes; render a page of them.
@@ -408,6 +439,12 @@ export function Volumes() {
             <TRow key={v.id} cols={COLS}>
               <div className="vq-cell" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="vq-name">{v.name}</span>
+                {/* Only when it is somewhere other than the default pool. A
+                    column repeating "default" on every row says nothing;
+                    "this one is elsewhere" is the fact worth surfacing. */}
+                {poolName(v.pool_id) && (
+                  <span className="vq-sub">in {poolName(v.pool_id)}</span>
+                )}
                 <RowMenu inline items={menu} />
               </div>
               <div className="vq-mono-sm">{formatBytes(v.size_bytes)}</div>
