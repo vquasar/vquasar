@@ -104,7 +104,17 @@ async fn main() -> anyhow::Result<()> {
         .with_crypto(cryptor.clone())
         .with_allowed_paths(config.storage.allowed_paths.clone())
         .with_storage_config(config.storage.clone())
-        .with_network_policy(config.network.clone());
+        .with_network_policy(config.network.clone())
+        // Assembled once, here, where every section of the config is in scope
+        // and nothing downstream can reach past it to a secret (§36).
+        .with_config_view(crate::store::ConfigFacts {
+            reconcile_interval_secs: config.reconcile.interval_secs,
+            authentication: config.auth.enabled(),
+            encryption_at_rest: cryptor.is_some(),
+            agent_mtls: config.tls.enabled(),
+            database_tls: config.database.effective_ssl_mode() != "disable",
+            tenancy: config.tenancy.enabled,
+        });
     info!(
         roots = ?config.storage.allowed_paths,
         "caller-supplied disk/kernel/firmware paths confined to these roots"

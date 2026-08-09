@@ -474,6 +474,20 @@ pub struct PoolReport {
     pub available_bytes: Option<i64>,
 }
 
+/// The handful of configuration facts the console may see (§36).
+///
+/// Booleans rather than values wherever a value would be a secret: "encryption
+/// is on" is what an operator needs on a dashboard, and the key is not.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigFacts {
+    pub reconcile_interval_secs: u64,
+    pub authentication: bool,
+    pub encryption_at_rest: bool,
+    pub agent_mtls: bool,
+    pub database_tls: bool,
+    pub tenancy: bool,
+}
+
 /// The persistence layer.
 #[derive(Clone)]
 pub struct Store {
@@ -488,6 +502,8 @@ pub struct Store {
     network_policy: std::sync::Arc<crate::config::NetworkPolicy>,
     /// What to do about files whose owning row is gone (#41).
     orphans: crate::config::StorageConfig,
+    /// Non-secret configuration facts, for `GET /config` (§36).
+    config_view: std::sync::Arc<ConfigFacts>,
     /// This control plane's identity, stamped on work it starts in a detached
     /// task so a restart reclaims its own and nobody else's (ADR-021).
     instance: Option<std::sync::Arc<str>>,
@@ -523,8 +539,19 @@ impl Store {
             allowed_paths: vec!["/var/lib/vquasar".to_string()].into(),
             network_policy: std::sync::Arc::new(crate::config::NetworkPolicy::default()),
             orphans: crate::config::StorageConfig::default(),
+            config_view: std::sync::Arc::new(ConfigFacts::default()),
             instance: None,
         }
+    }
+
+    /// The non-secret facts about how this control plane is set up (§36).
+    pub fn with_config_view(mut self, view: ConfigFacts) -> Self {
+        self.config_view = std::sync::Arc::new(view);
+        self
+    }
+
+    pub fn config_view(&self) -> &ConfigFacts {
+        &self.config_view
     }
 
     /// Storage-hygiene settings (#41): what to do about files whose owning row
@@ -532,6 +559,11 @@ impl Store {
     pub fn with_storage_config(mut self, cfg: crate::config::StorageConfig) -> Self {
         self.orphans = cfg;
         self
+    }
+
+    /// The storage settings as configured, for the read-only config view.
+    pub fn storage_config(&self) -> &crate::config::StorageConfig {
+        &self.orphans
     }
 
     pub fn orphan_policy(&self) -> crate::orphans::Policy {

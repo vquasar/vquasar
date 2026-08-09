@@ -260,6 +260,28 @@ pub struct LeaseStatus {
     pub valid: bool,
 }
 
+/// Record that a reconcile pass finished, on the row this instance holds.
+///
+/// Scoped to the holder so a losing instance cannot report liveness for a loop
+/// it is not running.
+pub async fn mark_pass(pool: &PgPool, holder: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE controller_lease SET last_pass_at = now() WHERE holder = $1")
+        .bind(holder)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// When a reconcile pass last finished anywhere.
+pub async fn last_pass_at(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+    sqlx::query_scalar("SELECT last_pass_at FROM controller_lease")
+        .fetch_optional(pool)
+        .await
+        .map(Option::flatten)
+}
+
 pub async fn status(pool: &PgPool) -> Result<Option<LeaseStatus>, sqlx::Error> {
     sqlx::query_as::<_, LeaseStatus>(
         "SELECT holder, epoch, acquired_at, expires_at, (expires_at > now()) AS valid

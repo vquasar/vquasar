@@ -707,3 +707,18 @@ export function useVmMetrics(id: string | undefined) {
     refetchInterval: FAST_MS,
   });
 }
+
+// --- Control-plane configuration (§36) ---
+import type { ControlConfig } from "./types";
+
+export function useControlConfig() {
+  const { can } = usePermissions();
+  return useQuery({
+    queryKey: ["config"],
+    queryFn: () => api.get<ControlConfig>("/config"),
+    enabled: can(READ.hosts),
+    // `last_pass_at` is a liveness signal, so this is polled rather than cached
+    // forever: a stale one would report a stopped loop as healthy.
+    refetchInterval: SLOW_MS,
+  });
+}

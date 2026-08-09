@@ -554,3 +554,32 @@ export interface VmMetrics {
   net_rx_packets: number;
   net_tx_packets: number;
 }
+
+/// How the control plane is set up (§36). Read-only: the console shows these
+/// and says where they come from rather than rendering controls it cannot
+/// write. Only non-secret facts are here — protections appear as booleans,
+/// never as the values that configure them.
+export interface ControlConfig {
+  version: string;
+  reconcile: { interval_secs: number; last_pass_at: string | null };
+  network: {
+    policy_mode: string;
+    egress_mode: string;
+    overlay_encryption: string;
+    physical_networks: string[];
+    provider_vlans: string;
+  };
+  storage: {
+    allowed_paths: string[];
+    orphan_reclaim: "off" | "report" | "delete";
+    orphan_sweep_secs: number;
+    orphan_min_age_secs: number;
+  };
+  security: {
+    authentication: boolean;
+    encryption_at_rest: boolean;
+    agent_mtls: boolean;
+    database_tls: boolean;
+  };
+  tenancy: { enabled: boolean };
+}

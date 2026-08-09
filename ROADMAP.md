@@ -498,6 +498,26 @@ Split into three shippable slices.
   `lvcreate`/`lvremove` rather than `qemu-img` — and no longer an architectural
   change.
 
+- **Console: the control plane describes itself** (§36). ✅ **Done.**
+  `GET /api/v1/config` returns the non-secret configuration — reconcile
+  interval and the last completed pass, network policy and egress mode, storage
+  roots and orphan policy, tenancy, and each protection as on/off. Built as a
+  purpose-made struct rather than by serialising the config and removing
+  fields: redaction by subtraction is one forgotten `skip` from publishing a
+  database URL, and an e2e asserts the whole body carries no `password`,
+  `secret`, `key`, `token`, `url` or `postgres://`.
+  `controller_lease.last_pass_at` is stamped at the *end* of each pass, so a
+  loop that wedges mid-pass stops updating it rather than claiming a freshness
+  it does not have — a stopped reconcile loop otherwise looks exactly like a
+  fleet with nothing to do. The sidebar shows the version and that age, amber
+  past four intervals.
+  Still no toggles: the values come from `control.toml` and a restart, and a
+  control that silently does nothing is worse than a value with its source
+  named. There is also no migration *policy* to expose — cross-CPU migration is
+  decided per request with a caller override, and auto-evacuation does not
+  exist by design (ADR-014); the Settings page now says that instead of
+  promising a section that was never there.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH

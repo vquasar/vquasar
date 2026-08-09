@@ -2,6 +2,7 @@
 //! `/api/v1`. Handlers are thin: they validate input, call the [`Store`], and
 //! return typed errors — no infrastructure logic here (ADR-015).
 
+mod config;
 pub mod enroll;
 pub mod error;
 mod events;
@@ -90,6 +91,9 @@ pub fn router(store: Store, auth: AuthState, enrollment: Option<EnrollmentState>
         // Guarded by host:read: it describes the control plane, which is
         // platform inventory, not a tenant's business.
         .route("/leader", get(leader))
+        // How this control plane is set up. Read-only, and guarded like the
+        // rest of the platform's own description (§36).
+        .route("/config", get(config::get))
         .route("/hosts", get(hosts::list).post(hosts::register))
         .route("/hosts/:id", get(hosts::get).patch(hosts::update))
         .route("/hosts/:id/drain", post(hosts::drain))

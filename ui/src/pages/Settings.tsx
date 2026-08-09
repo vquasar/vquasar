@@ -1,16 +1,21 @@
-// Settings (handoff §14) — a new route.
+// Settings (handoff §14).
 //
-// Control-plane configuration lives in control.toml and the API does not expose
-// it, so this screen shows what is genuinely observable and says plainly where
-// the rest comes from. It does not render toggles that cannot write: a control
-// that silently does nothing is worse than a value an operator has to go and
-// read.
+// Control-plane configuration is now readable over the API (§36), so this shows
+// what the cluster is actually set up to do rather than pointing at a file on a
+// machine the reader may not have. It still renders no toggles: the values come
+// from control.toml and a restart, and a control that silently does nothing is
+// worse than a value with its source named.
+//
+// Protections appear as on/off, never as the values that configure them — the
+// endpoint does not carry a key or a connection string, and this page could not
+// show one if it wanted to.
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { useHosts } from "../api/hooks";
+import { useControlConfig, useHosts } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { Card, Dash, KV, PageHeader } from "../ui/kit";
+import { formatRelative } from "../format";
 import { useThemeMode } from "../theme/ThemeMode";
 import { Segmented } from "../ui/kit";
 import type { AuthConfigView } from "../api/types";
@@ -27,6 +32,7 @@ export function Settings() {
   const authCfg = useAuthConfig();
   const { enabled } = useAuth();
   const hosts = useHosts();
+  const cfg = useControlConfig();
   const { mode, setMode } = useThemeMode();
 
   const list = hosts.data ?? [];
@@ -59,8 +65,118 @@ export function Settings() {
         />
         <KV k="OIDC issuer" v={authCfg.data?.issuer || <Dash />} labelWidth={200} />
         <KV k="OIDC client id" v={authCfg.data?.client_id || <Dash />} labelWidth={200} />
+        <KV k="Version" v={cfg.data?.version ?? <Dash />} labelWidth={200} />
+        <KV
+          k="Reconcile interval"
+          labelWidth={200}
+          v={cfg.data ? `${cfg.data.reconcile.interval_secs}s` : <Dash />}
+        />
+        <KV
+          k="Last reconcile pass"
+          labelWidth={200}
+          v={
+            cfg.data?.reconcile.last_pass_at ? (
+              formatRelative(cfg.data.reconcile.last_pass_at)
+            ) : (
+              <span className="t-amber">never — no instance has completed one</span>
+            )
+          }
+        />
         <KV k="Agent transport" v="gRPC over mTLS" labelWidth={200} />
         <KV k="Console poll interval" v="3s" labelWidth={200} />
+      </Card>
+
+      <Card title="Protections">
+        {[
+          ["Authentication", cfg.data?.security.authentication, "every caller is a superuser"],
+          ["Encryption at rest", cfg.data?.security.encryption_at_rest, "cloud-init secrets are stored in plaintext"],
+          ["Agent mTLS", cfg.data?.security.agent_mtls, "the agent protocol is unauthenticated"],
+          ["Database TLS", cfg.data?.security.database_tls, "the database connection is cleartext"],
+        ].map(([label, on, warning]) => (
+          <KV
+            key={String(label)}
+            k={String(label)}
+            labelWidth={200}
+            v={
+              on === undefined ? (
+                <Dash />
+              ) : on ? (
+                <span className="t-green">on</span>
+              ) : (
+                <span className="t-amber">off — {String(warning)}</span>
+              )
+            }
+          />
+        ))}
+      </Card>
+
+      <Card title="Network policy">
+        <KV
+          k="NIC policy"
+          labelWidth={200}
+          v={
+            cfg.data ? (
+              cfg.data.network.policy_mode === "enforced" ? (
+                <span className="t-green">enforced — every NIC gets its network and project defaults</span>
+              ) : (
+                <span className="t-amber">legacy — a NIC with no groups is unfiltered</span>
+              )
+            ) : (
+              <Dash />
+            )
+          }
+        />
+        <KV
+          k="Egress"
+          labelWidth={200}
+          v={
+            cfg.data ? (
+              cfg.data.network.egress_mode === "enforced" ? (
+                <span className="t-green">default-deny</span>
+              ) : (
+                <span className="t-amber">default-allow — egress rules are refused</span>
+              )
+            ) : (
+              <Dash />
+            )
+          }
+        />
+        <KV
+          k="Overlay encryption"
+          labelWidth={200}
+          v={cfg.data?.network.overlay_encryption ?? <Dash />}
+        />
+        <KV
+          k="Physical networks"
+          labelWidth={200}
+          v={cfg.data?.network.physical_networks.join(", ") || <Dash />}
+        />
+        <KV k="Permitted VLANs" labelWidth={200} v={cfg.data?.network.provider_vlans || <Dash />} />
+      </Card>
+
+      <Card title="Storage">
+        <KV
+          k="Permitted path roots"
+          labelWidth={200}
+          v={cfg.data?.storage.allowed_paths.join(", ") ?? <Dash />}
+        />
+        <KV
+          k="Orphaned files"
+          labelWidth={200}
+          v={
+            cfg.data ? (
+              cfg.data.storage.orphan_reclaim === "delete" ? (
+                "reclaimed automatically"
+              ) : cfg.data.storage.orphan_reclaim === "report" ? (
+                "reported only — see the events feed"
+              ) : (
+                <span className="t-amber">not looked for</span>
+              )
+            ) : (
+              <Dash />
+            )
+          }
+        />
       </Card>
 
       <Card title="Fleet software">
@@ -105,11 +221,12 @@ export function Settings() {
         </div>
       </Card>
 
-      <Card title="Migration policy" padded>
+      <Card title="Migration" padded>
         <div style={{ fontFamily: "var(--vq-font-body)", fontSize: 12, color: "var(--vq-text-3)" }}>
-          Cross-CPU-model migration, auto-evacuation on NotReady and the concurrent-migration limit
-          are set in <span className="vq-mono">control.toml</span> and applied at start-up. The API
-          does not expose them yet, so they are not editable from the console.
+          There is no migration policy to show. Cross-CPU-model migration is decided per request —
+          the control plane refuses a target whose CPU is missing features the guest could be
+          using, and the caller may override that on the request itself. Auto-evacuation does not
+          exist: a VM is never moved off an unreachable host without fencing (ADR-014).
         </div>
       </Card>
     </div>
