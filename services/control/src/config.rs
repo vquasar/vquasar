@@ -337,6 +337,29 @@ pub struct StorageConfig {
     /// filesystem — including the agent's own key material (design §30).
     #[serde(default = "default_allowed_paths")]
     pub allowed_paths: Vec<String>,
+    /// What to do about files in a pool whose owning row is gone (#41).
+    ///
+    /// `report` (the default) says what is leaking and deletes nothing;
+    /// `delete` reclaims; `off` does not look. Deleting files on an operator's
+    /// behalf is opted into, not assumed.
+    #[serde(default)]
+    pub orphan_reclaim: crate::orphans::Policy,
+    /// How often to sweep. Reading a shared directory is not free, and an
+    /// orphan is not urgent.
+    #[serde(default = "default_orphan_sweep_secs")]
+    pub orphan_sweep_secs: u64,
+    /// How long a file must have gone untouched before it is a candidate. The
+    /// guard against sweeping something still being written.
+    #[serde(default = "default_orphan_min_age_secs")]
+    pub orphan_min_age_secs: u64,
+}
+
+fn default_orphan_sweep_secs() -> u64 {
+    3600
+}
+
+fn default_orphan_min_age_secs() -> u64 {
+    3600
 }
 
 fn default_allowed_paths() -> Vec<String> {
@@ -348,6 +371,9 @@ impl Default for StorageConfig {
         Self {
             shared_volumes_dir: "/var/lib/vquasar/shared/volumes".to_string(),
             allowed_paths: default_allowed_paths(),
+            orphan_reclaim: crate::orphans::Policy::default(),
+            orphan_sweep_secs: default_orphan_sweep_secs(),
+            orphan_min_age_secs: default_orphan_min_age_secs(),
         }
     }
 }

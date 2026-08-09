@@ -1782,6 +1782,145 @@ async fn a_vm_is_placed_only_where_its_pool_is_reported() {
     assert_eq!(st.as_u16(), 400, "{body}");
 }
 
+/// A pool with files in it, some of which no longer have an owner (#41).
+///
+/// Returns the pool root and the env a harness needs to sweep it, having
+/// written: an orphaned VM disk, an orphaned seed, an orphaned volume file, and
+/// two files that must survive whatever the policy — one belonging to a live
+/// VM, one the platform never made.
+fn orphan_fixture(tag: &str) -> (std::path::PathBuf, Vec<(String, String)>) {
+    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+    let root = std::env::temp_dir().join(format!(
+        "vquasar-e2e-orphans-{}-{tag}-{seq}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("seeds")).expect("pool root");
+    let env = vec![
+        (
+            "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR".to_string(),
+            root.to_string_lossy().into_owned(),
+        ),
+        (
+            "VQUASAR_CONTROL_STORAGE__ALLOWED_PATHS".to_string(),
+            format!("[\"/x\",\"{}\"]", root.display()),
+        ),
+        // Nothing here is being written concurrently, so the settling guard has
+        // no work to do; it is exercised as a unit test instead.
+        (
+            "VQUASAR_CONTROL_STORAGE__ORPHAN_MIN_AGE_SECS".to_string(),
+            "0".to_string(),
+        ),
+        (
+            "VQUASAR_CONTROL_STORAGE__ORPHAN_SWEEP_SECS".to_string(),
+            "1".to_string(),
+        ),
+    ];
+    (root, env)
+}
+
+/// Files whose owning row is gone are reported, and reclaimed only when asked
+/// (#41). The sweep lives here because a seed on shared storage may belong to a
+/// VM on any host — an agent doing this would be deleting another host's work.
+#[tokio::test]
+async fn orphaned_files_are_reclaimed_only_when_asked() {
+    let (root, mut env) = orphan_fixture("delete");
+    env.push((
+        "VQUASAR_CONTROL_STORAGE__ORPHAN_RECLAIM".to_string(),
+        "delete".to_string(),
+    ));
+    let refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let h = Harness::start_with(&refs).await;
+
+    // A VM that still exists. Its disk must survive the sweep.
+    let (st, v) = h
+        .post("/vms", json!({"name": "keeper", "spec": vm_spec()}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let live = v["vm_id"].as_str().unwrap().to_string();
+
+    let dead_vm = "44444444-4444-4444-8444-444444444444";
+    let dead_vol = "55555555-5555-4555-8555-555555555555";
+    let keep_disk = root.join(format!("{live}.qcow2"));
+    let orphan_disk = root.join(format!("{dead_vm}.qcow2"));
+    let orphan_extra = root.join(format!("{dead_vm}-disk1.raw"));
+    let orphan_vol = root.join(format!("vol-{dead_vol}.qcow2"));
+    let orphan_seed = root.join("seeds").join(format!("{dead_vm}.iso"));
+    let not_ours = root.join("ubuntu-24.04.qcow2");
+    for f in [
+        &keep_disk,
+        &orphan_disk,
+        &orphan_extra,
+        &orphan_vol,
+        &orphan_seed,
+        &not_ours,
+    ] {
+        std::fs::write(f, b"x").expect("fixture file");
+    }
+
+    h.wait_for(
+        "/events",
+        |evs| {
+            evs.as_array().is_some_and(|e| {
+                e.iter()
+                    .any(|ev| ev["event_type"] == "storage.orphans" && ev["message"] != json!(null))
+            })
+        },
+        "a sweep to report what it found",
+    )
+    .await;
+
+    // Everything with no owner goes.
+    for gone in [&orphan_disk, &orphan_extra, &orphan_vol, &orphan_seed] {
+        assert!(!gone.exists(), "not reclaimed: {}", gone.display());
+    }
+    // A live VM's disk stays, and so does a file the platform never made —
+    // that second one is what keeps this safe to switch on.
+    assert!(keep_disk.exists(), "reclaimed a live VM's disk");
+    assert!(not_ours.exists(), "reclaimed an operator's own file");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The default policy looks and tells, and touches nothing.
+#[tokio::test]
+async fn orphaned_files_are_reported_without_being_touched_by_default() {
+    let (root, env) = orphan_fixture("report");
+    let refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let h = Harness::start_with(&refs).await;
+
+    let dead_vm = "66666666-6666-4666-8666-666666666666";
+    let orphan_seed = root.join("seeds").join(format!("{dead_vm}.iso"));
+    std::fs::write(&orphan_seed, b"x").expect("fixture file");
+
+    let evs = h
+        .wait_for(
+            "/events",
+            |evs| {
+                evs.as_array()
+                    .is_some_and(|e| e.iter().any(|ev| ev["event_type"] == "storage.orphans"))
+            },
+            "a sweep to report what it found",
+        )
+        .await;
+    let msg = evs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ev| ev["event_type"] == "storage.orphans")
+        .and_then(|ev| ev["message"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    // The report has to say how to act on it, or it is just a number.
+    assert!(msg.contains("orphan_reclaim"), "{msg}");
+    assert!(
+        orphan_seed.exists(),
+        "the default policy deleted a file: {}",
+        orphan_seed.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback

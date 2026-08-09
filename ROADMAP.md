@@ -369,8 +369,21 @@ Split into three shippable slices.
     `shared_volumes_dir`, so the `<pool>/volumes/` layout ADR-023 sketched was
     dropped — it would have moved every existing file for tidiness. Volumes
     predating pools keep their exact path until startup adopts them.
-  - **M23d — the orphaned-seed sweep** (#41), which a pool finally gives the
-    control plane an addressable root for.
+  - **M23d — reclaiming files whose owner is gone.** ✅ **Done.** Closes #41.
+    A periodic control-plane sweep over every `shared_dir` pool root and its
+    `seeds/`: cloud-init seeds, VM system disks and volume files whose row no
+    longer exists. It lives in the control plane because a file on shared
+    storage may belong to a VM on any host — an agent deleting what it does not
+    recognise would be deleting another host's work.
+    Three rules make it safe: only names this codebase writes (`vol-<uuid>`,
+    `<uuid>`, `<uuid>-disk<n>`, `<uuid>-d<n>`) are candidates, so an operator's
+    file in a pool is never touched; files are listed *before* the id sets are
+    read, so a resource created in between is kept; and a file must have gone
+    untouched for `orphan_min_age_secs` first.
+    `[storage] orphan_reclaim` is `report` by default — an operator learns what
+    is leaking before the platform deletes anything on their behalf — and
+    `delete` opts in. Each sweep that finds something records a
+    `storage.orphans` event.
   - **M23e — the console.**
 - **Storage, the rest of feature-complete.** Additional backends and per-VM
   storage policy (cache mode, discard/TRIM, IO throttling, thin vs thick). Both
