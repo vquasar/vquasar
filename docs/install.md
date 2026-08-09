@@ -1,5 +1,9 @@
 # Installing vquasar
 
+Check [**prerequisites**](prerequisites.md) first — the installer does not
+install PostgreSQL, Open vSwitch or Cloud Hypervisor, and says so rather than
+guessing at your environment.
+
 One command per machine. The control plane goes on one host; an agent goes on
 every host that will run VMs.
 
@@ -102,4 +106,5 @@ should guess, and a wrong guess about any of them is worse than being asked.
 
 x86-64 Linux with systemd and glibc 2.35 or newer (Ubuntu 22.04 and later,
 Debian 12, RHEL 9). The published binaries are dynamically linked; on an older
-distribution, build from source.
+distribution, build from source. Full detail, including the ports that have to
+be open between machines, is in [prerequisites](prerequisites.md).

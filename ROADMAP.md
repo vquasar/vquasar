@@ -593,6 +593,16 @@ Split into three shippable slices.
   The binary reports the build it came from (`git describe`), so `/config` and
   the console name a commit rather than a static `0.1.0`.
   Not done: Dependabot, and musl builds for older distributions.
+- **Docs: prerequisites.** ✅ **Done.** What each machine needs before an
+  install, derived from what the code actually runs and binds rather than from
+  a template — the external commands each role shells out to, the PostgreSQL
+  floor and why it is 13, KVM and the Cloud Hypervisor version, and the ports
+  between machines.
+  Writing it found a third instance of the accepted-and-ignored defect:
+  `[grpc] listen` on the *control plane* was defined, documented and asserted
+  in a test, and bound by nothing — the control plane dials the agents and
+  nothing dials it. Removed, because the visible harm is an operator opening a
+  firewall rule for a port that never answers.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`

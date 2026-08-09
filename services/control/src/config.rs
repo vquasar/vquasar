@@ -14,8 +14,6 @@ pub struct ControlConfig {
     #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
-    pub grpc: GrpcConfig,
-    #[serde(default)]
     pub reconcile: ReconcileConfig,
     #[serde(default)]
     pub storage: StorageConfig,
@@ -564,19 +562,12 @@ impl DatabaseConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GrpcConfig {
-    /// Listen address for the agent-facing gRPC endpoint (Milestone 3).
-    pub listen: String,
-}
-
-impl Default for GrpcConfig {
-    fn default() -> Self {
-        Self {
-            listen: "0.0.0.0:9443".to_string(),
-        }
-    }
-}
+// There is deliberately no control-plane gRPC listener. A `[grpc] listen` was
+// defined here, documented in control.toml and asserted in a test — and never
+// bound by anything: the control plane *dials* the agents, and nothing dials it
+// over gRPC. Removed rather than left as a value an operator can set, because
+// the visible harm is a firewall rule opened for a port nothing answers on
+// (ADR-024 in spirit: accepted and ignored is a lie).
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
@@ -631,7 +622,6 @@ mod tests {
     fn defaults_are_sane() {
         let cfg = ControlConfig::default();
         assert_eq!(cfg.server.listen, "0.0.0.0:8080");
-        assert_eq!(cfg.grpc.listen, "0.0.0.0:9443");
         assert_eq!(cfg.logging.level, "info");
     }
 
