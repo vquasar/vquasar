@@ -479,7 +479,16 @@ export interface StoragePool {
   name: string;
   description: string | null;
   kind: string; // shared_dir
-  params: { kind: string; path?: string };
+  /// Kind-specific, internally tagged. `path` for a shared directory,
+  /// `server`/`export`/`mount_point` for NFS.
+  params: {
+    kind: string;
+    path?: string;
+    server?: string;
+    export?: string;
+    mount_point?: string;
+    options?: string;
+  };
   state: "pending" | "ready";
   reachable_hosts: number;
   capacity_bytes: number | null;

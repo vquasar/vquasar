@@ -410,10 +410,30 @@ Split into three shippable slices.
     an empty table. The volume dialog grows a pool selector once a second pool
     exists, and a volume outside `default` says so on the list.
     Also [`docs/storage-pools.md`](docs/storage-pools.md) for operators.
-- **Storage, the rest of feature-complete.** Additional backends and per-VM
-  storage policy (cache mode, discard/TRIM, IO throttling, thin vs thick). Both
-  need pools to exist first: a backend has nowhere to live without one, and
-  "this VM'''s disks go on fast storage" is unsayable. Queued behind M23.
+- **M24 — the `nfs` pool kind.** ✅ **Done.** A pool can name an NFS export and
+  the agents mount it, instead of an operator arranging the same mount on every
+  host with nothing recording that they did — the ADR-023 disease one level
+  down. A mount point is a pool's host path exactly as a shared directory's
+  path is, so volumes, placement, migration and the orphan sweep are unchanged.
+  Usability is still observed: a pool is usable only once `/proc/mounts` shows
+  *that* export mounted *there*, so a failed mount leaves a bare directory that
+  reports unusable rather than one that passes. Nothing is ever unmounted — a
+  guest may have a disk open on it.
+  The probe now carries the pool's whole parameter set as JSON rather than a
+  path, so a kind needs no wire change; and "one host path is one pool" became
+  a cross-kind unique index, since a `shared_dir` and an `nfs` mount point at
+  the same place would double-count one filesystem.
+- **Storage, the rest of feature-complete.** The kinds that are *not*
+  directories — LVM thin, Ceph RBD, iSCSI, NVMe-oF — plus per-VM storage policy
+  (cache mode, discard/TRIM, IO throttling, thin vs thick).
+  The block kinds need two things first, and neither is a variant: **volume
+  provisioning has to move into the agent** (an LV is not a file the control
+  plane can `qemu-img create`), and **a pool has to declare whether its bytes
+  are shared between hosts or local to one**. Every part of placement now rests
+  on "a host reporting a pool can see that pool's data", which is false for
+  local storage: a VM there is pinned to its host and live migration must be
+  refused rather than attempted. Adding a block kind before that would break
+  the assumption quietly.
 
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`

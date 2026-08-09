@@ -27,6 +27,7 @@ import {
   ErrorPanel,
   Field,
   Input,
+  Grid,
   Mono,
   PageHeader,
   QueryError,
@@ -46,9 +47,17 @@ const COLS = "1.4fr 110px 1.6fr 110px 90px 1fr 60px";
 function CreateDialog({ onClose }: { onClose: () => void }) {
   const create = useCreateStoragePool();
   const [name, setName] = useState("");
+  const [kind, setKind] = useState<"shared_dir" | "nfs">("shared_dir");
   const [path, setPath] = useState("");
+  const [server, setServer] = useState("");
+  const [exportPath, setExportPath] = useState("");
+  const [options, setOptions] = useState("");
   const [description, setDescription] = useState("");
-  const valid = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name) && path.startsWith("/");
+  const named = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name);
+  const valid =
+    named &&
+    path.startsWith("/") &&
+    (kind === "shared_dir" || (!!server && !server.includes(":") && exportPath.startsWith("/")));
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
@@ -60,18 +69,56 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
         >
           <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="Kind">
-          <Select value="shared_dir" disabled onChange={() => {}}>
-            <option value="shared_dir">shared directory</option>
+        <Field
+          label="Kind"
+          help="A shared directory is one you have already mounted on the hosts yourself. An NFS pool records the export, and the agents mount it."
+        >
+          <Select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as "shared_dir" | "nfs")}
+          >
+            <option value="shared_dir">shared directory (already mounted)</option>
+            <option value="nfs">NFS export (mounted by the agents)</option>
           </Select>
         </Field>
+        {kind === "nfs" && (
+          <>
+            <Grid cols="1fr 1fr">
+              <Field label="Server" help="Address only — the export is separate.">
+                <Input
+                  value={server}
+                  placeholder="10.0.0.5"
+                  onChange={(e) => setServer(e.target.value)}
+                />
+              </Field>
+              <Field label="Export">
+                <Input
+                  value={exportPath}
+                  placeholder="/exports/vms"
+                  onChange={(e) => setExportPath(e.target.value)}
+                />
+              </Field>
+            </Grid>
+            <Field label="Mount options" help="Optional, comma-separated.">
+              <Input
+                value={options}
+                placeholder="vers=4.2,hard"
+                onChange={(e) => setOptions(e.target.value)}
+              />
+            </Field>
+          </>
+        )}
         <Field
-          label="Path"
-          help="Where the bytes go, as the hosts see it. The directory must already exist on a host for that host to report the pool — nothing here creates it."
+          label={kind === "nfs" ? "Mount point" : "Path"}
+          help={
+            kind === "nfs"
+              ? "Where the agents mount the export. They create it if it is missing — a pool is only usable once the export is actually mounted there."
+              : "Where the bytes go, as the hosts see it. The directory must already exist on a host for that host to report the pool — nothing here creates it."
+          }
         >
           <Input
             value={path}
-            placeholder="/srv/fast"
+            placeholder={kind === "nfs" ? "/var/lib/vquasar/nfs/fast" : "/srv/fast"}
             onChange={(e) => setPath(e.target.value)}
           />
         </Field>
@@ -87,12 +134,17 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
           disabled={!valid || create.isPending}
           onClick={() =>
             create.mutate(
-              {
-                name,
-                kind: "shared_dir",
-                path,
-                description: description || null,
-              },
+              kind === "nfs"
+                ? {
+                    name,
+                    kind,
+                    server,
+                    export: exportPath,
+                    mount_point: path,
+                    ...(options ? { options } : {}),
+                    description: description || null,
+                  }
+                : { name, kind, path, description: description || null },
               { onSuccess: onClose },
             )
           }
@@ -162,7 +214,7 @@ function Row({ pool, canManage }: { pool: StoragePool; canManage: boolean }) {
           )}
         </span>
         <span>{pool.kind}</span>
-        <Mono>{pool.params.path ?? <Dash />}</Mono>
+        <Mono>{pool.params.path ?? pool.params.mount_point ?? <Dash />}</Mono>
         <StateChip value={pool.state} dense />
         <span>{pool.reachable_hosts}</span>
         <span>

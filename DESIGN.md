@@ -272,11 +272,23 @@ bytes, a volume belongs to exactly one, and which hosts can reach a pool is
 that does not report the pools a VM's disks need, so a missing mount is a
 placement refusal with a reason instead of a launch failure.
 
-The initial kind is `shared_dir` — a path assumed mounted on the hosts that
-report it, which is what live migration has always depended on. A volume's file
-is `<pool>/vol-<uuid>.<ext>`; a disk the control plane placed records its pool,
-and a disk at a raw operator-supplied path records none, so it constrains
-placement not at all. Planned kinds:
+Two kinds exist. `shared_dir` is a path an operator has already mounted on the
+hosts, which is what live migration has always depended on. `nfs` names the
+export instead and the *agents* mount it — the difference is who is responsible
+for the mount, and therefore whether "every host has this" is recorded anywhere
+or merely hoped for. Both put a volume's file at `<pool>/vol-<uuid>.<ext>`, so
+nothing downstream distinguishes them; a disk the control plane placed records
+its pool, and a disk at a raw operator-supplied path records none, so it
+constrains placement not at all.
+
+The kinds still to come are the ones that are **not directories**: LVM thin,
+Ceph RBD, iSCSI, NVMe-oF. Those need two things this design does not yet have —
+volume provisioning in the agent rather than the control plane (an LV is not a
+file `qemu-img` can create), and a pool that declares whether its bytes are
+*shared between hosts* or local to one, because a local pool means a VM pinned
+to a host and a live migration that must be refused. Adding one before that
+would quietly break the assumption every part of placement now rests on: that a
+host reporting a pool can see that pool's data. Planned kinds:
 LVM thin, NFS, Ceph RBD/CephFS, iSCSI, NVMe-oF, SPDK, vhost-user-blk. Do not
 implement distributed storage.
 
