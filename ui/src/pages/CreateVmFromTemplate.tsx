@@ -8,7 +8,13 @@
 
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useCreateVmFromTemplate, useImages, useNetworks, useTemplates } from "../api/hooks";
+import {
+  useCreateVmFromTemplate,
+  useHosts,
+  useImages,
+  useNetworks,
+  useTemplates,
+} from "../api/hooks";
 import { useCrumb } from "../components/Breadcrumb";
 import {
   Btn,
@@ -57,6 +63,7 @@ export function CreateVmFromTemplate() {
   const networks = useNetworks();
   const launch = useCreateVmFromTemplate();
 
+  const hosts = useHosts();
   const tpl = (templates.data ?? []).find((t) => t.id === id);
 
   useCrumb(tpl ? `${tpl.name} → new VM` : "Create VM");
@@ -64,6 +71,10 @@ export function CreateVmFromTemplate() {
   const [touched, setTouched] = useState(false);
   const [networkId, setNetworkId] = useState("");
   const [userData, setUserData] = useState("");
+  // Where it goes and whether it starts: decisions about this instance, not
+  // about the template, so they are plain controls rather than overrides.
+  const [hostId, setHostId] = useState("");
+  const [startNow, setStartNow] = useState(true);
 
   const vcpu = useOverride(tpl ? String(tpl.boot_vcpus) : "");
   const maxVcpu = useOverride(tpl ? String(tpl.max_vcpus) : "");
@@ -84,8 +95,21 @@ export function CreateVmFromTemplate() {
     if (disk.overridden && disk.value) o.disk_size_bytes = Math.round(Number(disk.value) * GIB);
     if (networkOverridden) o.network_id = networkId;
     if (userData.trim()) o.cloud_init = { user_data: userData };
+    if (hostId) o.host = hostId;
+    if (!startNow) o.desired_power_state = "Stopped";
     return o;
-  }, [tpl, vcpu, maxVcpu, memory, disk, networkOverridden, networkId, userData]);
+  }, [
+    tpl,
+    vcpu,
+    maxVcpu,
+    memory,
+    disk,
+    networkOverridden,
+    networkId,
+    userData,
+    hostId,
+    startNow,
+  ]);
 
   const differing = Object.keys(overrides).length;
   const err = nameError(name);
@@ -257,6 +281,48 @@ export function CreateVmFromTemplate() {
             help="Fixed by the template — a microVM and a standard guest boot differently."
           >
             <Input value={tpl.machine_type} disabled />
+          </Field>
+          <Field
+            label="Host"
+            state={hostId ? "overridden" : "default"}
+            help={
+              hostId
+                ? "Pinned. The scheduler will not place it anywhere else, and a drain cannot move it."
+                : "The scheduler picks, spreading load across the fleet."
+            }
+          >
+            <Select
+              value={hostId}
+              state={hostId ? "overridden" : "default"}
+              onChange={(e) => setHostId(e.target.value)}
+            >
+              <option value="">— let the scheduler choose —</option>
+              {(hosts.data ?? [])
+                .filter((h) => h.state === "Ready" && h.schedulable)
+                .map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+          <Field
+            label="Power"
+            state={startNow ? "default" : "overridden"}
+            help={
+              startNow
+                ? "Boots as soon as it is placed."
+                : "Created and left off — the disk is still provisioned."
+            }
+          >
+            <Select
+              value={startNow ? "running" : "stopped"}
+              state={startNow ? "default" : "overridden"}
+              onChange={(e) => setStartNow(e.target.value === "running")}
+            >
+              <option value="running">start it now</option>
+              <option value="stopped">create it stopped</option>
+            </Select>
           </Field>
         </Grid>
 

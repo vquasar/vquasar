@@ -2236,6 +2236,19 @@ impl Store {
 
     // ---- volume snapshots (design M14c) ----------------------------------
 
+    /// How many snapshots each volume has, in one query.
+    ///
+    /// The volumes list needs this for every row, and asking per row is what
+    /// kept the column off the page: a fleet has hundreds of volumes, and a
+    /// request each is a page that gets slower the more storage you have.
+    pub async fn snapshot_counts(&self) -> Result<std::collections::HashMap<Uuid, i64>> {
+        let rows: Vec<(Uuid, i64)> =
+            sqlx::query_as("SELECT volume_id, COUNT(*) FROM volume_snapshots GROUP BY volume_id")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub async fn list_volume_snapshots(&self, volume_id: Uuid) -> Result<Vec<VolumeSnapshot>> {
         sqlx::query_as::<_, VolumeSnapshot>(
             "SELECT * FROM volume_snapshots WHERE volume_id=$1 ORDER BY created_at",

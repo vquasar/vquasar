@@ -356,6 +356,11 @@ export interface TemplateOverrides {
   disk_size_bytes?: number;
   network_id?: string;
   cloud_init?: CloudInitSpec;
+  /// Pin to a host instead of letting the scheduler choose. A template says
+  /// what a VM *is*; where it goes is a decision about this one instance.
+  host?: string;
+  /// Create it stopped. Omitted means running, as it always did.
+  desired_power_state?: "Running" | "Stopped";
 }
 
 export interface CreateVmFromTemplateRequest {
@@ -530,6 +535,9 @@ export interface Volume {
   /// that predates pools and has not yet been adopted into `default`.
   pool_id: string | null;
   path: string;
+  /// How many snapshots this volume has. On the row because asking per volume
+  /// is what kept the column off the list.
+  snapshot_count: number;
   created_at: string;
   updated_at: string;
 }

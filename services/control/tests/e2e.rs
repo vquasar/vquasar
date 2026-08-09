@@ -2587,6 +2587,115 @@ async fn the_config_endpoint_describes_the_cluster_without_leaking_it() {
     assert!(cfg["reconcile"]["interval_secs"].as_u64().unwrap_or(0) > 0);
 }
 
+/// `placement.host` was accepted, stored and never read: a VM could ask to be
+/// pinned and the scheduler would put it anywhere. Now it decides.
+#[tokio::test]
+async fn a_placement_pins_a_vm_and_holds_it_there() {
+    let h = Harness::start().await;
+    let (pa, pb) = (free_port(), free_port());
+    let _a = spawn_agent("hostA", pa);
+    let _b = spawn_agent("hostB", pb);
+    let host_a = h.register_host("hostA", pa).await;
+    let host_b = h.register_host("hostB", pb).await;
+
+    let mut spec = vm_spec();
+    spec["placement"] = json!({"host": host_b});
+    let (st, v) = h
+        .post("/vms", json!({"name": "pinned", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm_id = v["vm_id"].as_str().unwrap().to_string();
+    let vm = h
+        .wait_for(
+            &format!("/vms/{vm_id}"),
+            |v| v["phase"] == "Running",
+            "the pinned VM running",
+        )
+        .await;
+    assert_eq!(vm["host_id"], json!(host_b), "placed elsewhere: {vm}");
+
+    // …and it does not move. Migrating past an explicit placement would leave
+    // the VM contradicting its own spec with nothing to put it back.
+    let (st, body) = h
+        .post(
+            &format!("/vms/{vm_id}/migrate"),
+            json!({"target_host_id": host_a}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+    assert!(format!("{body}").contains("placement"), "{body}");
+
+    // A drain says the same rather than reporting it as no capacity.
+    let (st, drain) = h.post(&format!("/hosts/{host_b}/drain"), json!({})).await;
+    assert!(st.is_success(), "{drain}");
+    assert!(
+        drain["skipped"]
+            .as_array()
+            .is_some_and(|s| s.iter().any(|x| {
+                x["vm_id"] == json!(vm_id)
+                    && x["reason"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("placement")
+            })),
+        "drain did not name the pin: {drain}"
+    );
+
+    // A host that is not available is not "no capacity": waiting never fixes it.
+    let ghost = "88888888-8888-4888-8888-888888888888";
+    let mut spec = vm_spec();
+    spec["placement"] = json!({"host": ghost});
+    let (st, v) = h
+        .post("/vms", json!({"name": "nowhere", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let task = h
+        .wait_for(
+            &format!("/tasks/{}", v["task_id"].as_str().unwrap()),
+            |t| {
+                t["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("not available")
+            },
+            "a refusal naming the unavailable host",
+        )
+        .await;
+    assert!(
+        !format!("{task}").contains("waiting for a schedulable host"),
+        "an unavailable host must not read as a capacity problem: {task}"
+    );
+}
+
+/// A volume's snapshot count arrives on the row, from one aggregate rather than
+/// a request per volume — which is why the column did not exist before.
+#[tokio::test]
+async fn a_volume_carries_its_snapshot_count() {
+    let h = Harness::start().await;
+    let vol = "99999999-9999-4999-8999-999999999999";
+    h.sql(&format!(
+        "INSERT INTO volumes (id, name, size_bytes, format, status, created_at, updated_at)
+         VALUES ('{vol}', 'v', 1048576, 'qcow2', 'ready', now(), now())"
+    ))
+    .await;
+    let list = h.get("/volumes").await;
+    assert_eq!(list[0]["snapshot_count"], json!(0), "{list}");
+
+    h.sql(&format!(
+        "INSERT INTO volume_snapshots (id, volume_id, name, created_at)
+         VALUES (gen_random_uuid(), '{vol}', 'a', now()),
+                (gen_random_uuid(), '{vol}', 'b', now())"
+    ))
+    .await;
+    let list = h.get("/volumes").await;
+    assert_eq!(list[0]["snapshot_count"], json!(2), "{list}");
+    // And the single-volume view agrees, so the two do not drift.
+    assert_eq!(
+        h.get(&format!("/volumes/{vol}")).await["snapshot_count"],
+        json!(2)
+    );
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback
