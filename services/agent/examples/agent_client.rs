@@ -154,6 +154,7 @@ fn build_spec(args: &EnsureArgs) -> anyhow::Result<VirtualMachineSpec> {
             image_type: vquasar_model::DiskImageType::Raw,
             source: None,
             size_bytes: None,
+            pool: None,
         });
     }
 

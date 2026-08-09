@@ -136,6 +136,10 @@ pub async fn drain(
     let mut committed = crate::reconcile::committed_by_host(&store)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    // A drain target must be able to reach the VM's storage. Shared storage is
+    // what makes live migration possible at all (§28), and it has been assumed
+    // rather than checked since it was written (ADR-023).
+    let pools = store.pools_by_host().await?;
 
     let mut migrating = Vec::new();
     let mut skipped = Vec::new();
@@ -168,8 +172,8 @@ pub async fn drain(
             })
             .cloned()
             .collect();
-        match crate::scheduler::schedule(&vm.spec, &compat, &committed) {
-            Some(dest_id) => {
+        match crate::scheduler::schedule(&vm.spec, &compat, &committed, &pools) {
+            Ok(dest_id) => {
                 let dest_name = compat
                     .iter()
                     .find(|h| h.id == dest_id)
@@ -194,7 +198,15 @@ pub async fn drain(
                     target_host_name: dest_name,
                 });
             }
-            None => skipped.push(DrainSkip {
+            // A drain that cannot move a VM should say which wall it hit:
+            // "nowhere has room" and "nowhere can see its disks" are different
+            // problems with different fixes (ADR-023).
+            Err(crate::scheduler::Unschedulable::UnreachableStorage) => skipped.push(DrainSkip {
+                vm_id: vm.id,
+                vm_name: vm.name,
+                reason: "no CPU-compatible host reports this VM's storage pool".into(),
+            }),
+            Err(crate::scheduler::Unschedulable::NoCapacity) => skipped.push(DrainSkip {
                 vm_id: vm.id,
                 vm_name: vm.name,
                 reason: "no CPU-compatible host with free capacity".into(),

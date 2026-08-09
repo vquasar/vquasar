@@ -175,6 +175,16 @@ pub async fn delete(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     user.require("storagepool:manage")?;
+    // A pool holding volumes cannot go: losing the record of where bytes are is
+    // worse than a refusal, and the database would refuse anyway (0030). Asking
+    // first turns a foreign-key error into an answer.
+    let held = store.volumes_in_pool(id).await?;
+    if held > 0 {
+        return Err(ApiError::invalid(format!(
+            "{held} volume{} still live in this pool — delete or move them first",
+            if held == 1 { "" } else { "s" }
+        )));
+    }
     if !store.delete_storage_pool(id).await? {
         return Err(ApiError::not_found("storage pool"));
     }

@@ -1587,6 +1587,201 @@ async fn a_pool_is_usable_only_while_a_host_reports_it() {
     .await;
 }
 
+/// A volume belongs to a pool, its file lives there, and a VM whose disks are
+/// in a pool is only placed on a host that reports it (ADR-023). This is the
+/// failure that used to be a path error at launch, moved to placement.
+#[tokio::test]
+async fn a_vm_is_placed_only_where_its_pool_is_reported() {
+    let h = Harness::start_with(&[(
+        "VQUASAR_CONTROL_STORAGE__SHARED_VOLUMES_DIR",
+        "/x/shared/volumes",
+    )])
+    .await;
+
+    let (st, fast) = h
+        .post(
+            "/storage-pools",
+            json!({"name": "fast", "kind": "shared_dir", "path": "/x/fast"}),
+        )
+        .await;
+    assert!(st.is_success(), "{fast}");
+    let fast_id = fast["id"].as_str().unwrap().to_string();
+
+    // Volume rows are inserted directly here: building the file runs qemu-img,
+    // which this harness deliberately does not require. What is under test is
+    // where the control plane says a volume's bytes are, and that is derived
+    // from its pool rather than from the old config value.
+    let in_fast = "22222222-2222-4222-8222-222222222222";
+    let grandfathered = "33333333-3333-4333-8333-333333333333";
+    h.sql(&format!(
+        "INSERT INTO volumes (id, name, size_bytes, format, status, pool_id, created_at, updated_at)
+         VALUES ('{in_fast}', 'v1', 1048576, 'qcow2', 'ready', '{fast_id}', now(), now()),
+                ('{grandfathered}', 'v0', 1048576, 'qcow2', 'ready', NULL, now(), now())"
+    ))
+    .await;
+
+    let v = h.get(&format!("/volumes/{in_fast}")).await;
+    assert_eq!(v["pool_id"], json!(fast_id));
+    assert_eq!(v["path"], json!(format!("/x/fast/vol-{in_fast}.qcow2")));
+
+    // A volume that predates pools keeps exactly the path it had. Nothing an
+    // upgrade does may move a file that a running VM has open.
+    let v0 = h.get(&format!("/volumes/{grandfathered}")).await;
+    assert_eq!(
+        v0["path"],
+        json!(format!("/x/shared/volumes/vol-{grandfathered}.qcow2"))
+    );
+
+    // Naming a pool that does not exist is refused before any work happens.
+    let (st, body) = h
+        .post(
+            "/volumes",
+            json!({"name": "v3", "size_bytes": 1024, "pool": "nowhere"}),
+        )
+        .await;
+    assert_eq!(st.as_u16(), 400, "unknown pool accepted: {body}");
+
+    // A pool holding volumes does not vanish: losing the record of where bytes
+    // are is worse than a refusal.
+    let (st, body) = h.delete_status(&format!("/storage-pools/{fast_id}")).await;
+    assert_eq!(st, 400, "{body}");
+    assert!(
+        format!("{body}").contains("still live"),
+        "the refusal must say why: {body}"
+    );
+
+    // Now placement. The host can use `default` but not `fast`.
+    let port = free_port();
+    let agent = spawn_agent("hostA", port);
+    agent
+        .lock()
+        .unwrap()
+        .pools_refused
+        .insert("fast".into(), "not mounted on this host".into());
+    h.register_host("hostA", port).await;
+
+    let mut spec = vm_spec();
+    spec["disks"] = json!([{
+        "path": "/x/fast/vol-a.qcow2",
+        "image_type": "qcow2",
+        "pool": fast_id,
+    }]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "pooled-vm", "spec": spec}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm_id = v["vm_id"].as_str().unwrap().to_string();
+
+    // It must not be placed, and the open task must say *why* — an operator
+    // waiting for capacity that will never arrive is the failure here.
+    let task = h
+        .wait_for(
+            &format!("/tasks/{}", v["task_id"].as_str().unwrap()),
+            |t| {
+                t["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("storage pool")
+            },
+            "a refusal naming the storage",
+        )
+        .await;
+    assert!(
+        !format!("{task}").contains("waiting for a schedulable host"),
+        "a storage refusal must not read as a capacity problem: {task}"
+    );
+    let vm = h.get(&format!("/vms/{vm_id}")).await;
+    assert!(vm["host_id"].is_null(), "placed anyway: {vm}");
+
+    // Once the host reports the pool, the same VM places without any change to
+    // the VM itself. Nothing about the desired state moved; the observation did.
+    agent.lock().unwrap().pools_refused.clear();
+    h.wait_for(
+        &format!("/vms/{vm_id}"),
+        |v| !v["host_id"].is_null(),
+        "the VM placing once its pool is reported",
+    )
+    .await;
+
+    // Live migration has always assumed the destination has the same storage
+    // mounted at the same path, and nothing checked it — the guest arrived and
+    // failed to launch on the far side. Now the target is refused up front.
+    h.wait_for(
+        &format!("/vms/{vm_id}"),
+        |v| v["phase"] == "Running",
+        "the VM running before it can be migrated",
+    )
+    .await;
+    let b_port = free_port();
+    let b_agent = spawn_agent("hostB", b_port);
+    b_agent
+        .lock()
+        .unwrap()
+        .pools_refused
+        .insert("fast".into(), "not mounted on this host".into());
+    let host_b = h.register_host("hostB", b_port).await;
+    let (st, body) = h
+        .post(
+            &format!("/vms/{vm_id}/migrate"),
+            json!({"target_host_id": host_b}),
+        )
+        .await;
+    assert_eq!(
+        st.as_u16(),
+        400,
+        "migrated onto storage it cannot see: {body}"
+    );
+    assert!(
+        format!("{body}").contains("storage pool"),
+        "the refusal must name what is missing: {body}"
+    );
+
+    // A disk the control plane places itself records the pool it chose. Without
+    // that, a VM's own system disk would constrain nothing and the refusal
+    // above would only ever fire for attached volumes.
+    let default_id = h
+        .get("/storage-pools")
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "default")
+        .and_then(|p| p["id"].as_str())
+        .unwrap()
+        .to_string();
+    let mut blank = vm_spec();
+    blank["disks"] = json!([{"path": "", "image_type": "qcow2", "size_bytes": 1_048_576}]);
+    let (st, v) = h
+        .post("/vms", json!({"name": "auto-placed", "spec": blank}))
+        .await;
+    assert!(st.is_success(), "{v}");
+    let auto = h
+        .get(&format!("/vms/{}", v["vm_id"].as_str().unwrap()))
+        .await;
+    let disk = &auto["spec"]["disks"][0];
+    assert_eq!(disk["pool"], json!(default_id), "{auto}");
+    assert!(
+        disk["path"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("/x/shared/volumes/"),
+        "{auto}"
+    );
+
+    // A disk naming a pool that does not exist is a VM that could never be
+    // placed anywhere, so it is refused at the door.
+    let mut bogus = vm_spec();
+    bogus["disks"] = json!([{
+        "path": "/x/fast/ghost.qcow2",
+        "image_type": "qcow2",
+        "pool": "00000000-0000-4000-8000-000000000000",
+    }]);
+    let (st, body) = h
+        .post("/vms", json!({"name": "ghost", "spec": bogus}))
+        .await;
+    assert_eq!(st.as_u16(), 400, "{body}");
+}
+
 /// An unknown path under `/api/v1` must answer with the error envelope, not the
 /// single-page shell. The control plane serves the console from the same origin
 /// and falls back to `index.html` so deep links work; without a router fallback

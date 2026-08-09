@@ -208,6 +208,11 @@ pub struct Volume {
     /// counted against quota from the moment the row exists (ADR-019), which is
     /// before the file is there.
     pub status: String,
+    /// The storage pool this volume's file lives in (ADR-023). `None` only for
+    /// a volume that predates pools and has not yet been adopted into the
+    /// `default` one — startup does that, so it is transient.
+    #[sqlx(default)]
+    pub pool_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1597,6 +1602,7 @@ impl Store {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_volume(
         &self,
         id: Uuid,
@@ -1605,6 +1611,7 @@ impl Store {
         format: &str,
         source_image_id: Option<Uuid>,
         project: Uuid,
+        pool: Uuid,
     ) -> std::result::Result<Volume, crate::quota::AdmitError> {
         let now = Utc::now();
         let mut tx = self.pool.begin().await?;
@@ -1617,8 +1624,8 @@ impl Store {
         let v = sqlx::query_as::<_, Volume>(
             "INSERT INTO volumes
                 (id, name, size_bytes, format, source_image_id, project_id,
-                 status, owner, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$8,$6,$6) RETURNING *",
+                 status, owner, pool_id, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$7,'provisioning',$8,$9,$6,$6) RETURNING *",
         )
         .bind(id)
         .bind(name)
@@ -1628,6 +1635,7 @@ impl Store {
         .bind(now)
         .bind(project)
         .bind(self.instance())
+        .bind(pool)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1700,6 +1708,13 @@ impl Store {
     pub async fn list_storage_pools(&self) -> Result<Vec<StoragePool>> {
         sqlx::query_as::<_, StoragePool>("SELECT * FROM storage_pools ORDER BY name")
             .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn get_storage_pool_by_name(&self, name: &str) -> Result<Option<StoragePool>> {
+        sqlx::query_as::<_, StoragePool>("SELECT * FROM storage_pools WHERE name=$1")
+            .bind(name)
+            .fetch_optional(&self.pool)
             .await
     }
 
@@ -1862,6 +1877,76 @@ impl Store {
             .execute(&self.pool)
             .await
             .map(|_| ())
+    }
+
+    /// Where each pool puts its bytes, for deriving file paths without asking
+    /// per volume.
+    pub async fn pool_paths(&self) -> Result<std::collections::HashMap<Uuid, String>> {
+        Ok(self
+            .list_storage_pools()
+            .await?
+            .into_iter()
+            .filter_map(|p| p.params.0.host_path().map(|h| (p.id, h.to_string())))
+            .collect())
+    }
+
+    /// Where one volume's bytes live: its pool's root, or the configured shared
+    /// directory for a volume that predates pools (ADR-023).
+    pub async fn volume_dir(&self, v: &Volume) -> Result<String> {
+        let fallback = || self.shared_volumes_dir.to_string();
+        match v.pool_id {
+            Some(id) => Ok(self
+                .get_storage_pool(id)
+                .await?
+                .and_then(|p| p.params.0.host_path().map(str::to_string))
+                .unwrap_or_else(fallback)),
+            None => Ok(fallback()),
+        }
+    }
+
+    /// Which pools each host currently reports it can use (ADR-023).
+    ///
+    /// The scheduler's input: a host absent from a pool's set cannot be given a
+    /// VM whose disks live there.
+    pub async fn pools_by_host(
+        &self,
+    ) -> Result<std::collections::HashMap<Uuid, std::collections::HashSet<Uuid>>> {
+        let rows: Vec<(Uuid, Uuid)> =
+            sqlx::query_as("SELECT host_id, pool_id FROM storage_pool_reachability WHERE usable")
+                .fetch_all(&self.pool)
+                .await?;
+        let mut by_host: std::collections::HashMap<Uuid, std::collections::HashSet<Uuid>> =
+            std::collections::HashMap::new();
+        for (host, pool) in rows {
+            by_host.entry(host).or_default().insert(pool);
+        }
+        Ok(by_host)
+    }
+
+    /// How many volumes a pool holds, for the refusal when deleting it.
+    pub async fn volumes_in_pool(&self, pool: Uuid) -> Result<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM volumes WHERE pool_id = $1")
+            .bind(pool)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// Adopt volumes that predate pools into the `default` one.
+    ///
+    /// Runs at startup, after the default pool is seeded. It is here rather
+    /// than in migration 0030 because that migration cannot name a pool id
+    /// that is generated at first boot — and on a cluster jumping straight
+    /// from pre-pool to here, the row does not exist yet when it runs.
+    /// Returns how many rows were adopted.
+    pub async fn adopt_poolless_volumes(&self) -> Result<u64> {
+        let done = sqlx::query(
+            "UPDATE volumes SET pool_id = (SELECT id FROM storage_pools WHERE name = 'default')
+              WHERE pool_id IS NULL
+                AND EXISTS (SELECT 1 FROM storage_pools WHERE name = 'default')",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
     }
 
     /// Make sure the `default` pool exists, seeded from `[storage]
@@ -2097,10 +2182,25 @@ impl Store {
     /// Deleted rather than marked failed: the row is a quota reservation for a
     /// file that will never exist, and nothing user-visible was promised — the
     /// create call it belonged to died with the process that answered it.
-    pub async fn drop_orphaned_volume_reservations(&self) -> Result<Vec<(Uuid, String)>> {
-        sqlx::query_as("DELETE FROM volumes WHERE status = 'provisioning' RETURNING id, format")
-            .fetch_all(&self.pool)
-            .await
+    /// Returns `(id, format, pool_dir)`: the directory comes back with the row
+    /// because the row is being deleted, and without it the caller would look
+    /// for the partial file under the wrong pool and quietly leave it behind.
+    pub async fn drop_orphaned_volume_reservations(&self) -> Result<Vec<(Uuid, String, String)>> {
+        let pools = self.pool_paths().await?;
+        let rows: Vec<(Uuid, String, Option<Uuid>)> = sqlx::query_as(
+            "DELETE FROM volumes WHERE status = 'provisioning' RETURNING id, format, pool_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, format, pool_id)| {
+                let dir = pool_id
+                    .and_then(|p| pools.get(&p).cloned())
+                    .unwrap_or_else(|| self.shared_volumes_dir.to_string());
+                (id, format, dir)
+            })
+            .collect())
     }
 
     pub async fn get_image(&self, id: Uuid) -> Result<Option<Image>> {

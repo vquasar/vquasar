@@ -256,6 +256,10 @@ impl StorageProvisioner {
             image_type: DiskImageType::Raw,
             source: None,
             size_bytes: None,
+            // The seed is an agent-owned file appended after scheduling, so it
+            // carries no pool: placement has already happened, and it lives
+            // wherever this host's shared directory is.
+            pool: None,
         })
     }
 }

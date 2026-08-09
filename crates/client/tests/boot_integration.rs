@@ -79,6 +79,7 @@ async fn boots_real_vm_and_emits_serial_output() {
             image_type: DiskImageType::Raw,
             source: None,
             size_bytes: None,
+            pool: None,
         }],
         network_interfaces: vec![],
         placement: PlacementSpec::default(),

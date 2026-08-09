@@ -351,14 +351,27 @@ Split into three shippable slices.
     session. An unreachable host's reports are dropped: a pool must not stay
     `ready` on the word of a machine that is gone. Hosts hold no storage config
     of their own — per-host drift is the thing a pool exists to remove.
-  - **M23c — volumes and VM disks reference a pool**, with
-    `<pool>/volumes/<uuid>.<fmt>` replacing the global directory, and the
-    orphaned-seed sweep (#41) that a pool finally gives an addressable root.
-    **The scheduler refusal lands here**, not in M23b: refusing a host that
-    cannot see a VM's storage needs the VM's disks to name a pool, and until
-    they do there is nothing to refuse on. Matching by path prefix in the
-    meantime would be a guess built to be deleted.
-  - **M23d — the console.**
+  - **M23c — volumes and disks reference a pool, and placement respects it.**
+    ✅ **Done.** A volume carries `pool_id` and its file path is derived from
+    that pool; a `DiskSpec` carries the pool the control plane chose for it.
+    The scheduler then refuses a host that does not report *every* pool a VM's
+    disks are in, and says so — "no schedulable host reports the storage pool
+    this VM's disks are in" rather than "waiting for a schedulable host". The
+    same check guards an explicit migration target and a drain, which is where
+    live migration's silent shared-storage assumption lived.
+    A disk at a raw operator-supplied path carries no pool and constrains
+    nothing: guessing which pool a path belongs to would be a claim the
+    platform cannot back.
+    `POST /volumes` takes `pool` (id or name, default `default`). VM disks the
+    control plane places go in `default` until per-VM storage policy exists.
+    Backward compatibility: no file moves. A volume's path stays
+    `<pool>/vol-<uuid>.<ext>` and the default pool's root is the old
+    `shared_volumes_dir`, so the `<pool>/volumes/` layout ADR-023 sketched was
+    dropped — it would have moved every existing file for tidiness. Volumes
+    predating pools keep their exact path until startup adopts them.
+  - **M23d — the orphaned-seed sweep** (#41), which a pool finally gives the
+    control plane an addressable root for.
+  - **M23e — the console.**
 - **Storage, the rest of feature-complete.** Additional backends and per-VM
   storage policy (cache mode, discard/TRIM, IO throttling, thin vs thick). Both
   need pools to exist first: a backend has nowhere to live without one, and

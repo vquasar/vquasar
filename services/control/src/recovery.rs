@@ -51,9 +51,8 @@ pub async fn reclaim_orphaned_work(store: &Store) {
             // Remove the half-written files too. Best-effort and after the
             // rows are gone: a leftover file wastes space, but a row that
             // outlives its file wastes quota and confuses every later create.
-            for (id, format) in &dropped {
-                let path =
-                    crate::api::volumes::volume_path(store.shared_volumes_dir(), *id, format);
+            for (id, format, dir) in &dropped {
+                let path = crate::api::volumes::volume_path(dir, *id, format);
                 if let Err(e) = tokio::fs::remove_file(&path).await {
                     if e.kind() != std::io::ErrorKind::NotFound {
                         warn!(path = %path.display(), error = %e,
