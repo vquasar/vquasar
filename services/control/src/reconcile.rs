@@ -32,6 +32,10 @@ use crate::store::{HostInventory, Store, Vm};
 /// has become the leader, and a loop that has to be started on promotion is a
 /// loop that can fail to start.
 pub async fn run(store: Store, interval: Duration, lease: Arc<crate::lease::Lease>) {
+    // Swept on its own cadence, not every tick: reading a shared directory is
+    // not free and an orphaned file is not urgent. `None` means "not yet", so
+    // the first pass after this instance takes the lease does one.
+    let mut last_sweep: Option<std::time::Instant> = None;
     loop {
         if !lease.is_fresh() {
             metrics::gauge!("vquasar_controller_is_leader").set(0.0);
@@ -81,6 +85,23 @@ pub async fn run(store: Store, interval: Duration, lease: Arc<crate::lease::Leas
                 }
             }
             Err(e) => warn!(error = %e, "segment quarantine sweep failed"),
+        }
+        // Files whose owning row is gone (#41). Reporting by default; see
+        // [storage] orphan_reclaim.
+        let sweep_every = store.orphan_sweep_interval();
+        if last_sweep.is_none_or(|t| t.elapsed() >= sweep_every) {
+            last_sweep = Some(std::time::Instant::now());
+            match crate::orphans::sweep(&store, store.orphan_policy(), store.orphan_min_age()).await
+            {
+                Ok(s) if s.found > 0 => tracing::info!(
+                    found = s.found,
+                    reclaimed = s.reclaimed,
+                    bytes = s.bytes,
+                    "orphaned storage sweep"
+                ),
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "orphaned storage sweep failed"),
+            }
         }
         // Refresh inventory gauges from the current DB state (design M17).
         if let Err(e) = crate::metrics::update_from_store(&store).await {

@@ -446,6 +446,8 @@ pub struct Store {
     allowed_paths: std::sync::Arc<[String]>,
     /// Platform policy over network segments (design §18).
     network_policy: std::sync::Arc<crate::config::NetworkPolicy>,
+    /// What to do about files whose owning row is gone (#41).
+    orphans: crate::config::StorageConfig,
     /// This control plane's identity, stamped on work it starts in a detached
     /// task so a restart reclaims its own and nobody else's (ADR-021).
     instance: Option<std::sync::Arc<str>>,
@@ -480,8 +482,28 @@ impl Store {
             crypto: None,
             allowed_paths: vec!["/var/lib/vquasar".to_string()].into(),
             network_policy: std::sync::Arc::new(crate::config::NetworkPolicy::default()),
+            orphans: crate::config::StorageConfig::default(),
             instance: None,
         }
+    }
+
+    /// Storage-hygiene settings (#41): what to do about files whose owning row
+    /// is gone, how often to look, and how settled a file must be.
+    pub fn with_storage_config(mut self, cfg: crate::config::StorageConfig) -> Self {
+        self.orphans = cfg;
+        self
+    }
+
+    pub fn orphan_policy(&self) -> crate::orphans::Policy {
+        self.orphans.orphan_reclaim
+    }
+
+    pub fn orphan_sweep_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.orphans.orphan_sweep_secs)
+    }
+
+    pub fn orphan_min_age(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.orphans.orphan_min_age_secs)
     }
 
     /// Platform policy over VLAN tags, uplinks and VNI allocation (design §18).
@@ -1921,6 +1943,21 @@ impl Store {
             by_host.entry(host).or_default().insert(pool);
         }
         Ok(by_host)
+    }
+
+    /// Every VM id, for deciding whether a file on shared storage still has an
+    /// owner (#41). Ids only: the sweep needs existence, not rows.
+    pub async fn all_vm_ids(&self) -> Result<Vec<Uuid>> {
+        sqlx::query_scalar("SELECT id FROM virtual_machines")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    /// Every volume id, for the same reason.
+    pub async fn all_volume_ids(&self) -> Result<Vec<Uuid>> {
+        sqlx::query_scalar("SELECT id FROM volumes")
+            .fetch_all(&self.pool)
+            .await
     }
 
     /// How many volumes a pool holds, for the refusal when deleting it.

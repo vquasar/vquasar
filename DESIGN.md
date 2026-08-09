@@ -887,7 +887,7 @@ authority to decide who leads, undoing the boundary this design exists to hold.
 
 ### ADR-023 — A storage pool is a named place to put bytes, and reachability is observed
 
-*Status:* Accepted and implemented (M23a–M23c), except the orphaned-seed sweep.
+*Status:* Accepted and implemented (M23a–M23d).
 
 One detail was dropped in implementation: volumes stay at `<pool>/vol-<uuid>.<ext>`
 rather than moving under `<pool>/volumes/`. The default pool's root *is* the old
@@ -943,7 +943,11 @@ a mount that has not come back yet.
 
 This also gives the orphaned-seed sweep (#41) a root it can address. The agent
 cannot sweep shared storage — a seed there may belong to a VM on any host — but
-the control plane can, once a pool tells it where "there" is.
+the control plane can, once a pool tells it where "there" is. Implemented in
+M23d, and widened while it was there: a VM's system disk and a volume's file
+leak the same way and for the same reason. It reclaims only names this codebase
+writes, so an operator's own file in a pool is never a candidate, and it reports
+rather than deletes until asked.
 
 Rejected: a `StorageBackend` trait in the agent as the first move (§20's original
 sketch), which puts the abstraction where the plugin goes rather than where the

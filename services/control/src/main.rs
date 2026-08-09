@@ -16,6 +16,7 @@ mod ipam;
 mod lease;
 mod metrics;
 mod netalloc;
+mod orphans;
 mod overlay;
 mod quota;
 mod rbac;
@@ -102,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Store::new(pool, config.storage.shared_volumes_dir.clone())
         .with_crypto(cryptor.clone())
         .with_allowed_paths(config.storage.allowed_paths.clone())
+        .with_storage_config(config.storage.clone())
         .with_network_policy(config.network.clone());
     info!(
         roots = ?config.storage.allowed_paths,
