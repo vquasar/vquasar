@@ -561,6 +561,21 @@ Split into three shippable slices.
   and the value of a palette is that the same three letters always land in the
   same place. An empty query shows pages rather than every VM in the fleet.
 
+- **Console: a functional icon family.** ✅ **Done.** Sixteen glyphs in one
+  file, on one 16×16 grid at one stroke weight, drawn in `currentColor` and
+  hidden from assistive technology — every use sits beside its own label, so
+  announcing the icon would read the same word twice.
+  They stand for *resource kinds* the operator already thinks in, and appear
+  only where shape finds a thing faster than reading does: the nav, and the
+  palette's kind column. A heading with an icon beside its own word is noise,
+  and there are none. Both call sites look kinds up in one map, which is the
+  only reason they cannot disagree about what a volume looks like.
+  No icon package: the console already ships MUI, and a second library for
+  sixteen glyphs is bundle weight for nothing. Tests pin the properties that
+  keep it a family rather than a pile — one grid, one weight, one colour
+  source, nothing announced — because those are exactly what drifts when the
+  next glyph is added.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH
