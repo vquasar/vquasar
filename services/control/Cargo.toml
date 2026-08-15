@@ -52,3 +52,6 @@ metrics-exporter-prometheus = "0.18.3"
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 tempfile = "3"
+# Capture `tracing` events in a test, so "did it log the refusal" is an
+# assertion rather than something a reviewer takes on trust.
+tracing-subscriber = { workspace = true }

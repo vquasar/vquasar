@@ -611,6 +611,27 @@ Split into three shippable slices.
   direction, because it is what confuses people first — the control plane dials
   the agent, never the reverse.
 
+- **Authentication and authorization say why they refused.** ✅ **Done.** Found
+  the hard way: a console that would not open, and a control plane that could
+  not say why. Every auth refusal answered the browser correctly and logged
+  *nothing at any level* — `authn.rs` and `authz.rs` contained no logging
+  statements at all — while the console's own failure paths logged at `debug`
+  under a service running at `info`. The one thing an operator reports is the
+  one thing the server was silent about.
+  Both 401 choke points now log the path and the reason (never the token: a
+  bearer token is a credential until it expires, and a log is read by more
+  people than a response body). `AuthUser::require` logs every 403 with the
+  permission that was wanted and who was refused — one line covering every
+  guarded route, because there are too many call sites to remember at each one.
+  The console logs its refusals and its agent-side failures at `warn`, and an
+  authorised session at `info`; that `info` line is what finally identified a
+  browser problem as a browser problem.
+  Tested at both levels: a unit test on the `require` choke point (it logs, and
+  an *allowed* request stays quiet, or the signal drowns), and an e2e that
+  takes an agent away and asserts the console says so. The e2e harness now
+  captures the control plane's output, so "what did the server say" is an
+  assertion rather than something a reviewer takes on trust.
+
 ### Compute & lifecycle ✅ **Done** (M15)
 - **M15a — Per-VM metrics/stats.** ✅ **Done.** Agent samples CPU% (`/proc/<pid>/stat`
   over a 200ms window), RSS (`/proc/<pid>/status`), and disk/net counters (CH

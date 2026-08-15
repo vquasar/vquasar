@@ -18,6 +18,7 @@ use axum::http::request::Parts;
 use crate::api::error::ApiError;
 use crate::authn::Authenticator;
 use crate::store::{Store, User};
+use tracing::warn;
 
 /// Shared auth wiring, attached to the router as an extension.
 #[derive(Clone)]
@@ -66,10 +67,25 @@ pub struct AuthUser {
 
 impl AuthUser {
     /// Return `Ok` iff the caller holds `permission` (or is the dev superuser).
+    ///
+    /// Every 403 in the API funnels through here, which is why the log line
+    /// lives here rather than at each call site: an authorization refusal that
+    /// only the browser can see is one an operator cannot debug, and there are
+    /// too many call sites to remember at each one.
     pub fn require(&self, permission: &str) -> Result<(), ApiError> {
         if self.superuser || self.permissions.contains(permission) {
             Ok(())
         } else {
+            // The permission *and* who was refused. Either alone leaves the
+            // reader guessing at the other half.
+            warn!(
+                user = self
+                    .user
+                    .as_ref()
+                    .map(|u| u.username.as_str())
+                    .unwrap_or("-"),
+                permission, "request refused: caller does not hold this permission"
+            );
             Err(ApiError::forbidden(permission))
         }
     }
@@ -235,11 +251,23 @@ impl FromRequestParts<Store> for AuthUser {
             });
         };
 
-        let token = bearer(parts).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
-        let claims = authenticator
-            .validate(&token)
-            .await
-            .map_err(|e| ApiError::unauthorized(e.to_string()))?;
+        // The path is worth carrying: "a token was rejected" is a puzzle,
+        // "a token was rejected on /api/v1/vms" is a report.
+        let path = parts.uri.path().to_string();
+        let Some(token) = bearer(parts) else {
+            warn!(%path, "request refused: no bearer token");
+            return Err(ApiError::unauthorized("missing bearer token"));
+        };
+        let claims = match authenticator.validate(&token).await {
+            Ok(c) => c,
+            Err(e) => {
+                // The reason, never the token. An expired token and a token
+                // from the wrong issuer are the same 401 to the caller and
+                // completely different problems to whoever has to fix it.
+                warn!(%path, error = %e, "request refused: token rejected");
+                return Err(ApiError::unauthorized(e.to_string()));
+            }
+        };
 
         // Mirror the identity locally (JIT) so roles can attach to it.
         let user = store
@@ -274,5 +302,86 @@ impl FromRequestParts<Store> for AuthUser {
             groups: claims.groups,
             superuser: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+
+    /// Collects the message of every event, so a test can assert on what was
+    /// said rather than only on what was returned.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Captured {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Visit<'a>(&'a mut String);
+            impl tracing::field::Visit for Visit<'_> {
+                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                    self.0.push_str(&format!(" {}={:?}", f.name(), v));
+                }
+            }
+            let mut line = format!("{}", event.metadata().level());
+            event.record(&mut Visit(&mut line));
+            self.0.lock().unwrap().push(line);
+        }
+    }
+
+    fn user(permissions: &[&str]) -> AuthUser {
+        AuthUser {
+            user: None,
+            permissions: permissions.iter().map(|p| p.to_string()).collect(),
+            groups: Vec::new(),
+            superuser: false,
+        }
+    }
+
+    /// The defect this exists for: a 403 answered the caller and told the
+    /// operator nothing. `require` is the choke point every permission check
+    /// in the API passes through, so one line here covers all of them.
+    #[test]
+    fn a_permission_refusal_is_logged_with_the_permission_it_wanted() {
+        let cap = Captured::default();
+        let sub = tracing_subscriber::registry().with(cap.clone());
+        with_default(sub, || {
+            assert!(user(&["vm:read"]).require("vm:delete").is_err());
+        });
+        let lines = cap.0.lock().unwrap().clone();
+        let refusal = lines
+            .iter()
+            .find(|l| l.contains("does not hold this permission"))
+            .unwrap_or_else(|| panic!("nothing was logged for a refused request: {lines:?}"));
+        assert!(refusal.starts_with("WARN"), "{refusal}");
+        // The permission that was wanted, or the reader cannot act on it.
+        assert!(refusal.contains("vm:delete"), "{refusal}");
+    }
+
+    /// The quiet half: a request that is allowed must not log, or the signal
+    /// drowns in a line per authorized call.
+    #[test]
+    fn an_allowed_request_says_nothing() {
+        let cap = Captured::default();
+        let sub = tracing_subscriber::registry().with(cap.clone());
+        with_default(sub, || {
+            assert!(user(&["vm:delete"]).require("vm:delete").is_ok());
+            // …and the dev superuser, which bypasses the check entirely.
+            let mut su = user(&[]);
+            su.superuser = true;
+            assert!(su.require("vm:delete").is_ok());
+        });
+        assert!(
+            cap.0.lock().unwrap().is_empty(),
+            "an allowed request logged: {:?}",
+            cap.0.lock().unwrap()
+        );
     }
 }

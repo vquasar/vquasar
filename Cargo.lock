@@ -3920,6 +3920,7 @@ dependencies = [
  "tonic 0.12.3",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "vquasar-common",
  "vquasar-model",
