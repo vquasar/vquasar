@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::RwLock;
+use tracing::warn;
 
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
@@ -138,9 +139,17 @@ impl Authenticator {
         let key = match self.key_for(&kid) {
             Some(k) => k,
             None => {
+                // A key we do not recognise is normal after a rotation and a
+                // symptom after a realm change; either way the refresh that
+                // follows is worth a line, because "unknown signing key" on
+                // its own reads like a broken token rather than a provider
+                // that moved.
+                warn!(kid = %kid, "token signed by an unknown key; refreshing the JWKS");
                 self.refresh_keys().await?;
-                self.key_for(&kid)
-                    .ok_or_else(|| AuthError::Invalid("unknown signing key".into()))?
+                self.key_for(&kid).ok_or_else(|| {
+                    warn!(kid = %kid, "the provider does not publish this signing key");
+                    AuthError::Invalid("unknown signing key".into())
+                })?
             }
         };
 

@@ -42,9 +42,22 @@ fn admin_url() -> String {
 }
 
 /// Grab a currently-free localhost port (small TOCTOU window, fine for tests).
-fn spawn_control(env: &[(String, String)]) -> Child {
+/// Spawn the control plane, tee-ing its log to `log_path`.
+///
+/// The log is captured so a test can assert on what the server *said*, not
+/// only on what it returned. A refusal that answers correctly and logs nothing
+/// is exactly the failure this harness could not see before: the status told
+/// the browser, and the operator holding the journal got silence.
+fn spawn_control(env: &[(String, String)], log_path: &std::path::Path) -> Child {
+    let log = std::fs::File::create(log_path).expect("create control log");
+    // Both streams: the subscriber writes to stdout and a panic goes to
+    // stderr, and a test that captured only one of them would miss whichever
+    // mattered.
+    let err = log.try_clone().expect("clone control log handle");
     Command::new(env!("CARGO_BIN_EXE_vquasar-control"))
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(err))
         .spawn()
         .expect("spawn vquasar-control")
 }
@@ -535,6 +548,9 @@ struct Harness {
     /// testable across a restart. The listen address is in here too, so the
     /// restart lands on the same port.
     env: Vec<(String, String)>,
+    /// Where the control plane's log is being written, so a test can assert on
+    /// what it said rather than only on what it answered.
+    log_path: std::path::PathBuf,
 }
 
 impl Harness {
@@ -596,7 +612,8 @@ impl Harness {
                 .map(|(k, v)| (k.to_string(), v.to_string())),
         );
 
-        let control = spawn_control(&env);
+        let log_path = std::env::temp_dir().join(format!("{db_name}.log"));
+        let control = spawn_control(&env, &log_path);
         let h = Harness {
             control,
             base,
@@ -604,6 +621,7 @@ impl Harness {
             db_name,
             db_url: db_url.clone(),
             env,
+            log_path,
         };
         h.wait_healthy().await;
         h
@@ -641,7 +659,12 @@ impl Harness {
             "VQUASAR_CONTROL_SERVER__INSTANCE_ID".into(),
             instance_id.to_string(),
         ));
-        let child = spawn_control(&env);
+        // The peer's log goes to its own file; no test asserts on it yet, but
+        // sharing the leader's would interleave two processes into one stream.
+        let child = spawn_control(
+            &env,
+            &std::env::temp_dir().join(format!("{instance_id}.log")),
+        );
         let peer = Peer {
             child,
             base: format!("http://127.0.0.1:{port}"),
@@ -681,7 +704,7 @@ impl Harness {
     async fn restart(&mut self) {
         let _ = self.control.kill();
         let _ = self.control.wait();
-        self.control = spawn_control(&self.env);
+        self.control = spawn_control(&self.env, &self.log_path);
         self.wait_healthy().await;
     }
 
@@ -720,6 +743,26 @@ impl Harness {
 
     /// Run a statement against the harness database, for setting up states the
     /// API deliberately will not create (here: a pre-kind-model network).
+    /// Everything the control plane has logged so far.
+    fn log(&self) -> String {
+        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+    }
+
+    /// Poll the log until `needle` appears, or fail saying what was there.
+    async fn wait_log(&self, needle: &str) -> String {
+        for _ in 0..100 {
+            let log = self.log();
+            if log.contains(needle) {
+                return log;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!(
+            "{needle:?} never appeared in the control-plane log:\n{}",
+            self.log()
+        );
+    }
+
     async fn sql(&self, stmt: &str) {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
@@ -2806,6 +2849,60 @@ async fn migration_targets_say_why_a_host_is_not_one() {
         "an eligible host needs no reason: {bt}"
     );
     let _ = a;
+}
+
+/// A refusal has to reach the operator, not only the caller.
+///
+/// This is the shape of test that was missing. Every console failure answered
+/// the browser and logged nothing an operator would see — the auth refusals
+/// logged at no level at all, and the agent-side ones at `debug` while the
+/// service runs at `info`. "The console will not open" was therefore
+/// unanswerable from the one side that knew why.
+///
+/// The auth refusals cannot be reached here (the harness runs with auth off,
+/// and the control plane refuses to start without a reachable provider), so
+/// they are covered by a unit test on `AuthUser::require`. This covers the
+/// other half: a VM whose host is not answering.
+#[tokio::test]
+async fn a_console_that_cannot_reach_its_agent_says_so_in_the_log() {
+    let h = Harness::start().await;
+    let port = free_port();
+    let agent = spawn_agent_stoppable("hostA", port);
+    h.register_host("hostA", port).await;
+
+    let (st, v) = h
+        .post(
+            "/vms",
+            json!({"name": "orphaned-console", "spec": vm_spec()}),
+        )
+        .await;
+    assert!(st.is_success(), "{v}");
+    let vm_id = v["vm_id"].as_str().unwrap().to_string();
+    h.wait_for(
+        &format!("/vms/{vm_id}"),
+        |v| v["phase"] == "Running",
+        "the VM running before its agent goes away",
+    )
+    .await;
+
+    // Take the agent away and ask for a console. The VM row still says which
+    // host holds it, so the control plane will try and fail.
+    let _ = agent.1.send(());
+    let _ = h
+        .client
+        .get(format!("{}/api/v1/vms/{vm_id}/console", h.base))
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await;
+
+    let log = h.wait_log("console: cannot reach the agent").await;
+    assert!(
+        log.contains(&vm_id),
+        "the log must name the VM, or it cannot be acted on:\n{log}"
+    );
 }
 
 /// An unknown path under `/api/v1` must answer with the error envelope, not the

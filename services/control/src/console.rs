@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::debug;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 use vquasar_proto::agent::ConsoleClientMessage;
 
@@ -57,11 +57,23 @@ pub async fn console_ws(
     // Authenticate + authorize before upgrading, unless auth is disabled (dev).
     if let Some(authenticator) = auth.authenticator {
         let Some(token) = q.access_token else {
+            // Logged, like every other refusal here. A console that will not
+            // open is the single thing an operator reports most often, and
+            // until now every way it could fail returned a status to the
+            // browser and said nothing at all to the server — which makes the
+            // difference between "no token", "bad token" and "no permission"
+            // invisible on the side that could answer it.
+            warn!(vm = %id, "console refused: no access_token on the request");
             return (StatusCode::UNAUTHORIZED, "missing access_token").into_response();
         };
         let claims = match authenticator.validate(&token).await {
             Ok(c) => c,
-            Err(e) => return (StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
+            Err(e) => {
+                // The reason, never the token: this is a log an operator reads
+                // and a bearer token is a credential until it expires.
+                warn!(vm = %id, error = %e, "console refused: token rejected");
+                return (StatusCode::UNAUTHORIZED, e.to_string()).into_response();
+            }
         };
         let allowed = match store
             .upsert_user(
@@ -80,8 +92,13 @@ pub async fn console_ws(
             Err(_) => false,
         };
         if !allowed {
+            warn!(
+                vm = %id, user = %claims.username,
+                "console refused: caller does not hold vm:console in this project"
+            );
             return (StatusCode::FORBIDDEN, "missing permission: vm:console").into_response();
         }
+        info!(vm = %id, user = %claims.username, "console session authorised");
     }
 
     // Resolve the VM before upgrading. Previously any id was accepted and the
@@ -136,7 +153,7 @@ async fn handle(store: Store, id: Uuid, socket: WebSocket) {
     let mut client = match crate::agent::connect_host_agent(&endpoint).await {
         Ok(c) => c,
         Err(e) => {
-            debug!(vm = %id, error = %e, "console: cannot reach agent");
+            warn!(vm = %id, error = %e, "console: cannot reach the agent that holds this VM");
             return;
         }
     };
@@ -157,7 +174,7 @@ async fn handle(store: Store, id: Uuid, socket: WebSocket) {
     let mut inbound = match client.vm_console(ReceiverStream::new(rx)).await {
         Ok(resp) => resp.into_inner(),
         Err(e) => {
-            debug!(vm = %id, error = %e, "console: VmConsole rpc failed");
+            warn!(vm = %id, error = %e, "console: the agent refused the VmConsole stream");
             return;
         }
     };
