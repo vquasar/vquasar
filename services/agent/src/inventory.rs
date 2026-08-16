@@ -23,6 +23,9 @@ pub fn collect() -> HostStatus {
         architecture: Some(std::env::consts::ARCH.to_string()),
         kernel_version: read_trimmed("/proc/sys/kernel/osrelease"),
         cloud_hypervisor_version: None, // populated in Milestone 2
+        // The one thing here the host cannot be measured for: it is what this
+        // binary was compiled as, not something read from the machine.
+        agent_version: Some(crate::BUILD.to_string()),
         logical_cpus: logical_cpus(),
         cpu_model: cpu_model(),
         cpu_vendor: cpuinfo_field("vendor_id"),

@@ -98,8 +98,8 @@ The console can do the same thing: **Hosts → Register**.
 The control plane dials every registered host on each reconcile tick (5s by
 default). A host starts `NotReady` and becomes `Ready` on the first successful
 call, which also collects its inventory: CPU model and features, memory, kernel
-and Cloud Hypervisor versions, and which [storage pools](storage-pools.md) it
-can actually use.
+and Cloud Hypervisor versions, the agent's own build, and which
+[storage pools](storage-pools.md) it can actually use.
 
 ```bash
 curl -sS https://control.example:8080/api/v1/hosts -H "authorization: Bearer $TOKEN"

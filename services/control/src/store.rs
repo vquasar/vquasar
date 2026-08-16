@@ -22,6 +22,10 @@ pub struct Host {
     pub architecture: Option<String>,
     pub kernel_version: Option<String>,
     pub cloud_hypervisor_version: Option<String>,
+    /// The `vquasar-agent` build this host reported. `None` means not known —
+    /// either the host has never answered, or its agent predates the field.
+    #[sqlx(default)]
+    pub agent_version: Option<String>,
     pub logical_cpus: Option<i32>,
     pub cpu_model: Option<String>,
     pub cpu_vendor: Option<String>,
@@ -393,6 +397,9 @@ pub struct HostInventory {
     pub architecture: Option<String>,
     pub kernel_version: Option<String>,
     pub cloud_hypervisor_version: Option<String>,
+    /// The agent's own build. `None` when the agent did not report one, which
+    /// an agent older than this field never will.
+    pub agent_version: Option<String>,
     pub logical_cpus: Option<i32>,
     pub cpu_model: Option<String>,
     pub cpu_vendor: Option<String>,
@@ -828,7 +835,7 @@ impl Store {
             "UPDATE hosts SET state='Ready', hostname=$2, architecture=$3, kernel_version=$4,
                 cloud_hypervisor_version=$5, logical_cpus=$6, cpu_model=$7, total_memory_bytes=$8,
                 available_memory_bytes=$9, vm_count=$10, last_heartbeat=$11, updated_at=$11,
-                cpu_vendor=$12, cpu_features=$13, overlay_vnis=$14
+                cpu_vendor=$12, cpu_features=$13, overlay_vnis=$14, agent_version=$15
              WHERE id=$1",
         )
         .bind(id)
@@ -845,6 +852,7 @@ impl Store {
         .bind(&inv.cpu_vendor)
         .bind(&inv.cpu_features)
         .bind(&inv.overlay_vnis)
+        .bind(&inv.agent_version)
         .execute(&self.pool)
         .await
         .map(|_| ())

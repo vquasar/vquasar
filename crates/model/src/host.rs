@@ -44,6 +44,12 @@ pub struct HostStatus {
     pub architecture: Option<String>,
     pub kernel_version: Option<String>,
     pub cloud_hypervisor_version: Option<String>,
+    /// The `vquasar-agent` build running on this host, as the agent reported
+    /// it. `None` is "not known", which is what an agent older than this field
+    /// leaves behind — deliberately distinct from "the same as everything
+    /// else".
+    #[serde(default)]
+    pub agent_version: Option<String>,
     pub logical_cpus: Option<u32>,
     pub cpu_model: Option<String>,
     /// CPU vendor id (e.g. `GenuineIntel`), used with `cpu_features` to gate

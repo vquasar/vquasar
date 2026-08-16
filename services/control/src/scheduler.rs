@@ -205,6 +205,7 @@ mod tests {
             architecture: None,
             kernel_version: None,
             cloud_hypervisor_version: None,
+            agent_version: None,
             logical_cpus: Some(cpus),
             cpu_model: None,
             cpu_vendor: None,

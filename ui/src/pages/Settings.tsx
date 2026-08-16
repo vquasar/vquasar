@@ -15,10 +15,29 @@ import { api } from "../api/client";
 import { useControlConfig, useHosts } from "../api/hooks";
 import { useAuth } from "../auth/AuthProvider";
 import { Card, Dash, KV, PageHeader } from "../ui/kit";
-import { formatRelative } from "../format";
+import { fleetVersions, formatRelative } from "../format";
+import type { FleetVersions } from "../format";
 import { useThemeMode } from "../theme/ThemeMode";
 import { Segmented } from "../ui/kit";
 import type { AuthConfigView } from "../api/types";
+
+/// One "what is the fleet running" row.
+///
+/// Amber for anything that is not a single version every host confirmed —
+/// including a host that reported nothing, which is separated out rather than
+/// called mixed. Not knowing and disagreeing are different problems: one is
+/// fixed by looking, the other by upgrading.
+function FleetRow({ k, f }: { k: string; f: FleetVersions }) {
+  if (f.known.length === 0 && f.unknown === 0) return <KV k={k} labelWidth={200} v={<Dash />} />;
+  const text =
+    (f.known.length ? f.known.join(", ") : "not reported") +
+    (f.known.length > 1 ? " — mixed" : "") +
+    (f.known.length && f.unknown ? ` · ${f.unknown} not reported` : "");
+  const plain = f.known.length === 1 && f.unknown === 0;
+  return (
+    <KV k={k} labelWidth={200} v={plain ? text : <span className="t-amber">{text}</span>} />
+  );
+}
 
 function useAuthConfig() {
   return useQuery({
@@ -36,9 +55,8 @@ export function Settings() {
   const { mode, setMode } = useThemeMode();
 
   const list = hosts.data ?? [];
-  const chVersions = [
-    ...new Set(list.map((h) => h.cloud_hypervisor_version).filter((v): v is string => !!v)),
-  ];
+  const chVersions = fleetVersions(list.map((h) => h.cloud_hypervisor_version));
+  const agents = fleetVersions(list.map((h) => h.agent_version));
   const kernels = [
     ...new Set(list.map((h) => h.kernel_version).filter((v): v is string => !!v)),
   ];
@@ -180,19 +198,8 @@ export function Settings() {
       </Card>
 
       <Card title="Fleet software">
-        <KV
-          k="Cloud Hypervisor"
-          labelWidth={200}
-          v={
-            chVersions.length === 0 ? (
-              <Dash />
-            ) : chVersions.length === 1 ? (
-              chVersions[0]
-            ) : (
-              <span className="t-amber">{chVersions.join(", ")} — mixed</span>
-            )
-          }
-        />
+        <FleetRow k="Cloud Hypervisor" f={chVersions} />
+        <FleetRow k="Agent build" f={agents} />
         <KV
           k="Host kernels"
           labelWidth={200}

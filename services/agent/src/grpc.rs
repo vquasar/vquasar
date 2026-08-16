@@ -80,6 +80,7 @@ impl HostAgent for AgentService {
             available_memory_bytes: host.available_memory_bytes.unwrap_or_default(),
             vm_count,
             storage_pools,
+            agent_version: host.agent_version.unwrap_or_default(),
         }))
     }
 
@@ -478,6 +479,11 @@ pub(crate) mod tests {
         assert_eq!(info.cloud_hypervisor_version, "v53.0");
         assert_eq!(info.vm_count, 1);
         assert_eq!(info.host_id, "host-test");
+        // The agent names its own build. Compared against `BUILD` rather than a
+        // literal so this does not need editing every release — and `BUILD`
+        // itself is never empty, which matters because empty is exactly what
+        // the control plane records as "unknown".
+        assert_eq!(info.agent_version, crate::BUILD);
 
         // Stop then start.
         let stopped = svc

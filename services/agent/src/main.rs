@@ -10,6 +10,15 @@ mod config;
 mod console;
 mod epoch;
 mod firewall;
+
+/// What this binary is: the release it was built from, or the crate version
+/// when nothing stamped it. Set by `make` and by the release workflow, and
+/// reported to the control plane with the rest of the inventory so a fleet can
+/// be asked what it is running.
+pub const BUILD: &str = match option_env!("VQUASAR_BUILD") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 mod grpc;
 mod hostfw;
 mod inventory;
@@ -65,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let host = inventory::collect();
     let ch_version = inventory::cloud_hypervisor_version(&config.hypervisor.binary);
     info!(
+        build = BUILD,
         name = %config.agent.name,
         hostname = ?host.hostname,
         arch = ?host.architecture,

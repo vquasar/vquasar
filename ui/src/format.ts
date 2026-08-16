@@ -70,6 +70,42 @@ export function initials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
+/// How uniform the fleet is on one piece of software.
+///
+/// Three outcomes are worth telling apart, and the third is why this exists:
+/// everyone agrees, they disagree, or some host has not said. A host that has
+/// not reported is *not* evidence of agreement, so it is counted rather than
+/// filtered away — silently dropping it is what lets a host sit versions
+/// behind the rest with nothing on screen suggesting so.
+export interface FleetVersions {
+  /// Distinct versions actually reported, sorted so the order is stable
+  /// between renders rather than following host order.
+  known: string[];
+  /// Hosts that reported nothing.
+  unknown: number;
+}
+
+export function fleetVersions(values: (string | null | undefined)[]): FleetVersions {
+  return {
+    known: [...new Set(values.filter((v): v is string => !!v))].sort(),
+    unknown: values.filter((v) => !v).length,
+  };
+}
+
+/// The same thing as one line of prose: "cloud-hypervisor v53.0",
+/// "2 agent versions", "agent v1, 1 unknown".
+export function fleetSummary(f: FleetVersions, what: string): string {
+  const head =
+    f.known.length === 0
+      ? `${what} unknown`
+      : f.known.length === 1
+        ? `${what} ${f.known[0]}`
+        : `${f.known.length} ${what} versions`;
+  // An unknown alongside known ones is the interesting case: it reads as
+  // agreement otherwise, which is the failure this whole helper is about.
+  return f.known.length > 0 && f.unknown > 0 ? `${head}, ${f.unknown} unknown` : head;
+}
+
 /// "12s ago" / "4m ago" / "2h ago" — for a liveness signal, where the exact
 /// timestamp matters less than whether it is recent.
 export function formatRelative(iso: string | null | undefined): string {
