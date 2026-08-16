@@ -123,6 +123,9 @@ export interface Host {
   architecture: string | null;
   kernel_version: string | null;
   cloud_hypervisor_version: string | null;
+  /// The agent's own build, as it reported it. Null means not known — the host
+  /// has never answered, or its agent is older than the field.
+  agent_version: string | null;
   logical_cpus: number | null;
   cpu_model: string | null;
   // Cross-CPU migration (M15): vendor + curated guest-visible ISA flags.

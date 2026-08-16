@@ -123,6 +123,7 @@ export function HostDetail() {
         subline={
           <>
             {h.endpoint} · mTLS
+            {` · agent ${h.agent_version ?? "version unknown"}`}
             {h.cloud_hypervisor_version && ` · cloud-hypervisor ${h.cloud_hypervisor_version}`}
             {h.kernel_version && ` · ${h.kernel_version}`}
             {h.architecture && ` · ${h.architecture}`}

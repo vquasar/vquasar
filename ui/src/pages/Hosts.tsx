@@ -35,7 +35,7 @@ import {
   THead,
   TRow,
 } from "../ui/kit";
-import { ageSecs, formatBytes, relTime } from "../format";
+import { ageSecs, fleetSummary, fleetVersions, formatBytes, relTime } from "../format";
 import type { DrainResult, EnrollResponse, Host } from "../api/types";
 
 const COLS = "1.3fr 110px 130px 1fr 1.3fr 70px 1fr 110px 40px";
@@ -219,9 +219,11 @@ export function Hosts() {
   const shown = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const ready = list.filter((h) => h.state === "Ready").length;
   const cordoned = list.filter((h) => !h.schedulable).length;
-  const chVersions = [
-    ...new Set(list.map((h) => h.cloud_hypervisor_version).filter((v): v is string => !!v)),
-  ];
+  // What the fleet is running, summarised in the header rather than as two
+  // more columns: the useful question is whether the hosts agree, and that is
+  // one line however many hosts there are.
+  const ch = fleetVersions(list.map((h) => h.cloud_hypervisor_version));
+  const agents = fleetVersions(list.map((h) => h.agent_version));
 
   return (
     <>
@@ -229,11 +231,10 @@ export function Hosts() {
         title="Hosts"
         subtitle={
           list.length
-            ? `${ready} Ready · ${cordoned} cordoned · ${
-                chVersions.length === 1
-                  ? `all agents on cloud-hypervisor ${chVersions[0]}`
-                  : `${chVersions.length} cloud-hypervisor versions in the fleet`
-              }`
+            ? `${ready} Ready · ${cordoned} cordoned · ${fleetSummary(
+                ch,
+                "cloud-hypervisor",
+              )} · ${fleetSummary(agents, "agent")}`
             : "No hosts registered yet."
         }
         actions={

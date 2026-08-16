@@ -172,6 +172,14 @@ message GetHostInfoResponse {
   // declared anywhere, because a declared mount is an intention the filesystem
   // is free to contradict.
   repeated StoragePoolReport storage_pools = 14;
+  // Which build of vquasar-agent is answering. Version skew between the
+  // control plane and an agent is the ordinary state of a fleet mid-upgrade
+  // and the cause of a whole class of "why does this host behave differently"
+  // — so the fleet should be able to say what it is running without anyone
+  // reading a binary over SSH. An agent that predates this field sends
+  // nothing, which is recorded as unknown rather than as agreement: those are
+  // different facts and only one of them is reassuring.
+  string agent_version = 15;
 }
 
 // ---- VM lifecycle --------------------------------------------------------

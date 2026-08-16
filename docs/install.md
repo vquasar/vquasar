@@ -77,6 +77,14 @@ no separate step. Migrations are additive and backward-compatible by policy
 (ADR-005): a newer schema keeps working with the binary that preceded it, which
 is what makes a rollback possible.
 
+Agents are upgraded one host at a time and the fleet keeps running throughout —
+the agent's systemd unit is `KillMode=process`, so stopping it never signals the
+VMs, and the new agent re-attaches to the guests still running when it starts.
+Nothing requires the whole fleet to be on one version, which is why it is worth
+being able to see when it is not: **Settings → Fleet software** reports the
+agent build each host has told the control plane it is running, and says so in
+amber when they disagree or when a host has not reported one at all.
+
 ## Building it yourself
 
 ```bash

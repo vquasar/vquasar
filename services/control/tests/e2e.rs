@@ -91,6 +91,11 @@ struct AgentState {
     /// residue of an interrupted create, which fails identically every time
     /// however often it is retried (#35).
     ensure_error: Option<String>,
+    /// The build this fake agent claims to be running. `None` is an agent that
+    /// predates the field and sends nothing — the default here, because that
+    /// is what every already-deployed agent does and the case worth having as
+    /// the baseline rather than as the exception.
+    agent_version: Option<String>,
     /// vm_id -> how many receivers `prepare_receive` has started for it.
     ///
     /// A count rather than a set because the number is the whole question:
@@ -171,7 +176,7 @@ impl HostAgent for FakeAgent {
         r: Request<GetHostInfoRequest>,
     ) -> Result<Response<GetHostInfoResponse>, Status> {
         let probes = r.into_inner().pools;
-        let (vm_count, storage_pools) = {
+        let (vm_count, storage_pools, agent_version) = {
             let st = self.state.lock().unwrap();
             let reports: Vec<_> = probes
                 .iter()
@@ -192,7 +197,11 @@ impl HostAgent for FakeAgent {
                     },
                 })
                 .collect();
-            (st.vms.len() as u32, reports)
+            (
+                st.vms.len() as u32,
+                reports,
+                st.agent_version.clone().unwrap_or_default(),
+            )
         };
         Ok(Response::new(GetHostInfoResponse {
             overlay_vnis: vec![],
@@ -209,6 +218,7 @@ impl HostAgent for FakeAgent {
             available_memory_bytes: 16 * 1024 * 1024 * 1024,
             vm_count,
             storage_pools,
+            agent_version,
         }))
     }
 
@@ -1221,6 +1231,46 @@ async fn vm_lifecycle_end_to_end() {
     assert!(
         h.get("/vms").await.as_array().unwrap().is_empty(),
         "VM deleted"
+    );
+}
+
+/// A fleet can say what it is running, and says "unknown" when it cannot.
+///
+/// The distinction is the point. An agent older than this field reports
+/// nothing, and the tempting thing is to store an empty string — which reads
+/// downstream as a version, sorts next to real ones, and makes a host that has
+/// never answered indistinguishable from one that agrees with the others. Null
+/// is the honest answer, and this is what pins it.
+#[tokio::test]
+async fn a_host_reports_which_agent_build_it_runs() {
+    let h = Harness::start().await;
+    let (p_new, p_old) = (free_port(), free_port());
+    let new = spawn_agent("hostNew", p_new);
+    let _old = spawn_agent("hostOld", p_old);
+    // One agent knows its build; the other predates the field and sends
+    // nothing, exactly as every agent deployed before this change does.
+    new.lock().unwrap().agent_version = Some("v9.9.9-test".into());
+
+    let new_id = h.register_host("hostNew", p_new).await;
+    let old_id = h.register_host("hostOld", p_old).await;
+
+    let reported = h
+        .wait_for(
+            &format!("/hosts/{new_id}"),
+            |v| v["agent_version"] == "v9.9.9-test",
+            "agent build reported",
+        )
+        .await;
+    assert_eq!(reported["agent_version"], "v9.9.9-test");
+
+    // Ready, inventory collected, and still no claim about its build: not
+    // knowing is recorded as not knowing.
+    let old = h.get(&format!("/hosts/{old_id}")).await;
+    assert_eq!(old["state"], "Ready", "the old agent is otherwise healthy");
+    assert!(
+        old["agent_version"].is_null(),
+        "an agent that reports no build must read as unknown, not as an empty \
+         version or as agreement with the rest of the fleet: {old}"
     );
 }
 

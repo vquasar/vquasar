@@ -266,6 +266,10 @@ pub async fn reconcile_hosts(store: &Store) -> anyhow::Result<()> {
                     architecture: none_if_empty(info.architecture),
                     kernel_version: none_if_empty(info.kernel_version),
                     cloud_hypervisor_version: none_if_empty(info.cloud_hypervisor_version),
+                    // Empty means the agent said nothing, which an agent older
+                    // than this field never will — recorded as unknown rather
+                    // than as an empty version string.
+                    agent_version: none_if_empty(info.agent_version),
                     logical_cpus: Some(info.logical_cpus as i32),
                     cpu_model: none_if_empty(info.cpu_model),
                     cpu_vendor: none_if_empty(info.cpu_vendor),
